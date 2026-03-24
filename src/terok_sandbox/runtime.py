@@ -4,13 +4,14 @@
 """Container runtime gateway wrapping the Podman CLI.
 
 Provides module-level functions for container lifecycle operations
-(state queries, GPU args, log streaming, etc.).
+(state queries, GPU args, log streaming, port allocation, etc.).
 
 All functions accept plain parameters (strings, paths) — no terok-specific
 types like ``ProjectConfig``.  Container naming is orchestration policy and
 lives in the caller.
 """
 
+import socket
 import subprocess
 from collections.abc import Callable
 
@@ -224,3 +225,31 @@ def wait_for_exit(cname: str, timeout_sec: float | None = None) -> int:
         return 124
     except (FileNotFoundError, ValueError):
         return 1
+
+
+def reserve_free_port(host: str = "127.0.0.1") -> tuple[socket.socket, int]:
+    """Reserve a TCP port on *host* and return ``(socket, port)``.
+
+    The socket stays open — the caller holds the reservation until they
+    close it (typically right before binding the actual service).  Useful
+    for Python-native servers that can accept a pre-bound socket.
+    """
+    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    try:
+        s.bind((host, 0))
+        return s, s.getsockname()[1]
+    except BaseException:
+        s.close()
+        raise
+
+
+def find_free_port(host: str = "127.0.0.1") -> int:
+    """Find and return a free TCP port on *host*.
+
+    Releases the socket immediately — there is a small race window before
+    the caller binds the port.  This is the standard approach when passing
+    a port number to an external process (e.g. ``podman run -p``).
+    """
+    s, port = reserve_free_port(host)
+    s.close()
+    return port
