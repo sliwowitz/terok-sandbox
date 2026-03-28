@@ -315,17 +315,25 @@ async def _refresh_all(app: web.Application) -> None:
         try:
             new_cred = await _do_oauth_refresh(session, provider, route["oauth_refresh"], cred)
             token_db.update_credential(cs, provider, new_cred)
-            _logger.info("Refreshed OAuth token for %s (expires in %ds)", provider, int(new_cred["expires_at"] - time.time()))
+            _logger.info(
+                "Refreshed OAuth token for %s (expires in %ds)",
+                provider,
+                int(new_cred["expires_at"] - time.time()),
+            )
         except Exception:
             _logger.exception("Failed to refresh OAuth token for %s", provider)
 
 
 async def _refresh_loop(app: web.Application) -> None:
     """Run an immediate refresh check, then repeat every ``_REFRESH_INTERVAL`` seconds."""
-    await _refresh_all(app)
     while True:
+        try:
+            await _refresh_all(app)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            _logger.exception("OAuth refresh cycle failed")
         await asyncio.sleep(_REFRESH_INTERVAL)
-        await _refresh_all(app)
 
 
 # ---------------------------------------------------------------------------

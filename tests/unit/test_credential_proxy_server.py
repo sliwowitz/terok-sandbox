@@ -437,21 +437,33 @@ class TestTokenDBRefresh:
     def db_with_creds(self, tmp_path: Path):
         """Create a DB with mixed credential types."""
         db = CredentialDB(tmp_path / "test.db")
-        db.store_credential("default", "claude", {
-            "type": "oauth",
-            "access_token": "sk-old",
-            "refresh_token": "rt-abc",
-            "expires_at": 1000,
-        })
-        db.store_credential("default", "vibe", {
-            "type": "api_key",
-            "key": "mistral-key",
-        })
-        db.store_credential("default", "codex", {
-            "type": "oauth",
-            "access_token": "sk-codex",
-            # no refresh_token
-        })
+        db.store_credential(
+            "default",
+            "claude",
+            {
+                "type": "oauth",
+                "access_token": "sk-old",
+                "refresh_token": "rt-abc",
+                "expires_at": 1000,
+            },
+        )
+        db.store_credential(
+            "default",
+            "vibe",
+            {
+                "type": "api_key",
+                "key": "mistral-key",
+            },
+        )
+        db.store_credential(
+            "default",
+            "codex",
+            {
+                "type": "oauth",
+                "access_token": "sk-codex",
+                # no refresh_token
+            },
+        )
         db.close()
         accessor = _TokenDB(str(tmp_path / "test.db"))
         yield accessor
@@ -468,12 +480,16 @@ class TestTokenDBRefresh:
 
     def test_update_credential_persists(self, db_with_creds) -> None:
         """update_credential writes new data that load_credential can read back."""
-        db_with_creds.update_credential("default", "claude", {
-            "type": "oauth",
-            "access_token": "sk-new",
-            "refresh_token": "rt-new",
-            "expires_at": 9999,
-        })
+        db_with_creds.update_credential(
+            "default",
+            "claude",
+            {
+                "type": "oauth",
+                "access_token": "sk-new",
+                "refresh_token": "rt-new",
+                "expires_at": 9999,
+            },
+        )
         cred = db_with_creds.load_credential("default", "claude")
         assert cred["access_token"] == "sk-new"
         assert cred["refresh_token"] == "rt-new"
@@ -498,11 +514,13 @@ class TestDoOAuthRefresh:
             assert body["grant_type"] == "refresh_token"
             assert body["refresh_token"] == "rt-old"
             assert body["client_id"] == "test-client"
-            return _web.json_response({
-                "access_token": "sk-fresh",
-                "refresh_token": "rt-rotated",
-                "expires_in": 3600,
-            })
+            return _web.json_response(
+                {
+                    "access_token": "sk-fresh",
+                    "refresh_token": "rt-rotated",
+                    "expires_in": 3600,
+                }
+            )
 
         token_app = _web.Application()
         token_app.router.add_post("/v1/oauth/token", _token_handler)
@@ -594,11 +612,13 @@ class TestRefreshAll:
         async def _token_handler(request: _web.Request) -> _web.Response:
             body = await request.json()
             refreshed_providers.append(body.get("client_id", ""))
-            return _web.json_response({
-                "access_token": "sk-refreshed",
-                "refresh_token": "rt-new",
-                "expires_in": 3600,
-            })
+            return _web.json_response(
+                {
+                    "access_token": "sk-refreshed",
+                    "refresh_token": "rt-new",
+                    "expires_in": 3600,
+                }
+            )
 
         token_app = _web.Application()
         token_app.router.add_post("/v1/oauth/token", _token_handler)
@@ -609,27 +629,43 @@ class TestRefreshAll:
 
         # DB: claude expired, codex still valid
         db = CredentialDB(tmp_path / "test.db")
-        db.store_credential("default", "claude", {
-            "type": "oauth", "access_token": "sk-expired",
-            "refresh_token": "rt-c", "expires_at": 1000,
-        })
-        db.store_credential("default", "codex", {
-            "type": "oauth", "access_token": "sk-valid",
-            "refresh_token": "rt-x", "expires_at": time.time() + 7200,
-        })
+        db.store_credential(
+            "default",
+            "claude",
+            {
+                "type": "oauth",
+                "access_token": "sk-expired",
+                "refresh_token": "rt-c",
+                "expires_at": 1000,
+            },
+        )
+        db.store_credential(
+            "default",
+            "codex",
+            {
+                "type": "oauth",
+                "access_token": "sk-valid",
+                "refresh_token": "rt-x",
+                "expires_at": time.time() + 7200,
+            },
+        )
         db.close()
 
         routes_file = tmp_path / "routes.json"
-        routes_file.write_text(json.dumps({
-            "claude": {
-                "upstream": "https://api.anthropic.com",
-                "oauth_refresh": {"token_url": token_url, "client_id": "claude-id"},
-            },
-            "codex": {
-                "upstream": "https://api.openai.com",
-                "oauth_refresh": {"token_url": token_url, "client_id": "codex-id"},
-            },
-        }))
+        routes_file.write_text(
+            json.dumps(
+                {
+                    "claude": {
+                        "upstream": "https://api.anthropic.com",
+                        "oauth_refresh": {"token_url": token_url, "client_id": "claude-id"},
+                    },
+                    "codex": {
+                        "upstream": "https://api.openai.com",
+                        "oauth_refresh": {"token_url": token_url, "client_id": "codex-id"},
+                    },
+                }
+            )
+        )
 
         app = _build_app(str(tmp_path / "test.db"), str(routes_file))
         from aiohttp import ClientSession
@@ -654,16 +690,26 @@ class TestRefreshAll:
     async def test_skips_provider_without_oauth_refresh(self, tmp_path: Path) -> None:
         """Providers without oauth_refresh in routes are skipped."""
         db = CredentialDB(tmp_path / "test.db")
-        db.store_credential("default", "gh", {
-            "type": "oauth", "access_token": "ghp-old",
-            "refresh_token": "rt-gh", "expires_at": 1000,
-        })
+        db.store_credential(
+            "default",
+            "gh",
+            {
+                "type": "oauth",
+                "access_token": "ghp-old",
+                "refresh_token": "rt-gh",
+                "expires_at": 1000,
+            },
+        )
         db.close()
 
         routes_file = tmp_path / "routes.json"
-        routes_file.write_text(json.dumps({
-            "gh": {"upstream": "https://api.github.com"},
-        }))
+        routes_file.write_text(
+            json.dumps(
+                {
+                    "gh": {"upstream": "https://api.github.com"},
+                }
+            )
+        )
 
         app = _build_app(str(tmp_path / "test.db"), str(routes_file))
         from aiohttp import ClientSession
