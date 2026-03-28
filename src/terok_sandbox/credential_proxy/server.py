@@ -281,6 +281,10 @@ async def _do_oauth_refresh(
     if "client_secret" in oauth_cfg:
         payload["client_secret"] = oauth_cfg["client_secret"]
 
+    # NOTE: RFC 6749 specifies application/x-www-form-urlencoded for token
+    # requests, but Anthropic's endpoint expects JSON (confirmed from Claude
+    # Code v2.1.86 source).  Future providers (e.g. Codex/OpenAI) may need
+    # form-encoded — add a per-provider `token_content_type` YAML field then.
     async with session.post(
         oauth_cfg["token_url"],
         json=payload,
