@@ -278,6 +278,8 @@ async def _do_oauth_refresh(
     }
     if "scope" in oauth_cfg:
         payload["scope"] = oauth_cfg["scope"]
+    if "client_secret" in oauth_cfg:
+        payload["client_secret"] = oauth_cfg["client_secret"]
 
     async with session.post(
         oauth_cfg["token_url"],
