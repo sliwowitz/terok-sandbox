@@ -267,7 +267,6 @@ async def _handle_request(request: web.Request) -> web.StreamResponse:
         except Exception as exc:
             _logger.error("Upstream request to %s failed: %s", provider, exc)
             return web.Response(status=502, text="Upstream request failed")
-    return web.Response(status=502, text="Upstream request failed")  # unreachable
 
 
 # ---------------------------------------------------------------------------
