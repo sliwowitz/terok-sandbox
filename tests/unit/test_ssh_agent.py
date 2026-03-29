@@ -553,10 +553,16 @@ class TestRSASign:
         assert algo == b"rsa-sha2-256"
 
     def test_rsa_sha2_512_flag(self, rsa_key) -> None:
-        """Flag SSH_AGENT_RSA_SHA2_512 selects rsa-sha2-512 algorithm."""
-        sig_blob = _sign(rsa_key, b"test", SSH_AGENT_RSA_SHA2_512)
-        algo, _ = _unpack_string(memoryview(sig_blob), 0)
+        """Flag SSH_AGENT_RSA_SHA2_512 selects rsa-sha2-512 and signs with SHA-512."""
+        from cryptography.hazmat.primitives.asymmetric.padding import PKCS1v15
+        from cryptography.hazmat.primitives.hashes import SHA512
+
+        data = b"test"
+        sig_blob = _sign(rsa_key, data, SSH_AGENT_RSA_SHA2_512)
+        algo, off = _unpack_string(memoryview(sig_blob), 0)
         assert algo == b"rsa-sha2-512"
+        raw_sig, _ = _unpack_string(memoryview(sig_blob), off)
+        rsa_key.public_key().verify(raw_sig, data, PKCS1v15(), SHA512())
 
     def test_rsa_no_flags_uses_ssh_rsa_sha1(self, rsa_key) -> None:
         """No flags defaults to ssh-rsa with SHA-1 per RFC 4253 §6.6."""

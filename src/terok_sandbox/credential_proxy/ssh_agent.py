@@ -134,6 +134,7 @@ class _KeyCache:
         """Return ``(private_key, pub_blob, comment)`` or ``None``."""
         entry = self._lookup_paths(project)
         if entry is None:
+            self._cache.pop(project, None)
             return None
         priv_path, pub_path = entry["private_key"], entry["public_key"]
 
@@ -157,7 +158,7 @@ class _KeyCache:
             pub_blob, comment = _load_public_key_blob(pub_path)
             priv_mt = Path(priv_path).stat().st_mtime_ns
             pub_mt = Path(pub_path).stat().st_mtime_ns
-        except (FileNotFoundError, ValueError) as exc:
+        except (OSError, ValueError) as exc:
             _logger.error("Failed to load SSH key for project %r: %s", project, exc)
             self._cache.pop(project, None)
             return None
