@@ -8,6 +8,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
+
 from terok_sandbox.ssh import SSHInitResult, update_ssh_keys_json
 
 
@@ -58,3 +60,11 @@ class TestUpdateSshKeysJson:
 
         data = json.loads(keys_path.read_text())
         assert "proj" in data
+
+    def test_malformed_json_raises(self, tmp_path: Path) -> None:
+        """Malformed JSON raises JSONDecodeError — caller is responsible for recovery."""
+        keys_path = tmp_path / "ssh-keys.json"
+        keys_path.write_text("{not valid json")
+
+        with pytest.raises(json.JSONDecodeError):
+            update_ssh_keys_json(keys_path, "proj", _result())

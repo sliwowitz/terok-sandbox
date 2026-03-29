@@ -239,6 +239,10 @@ async def _handle_connection(
             _logger.warning("Invalid SSH agent token from %s", peer)
             return
 
+        if token_info.get("provider") != "ssh":
+            _logger.warning("Token provider %r is not 'ssh', rejecting", token_info.get("provider"))
+            return
+
         project = token_info["project"]
         key_entry = key_table.get(project)
         if key_entry is None:

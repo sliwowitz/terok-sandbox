@@ -143,9 +143,8 @@ class TestKeyTable:
 class TestSign:
     """Verify SSH signature format."""
 
-    def test_ed25519_signature_format(self, ed25519_keypair: tuple[Path, Path, bytes]) -> None:
+    def test_ed25519_signature_format(self) -> None:
         """Ed25519 signature blob contains correct algorithm name."""
-        priv_path, _, _ = ed25519_keypair
         key = Ed25519PrivateKey.generate()
         sig_blob = _sign(key, b"test-data", 0)
         algo, off = _unpack_string(memoryview(sig_blob), 0)
@@ -264,6 +263,62 @@ class TestSSHAgentRoundTrip:
             await writer.drain()
 
             # Server should close the connection
+            data = await reader.read(1024)
+            assert data == b""
+
+            writer.close()
+            await writer.wait_closed()
+        finally:
+            server.close()
+            await server.wait_closed()
+
+    async def test_non_ssh_provider_token_rejected(self, tmp_path: Path) -> None:
+        """A phantom token with provider != 'ssh' is rejected."""
+        from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey as EK
+        from cryptography.hazmat.primitives.serialization import (
+            Encoding as E,
+            NoEncryption as NE,
+            PrivateFormat as PF,
+            PublicFormat as PuF,
+        )
+
+        ssh_dir = tmp_path / "keys"
+        ssh_dir.mkdir()
+        key = EK.generate()
+        (ssh_dir / "id").write_bytes(key.private_bytes(E.PEM, PF.OpenSSH, NE()))
+        pub_raw = key.public_key().public_bytes(E.OpenSSH, PuF.OpenSSH)
+        (ssh_dir / "id.pub").write_text(f"{pub_raw.decode()} c\n")
+
+        import json
+
+        keys_file = tmp_path / "keys.json"
+        keys_file.write_text(
+            json.dumps(
+                {
+                    "proj": {
+                        "private_key": str(ssh_dir / "id"),
+                        "public_key": str(ssh_dir / "id.pub"),
+                    }
+                }
+            )
+        )
+
+        db = CredentialDB(tmp_path / "test.db")
+        # Create a token with provider="claude" (not "ssh")
+        api_token = db.create_proxy_token("proj", "task-1", "default", "claude")
+        db.close()
+
+        server = await start_ssh_agent_server(
+            str(tmp_path / "test.db"), str(keys_file), "127.0.0.1", 0
+        )
+        port = server.sockets[0].getsockname()[1]
+        try:
+            reader, writer = await asyncio.open_connection("127.0.0.1", port)
+            writer.write(_build_handshake(api_token))
+            writer.write(_build_msg(SSH_AGENTC_REQUEST_IDENTITIES))
+            await writer.drain()
+
+            # Server rejects non-SSH tokens and closes connection
             data = await reader.read(1024)
             assert data == b""
 
