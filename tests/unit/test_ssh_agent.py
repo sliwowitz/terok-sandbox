@@ -24,10 +24,14 @@ from terok_sandbox.credential_db import CredentialDB
 from terok_sandbox.credential_proxy.ssh_agent import (
     SSH_AGENT_FAILURE,
     SSH_AGENT_IDENTITIES_ANSWER,
+    SSH_AGENT_RSA_SHA2_256,
+    SSH_AGENT_RSA_SHA2_512,
     SSH_AGENT_SIGN_RESPONSE,
     SSH_AGENTC_REQUEST_IDENTITIES,
     SSH_AGENTC_SIGN_REQUEST,
     _KeyTable,
+    _load_private_key,
+    _load_public_key_blob,
     _pack_string,
     _sign,
     _unpack_string,
@@ -313,3 +317,209 @@ class TestSSHAgentRoundTrip:
         finally:
             server.close()
             await server.wait_closed()
+
+    async def test_malformed_sign_payload_returns_failure(self, ssh_agent_env) -> None:
+        """Truncated sign request payload returns SSH_AGENT_FAILURE."""
+        db_path, keys_file, token, _pub_blob = ssh_agent_env
+
+        server = await start_ssh_agent_server(db_path, keys_file, "127.0.0.1", 0)
+        port = server.sockets[0].getsockname()[1]
+        try:
+            reader, writer = await asyncio.open_connection("127.0.0.1", port)
+            writer.write(_build_handshake(token))
+            writer.write(_build_msg(SSH_AGENTC_SIGN_REQUEST, b"\x00\x00"))
+            await writer.drain()
+
+            msg_type, _payload = await _read_response(reader)
+            assert msg_type == SSH_AGENT_FAILURE
+
+            writer.close()
+            await writer.wait_closed()
+        finally:
+            server.close()
+            await server.wait_closed()
+
+    async def test_missing_keys_file_closes_connection(self, tmp_path: Path) -> None:
+        """When ssh-keys.json doesn't exist, connections fail gracefully."""
+        db = CredentialDB(tmp_path / "test.db")
+        token = db.create_proxy_token("ghost", "task-1", "ghost", "ssh")
+        db.close()
+
+        server = await start_ssh_agent_server(
+            str(tmp_path / "test.db"), str(tmp_path / "no-such.json"), "127.0.0.1", 0
+        )
+        port = server.sockets[0].getsockname()[1]
+        try:
+            reader, writer = await asyncio.open_connection("127.0.0.1", port)
+            writer.write(_build_handshake(token))
+            writer.write(_build_msg(SSH_AGENTC_REQUEST_IDENTITIES))
+            await writer.drain()
+
+            data = await reader.read(1024)
+            assert data == b""
+
+            writer.close()
+            await writer.wait_closed()
+        finally:
+            server.close()
+            await server.wait_closed()
+
+
+# ── _unpack_string bounds checks ────────────────────────────────────────
+
+
+class TestUnpackStringBounds:
+    """Verify _unpack_string raises on invalid buffers."""
+
+    def test_buffer_too_short_for_header(self) -> None:
+        """Buffer shorter than 4 bytes raises ValueError."""
+        with pytest.raises(ValueError, match="too short for string header"):
+            _unpack_string(memoryview(b"\x00\x00"), 0)
+
+    def test_length_exceeds_buffer(self) -> None:
+        """Encoded length larger than remaining buffer raises ValueError."""
+        buf = struct.pack(">I", 100) + b"ab"
+        with pytest.raises(ValueError, match="exceeds buffer"):
+            _unpack_string(memoryview(buf), 0)
+
+    def test_offset_past_end(self) -> None:
+        """Offset past buffer end raises ValueError."""
+        buf = _pack_string(b"hi")
+        with pytest.raises(ValueError, match="too short"):
+            _unpack_string(memoryview(buf), len(buf))
+
+
+# ── Key loading ─────────────────────────────────────────────────────────
+
+
+class TestLoadPrivateKey:
+    """Verify _load_private_key handles various key formats."""
+
+    def test_loads_openssh_ed25519(self, ed25519_keypair: tuple[Path, Path, bytes]) -> None:
+        """Loads an OpenSSH-format ed25519 key (default ssh-keygen output)."""
+        priv_path, _, _ = ed25519_keypair
+        key = _load_private_key(str(priv_path))
+        assert isinstance(key, Ed25519PrivateKey)
+
+    def test_loads_pem_rsa(self, tmp_path: Path) -> None:
+        """Loads a traditional PEM-format RSA key."""
+        from cryptography.hazmat.primitives.asymmetric.rsa import (
+            RSAPrivateKey as RSAKeyType,
+            generate_private_key,
+        )
+        from cryptography.hazmat.primitives.serialization import (
+            Encoding as Enc,
+            NoEncryption as NoEnc,
+            PrivateFormat as PF,
+        )
+
+        rsa_key = generate_private_key(65537, 2048)
+        pem = rsa_key.private_bytes(Enc.PEM, PF.TraditionalOpenSSL, NoEnc())
+        key_path = tmp_path / "id_rsa"
+        key_path.write_bytes(pem)
+        loaded = _load_private_key(str(key_path))
+        assert isinstance(loaded, RSAKeyType)
+
+    def test_missing_file_raises(self, tmp_path: Path) -> None:
+        """Missing key file raises FileNotFoundError."""
+        with pytest.raises(FileNotFoundError):
+            _load_private_key(str(tmp_path / "nonexistent"))
+
+
+class TestLoadPublicKeyBlob:
+    """Verify _load_public_key_blob handles various .pub formats."""
+
+    def test_loads_standard_pub(self, ed25519_keypair: tuple[Path, Path, bytes]) -> None:
+        """Loads a standard .pub file with type, blob, and comment."""
+        _, pub_path, expected_blob = ed25519_keypair
+        blob, comment = _load_public_key_blob(str(pub_path))
+        assert blob == expected_blob
+        assert comment == "test-comment"
+
+    def test_pub_without_comment(self, tmp_path: Path) -> None:
+        """Loads a .pub file with no comment field."""
+        key = Ed25519PrivateKey.generate()
+        pub_raw = key.public_key().public_bytes(Encoding.OpenSSH, PublicFormat.OpenSSH)
+        pub_path = tmp_path / "id.pub"
+        pub_path.write_text(pub_raw.decode() + "\n")
+        blob, comment = _load_public_key_blob(str(pub_path))
+        assert len(blob) > 0
+        assert comment == ""
+
+    def test_malformed_pub_raises(self, tmp_path: Path) -> None:
+        """Malformed .pub file with only one field raises ValueError."""
+        pub_path = tmp_path / "bad.pub"
+        pub_path.write_text("just-one-field\n")
+        with pytest.raises(ValueError, match="Malformed"):
+            _load_public_key_blob(str(pub_path))
+
+
+# ── RSA signing ─────────────────────────────────────────────────────────
+
+
+class TestRSASign:
+    """Verify RSA signature algorithm selection based on flags."""
+
+    @pytest.fixture()
+    def rsa_key(self):
+        """Generate a test RSA key."""
+        from cryptography.hazmat.primitives.asymmetric.rsa import generate_private_key
+
+        return generate_private_key(65537, 2048)
+
+    def test_rsa_sha2_256_flag(self, rsa_key) -> None:
+        """Flag SSH_AGENT_RSA_SHA2_256 selects rsa-sha2-256 algorithm."""
+        sig_blob = _sign(rsa_key, b"test", SSH_AGENT_RSA_SHA2_256)
+        algo, _ = _unpack_string(memoryview(sig_blob), 0)
+        assert algo == b"rsa-sha2-256"
+
+    def test_rsa_sha2_512_flag(self, rsa_key) -> None:
+        """Flag SSH_AGENT_RSA_SHA2_512 selects rsa-sha2-512 algorithm."""
+        sig_blob = _sign(rsa_key, b"test", SSH_AGENT_RSA_SHA2_512)
+        algo, _ = _unpack_string(memoryview(sig_blob), 0)
+        assert algo == b"rsa-sha2-512"
+
+    def test_rsa_no_flags_uses_ssh_rsa(self, rsa_key) -> None:
+        """No flags defaults to ssh-rsa (SHA-1 per RFC 4253)."""
+        sig_blob = _sign(rsa_key, b"test", 0)
+        algo, _ = _unpack_string(memoryview(sig_blob), 0)
+        assert algo == b"ssh-rsa"
+
+    def test_rsa_sha256_signature_verifies(self, rsa_key) -> None:
+        """RSA-SHA2-256 signature verifies against the public key."""
+        from cryptography.hazmat.primitives.asymmetric.padding import PKCS1v15
+        from cryptography.hazmat.primitives.hashes import SHA256
+
+        data = b"verify-me"
+        sig_blob = _sign(rsa_key, data, SSH_AGENT_RSA_SHA2_256)
+        _, off = _unpack_string(memoryview(sig_blob), 0)
+        raw_sig, _ = _unpack_string(memoryview(sig_blob), off)
+        rsa_key.public_key().verify(raw_sig, data, PKCS1v15(), SHA256())
+
+
+# ── _KeyTable dynamic behavior ──────────────────────────────────────────
+
+
+class TestKeyTableDynamic:
+    """Verify _KeyTable re-reads the file and handles edge cases."""
+
+    def test_missing_file_returns_none(self, tmp_path: Path) -> None:
+        """Non-existent keys file returns None for any project."""
+        kt = _KeyTable(str(tmp_path / "no-such.json"))
+        assert kt.get("any") is None
+
+    def test_corrupt_json_returns_none(self, tmp_path: Path) -> None:
+        """Corrupt JSON file returns None gracefully."""
+        kf = tmp_path / "bad.json"
+        kf.write_text("{invalid json")
+        assert _KeyTable(str(kf)).get("proj") is None
+
+    def test_reflects_file_updates(self, tmp_path: Path) -> None:
+        """New entries in ssh-keys.json are visible on next get() call."""
+        kf = tmp_path / "keys.json"
+        kf.write_text("{}")
+        kt = _KeyTable(str(kf))
+        assert kt.get("proj") is None
+
+        kf.write_text(json.dumps({"proj": {"private_key": "/a", "public_key": "/b"}}))
+        assert kt.get("proj") == {"private_key": "/a", "public_key": "/b"}
