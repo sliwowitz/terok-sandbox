@@ -743,7 +743,9 @@ class TestServerDisconnectRetry:
 
         routes = tmp_path / "routes.json"
         routes.write_text(
-            json.dumps({"claude": {"upstream": "http://127.0.0.1:1", "auth_header": "Authorization"}})
+            json.dumps(
+                {"claude": {"upstream": "http://127.0.0.1:1", "auth_header": "Authorization"}}
+            )
         )
         return _build_app(str(tmp_path / "test.db"), str(routes)), token
 
