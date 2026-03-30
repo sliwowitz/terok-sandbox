@@ -303,13 +303,13 @@ class TestSSHAgentRoundTrip:
         """IDENTITIES_ANSWER returns all keys for a list-format project; each key signs."""
 
         # Generate two independent ed25519 keypairs
-        def _make_pair(name: str) -> tuple[Path, Path, bytes]:
+        def _make_pair(name: str, comment: str | None = None) -> tuple[Path, Path, bytes]:
             k = Ed25519PrivateKey.generate()
             priv = tmp_path / name
             pub = tmp_path / f"{name}.pub"
             priv.write_bytes(k.private_bytes(Encoding.PEM, PrivateFormat.OpenSSH, NoEncryption()))
             pub_raw = k.public_key().public_bytes(Encoding.OpenSSH, PublicFormat.OpenSSH)
-            pub.write_text(f"{pub_raw.decode()} {name}\n")
+            pub.write_text(f"{pub_raw.decode()} {comment or name}\n")
             blob = base64.b64decode(pub_raw.decode().split()[1])
             return priv, pub, blob
 
@@ -791,3 +791,123 @@ class TestKeyCacheEdgeCases:
         r2 = cache.get("proj")
         assert r1 is not None and r2 is not None
         assert r1[0][0] is not r2[0][0]  # different key object (reloaded from same path)
+
+
+@pytest.mark.asyncio
+class TestTkMainOrdering:
+    """The tk-main tagged key is always returned first in IDENTITIES_ANSWER."""
+
+    async def test_tk_main_key_is_first_regardless_of_json_order(self, tmp_path: Path) -> None:
+        """tk-main key sorts first even when it is second in ssh-keys.json."""
+
+        def _make_pair(name: str, comment: str) -> tuple[Path, Path, bytes]:
+            k = Ed25519PrivateKey.generate()
+            priv = tmp_path / name
+            pub = tmp_path / f"{name}.pub"
+            priv.write_bytes(k.private_bytes(Encoding.PEM, PrivateFormat.OpenSSH, NoEncryption()))
+            pub_raw = k.public_key().public_bytes(Encoding.OpenSSH, PublicFormat.OpenSSH)
+            pub.write_text(f"{pub_raw.decode()} {comment}\n")
+            blob = base64.b64decode(pub_raw.decode().split()[1])
+            return priv, pub, blob
+
+        # extra key is FIRST in JSON; tk-main key is second
+        priv_extra, pub_extra, blob_extra = _make_pair("id_extra", "extra-key")
+        priv_main, pub_main, blob_main = _make_pair("id_main", "tk-main:myproject")
+
+        keys_file = tmp_path / "ssh-keys.json"
+        keys_file.write_text(
+            json.dumps(
+                {
+                    "myproject": [
+                        {"private_key": str(priv_extra), "public_key": str(pub_extra)},
+                        {"private_key": str(priv_main), "public_key": str(pub_main)},
+                    ]
+                }
+            )
+        )
+
+        db = CredentialDB(tmp_path / "test.db")
+        token = db.create_proxy_token("myproject", "task-1", "myproject", "ssh")
+        db.close()
+
+        server = await start_ssh_agent_server(
+            str(tmp_path / "test.db"), str(keys_file), "127.0.0.1", 0
+        )
+        port = server.sockets[0].getsockname()[1]
+        try:
+            reader, writer = await asyncio.open_connection("127.0.0.1", port)
+            writer.write(_build_handshake(token))
+            writer.write(_build_msg(SSH_AGENTC_REQUEST_IDENTITIES))
+            await writer.drain()
+
+            msg_type, payload = await _read_response(reader)
+            assert msg_type == SSH_AGENT_IDENTITIES_ANSWER
+            (nkeys,) = struct.unpack_from(">I", payload, 0)
+            assert nkeys == 2
+
+            # First returned key must be the tk-main key
+            mv = memoryview(payload)
+            first_blob, off = _unpack_string(mv, 4)
+            first_comment, _ = _unpack_string(mv, off)
+            assert first_blob == blob_main, "tk-main key must be returned first"
+            assert first_comment == b"tk-main:myproject"
+
+            writer.close()
+            await writer.wait_closed()
+        finally:
+            server.close()
+            await server.wait_closed()
+
+    async def test_non_tagged_keys_preserve_relative_order(self, tmp_path: Path) -> None:
+        """Keys without tk-main tag keep their original JSON order."""
+
+        def _make_pair(name: str, comment: str) -> tuple[Path, Path, bytes]:
+            k = Ed25519PrivateKey.generate()
+            priv = tmp_path / name
+            pub = tmp_path / f"{name}.pub"
+            priv.write_bytes(k.private_bytes(Encoding.PEM, PrivateFormat.OpenSSH, NoEncryption()))
+            pub_raw = k.public_key().public_bytes(Encoding.OpenSSH, PublicFormat.OpenSSH)
+            pub.write_text(f"{pub_raw.decode()} {comment}\n")
+            blob = base64.b64decode(pub_raw.decode().split()[1])
+            return priv, pub, blob
+
+        priv_a, pub_a, blob_a = _make_pair("id_a", "key-a")
+        priv_b, pub_b, blob_b = _make_pair("id_b", "key-b")
+
+        keys_file = tmp_path / "ssh-keys.json"
+        keys_file.write_text(
+            json.dumps(
+                {
+                    "proj": [
+                        {"private_key": str(priv_a), "public_key": str(pub_a)},
+                        {"private_key": str(priv_b), "public_key": str(pub_b)},
+                    ]
+                }
+            )
+        )
+
+        db = CredentialDB(tmp_path / "test.db")
+        token = db.create_proxy_token("proj", "task-1", "proj", "ssh")
+        db.close()
+
+        server = await start_ssh_agent_server(
+            str(tmp_path / "test.db"), str(keys_file), "127.0.0.1", 0
+        )
+        port = server.sockets[0].getsockname()[1]
+        try:
+            reader, writer = await asyncio.open_connection("127.0.0.1", port)
+            writer.write(_build_handshake(token))
+            writer.write(_build_msg(SSH_AGENTC_REQUEST_IDENTITIES))
+            await writer.drain()
+
+            msg_type, payload = await _read_response(reader)
+            assert msg_type == SSH_AGENT_IDENTITIES_ANSWER
+            mv = memoryview(payload)
+            first_blob, _ = _unpack_string(mv, 4)
+            assert first_blob == blob_a, "JSON order preserved when no tk-main key present"
+
+            writer.close()
+            await writer.wait_closed()
+        finally:
+            server.close()
+            await server.wait_closed()

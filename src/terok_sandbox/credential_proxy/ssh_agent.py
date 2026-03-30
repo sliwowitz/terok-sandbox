@@ -339,6 +339,11 @@ async def _handle_connection(
             )
             return
 
+        # Promote the tk-main key to the front so SSH offers it first to GitHub,
+        # ensuring the primary workspace key is used for the main repo without
+        # requiring IdentityFile configuration in the container.
+        keys = sorted(keys, key=lambda k: 0 if k[2].startswith("tk-main:") else 1)
+
         # Build a lookup: pub_blob → (private_key, comment) for sign requests
         key_by_blob = {pub_blob: (priv, comment) for priv, pub_blob, comment in keys}
         _logger.info(

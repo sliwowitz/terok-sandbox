@@ -189,7 +189,7 @@ class SSHManager:
             "-N",
             "",
             "-C",
-            f"terok {project_id}",
+            f"tk-main:{project_id}",
         ]
         try:
             subprocess.run(cmd, check=True)
