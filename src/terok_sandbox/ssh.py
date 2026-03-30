@@ -286,7 +286,7 @@ def update_ssh_keys_json(keys_json_path: Path, project_id: str, result: SSHInitR
         "public_key": result["public_key"],
     }
     keys_json_path.parent.mkdir(parents=True, exist_ok=True)
-    fd = os.open(str(keys_json_path), os.O_RDWR | os.O_CREAT)
+    fd = os.open(str(keys_json_path), os.O_RDWR | os.O_CREAT, 0o600)
     try:
         fcntl.flock(fd, fcntl.LOCK_EX)
         chunks: list[bytes] = []
