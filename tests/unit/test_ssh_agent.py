@@ -126,18 +126,47 @@ class TestKeyCache:
     def test_get_known_project(
         self, tmp_path: Path, ed25519_keypair: tuple[Path, Path, bytes]
     ) -> None:
-        """Known project with valid keys returns resolved key material."""
+        """Known project with valid keys returns list of resolved key material."""
         priv_path, pub_path, expected_blob = ed25519_keypair
         kf = tmp_path / "keys.json"
         kf.write_text(
             json.dumps({"proj": {"private_key": str(priv_path), "public_key": str(pub_path)}})
         )
-        resolved = _KeyCache(str(kf)).get("proj")
-        assert resolved is not None
-        private_key, pub_blob, comment = resolved
+        keys = _KeyCache(str(kf)).get("proj")
+        assert keys is not None and len(keys) == 1
+        private_key, pub_blob, comment = keys[0]
         assert isinstance(private_key, Ed25519PrivateKey)
         assert pub_blob == expected_blob
         assert comment == "test-comment"
+
+    def test_get_multiple_keys(
+        self, tmp_path: Path, ed25519_keypair: tuple[Path, Path, bytes]
+    ) -> None:
+        """Project with a list of key entries returns all resolved keys."""
+        priv1, pub1, blob1 = ed25519_keypair
+        # Generate second keypair
+        key2 = Ed25519PrivateKey.generate()
+        priv2 = tmp_path / "id2"
+        pub2 = tmp_path / "id2.pub"
+        priv2.write_bytes(key2.private_bytes(Encoding.PEM, PrivateFormat.OpenSSH, NoEncryption()))
+        pub_raw2 = key2.public_key().public_bytes(Encoding.OpenSSH, PublicFormat.OpenSSH)
+        pub2.write_text(f"{pub_raw2.decode()} key-two\n")
+
+        kf = tmp_path / "keys.json"
+        kf.write_text(
+            json.dumps(
+                {
+                    "proj": [
+                        {"private_key": str(priv1), "public_key": str(pub1)},
+                        {"private_key": str(priv2), "public_key": str(pub2)},
+                    ]
+                }
+            )
+        )
+        keys = _KeyCache(str(kf)).get("proj")
+        assert keys is not None and len(keys) == 2
+        assert keys[0][1] == blob1
+        assert keys[1][2] == "key-two"
 
     def test_get_unknown_project(self, tmp_path: Path) -> None:
         """Unknown project returns None."""
@@ -148,7 +177,7 @@ class TestKeyCache:
     def test_caches_across_calls(
         self, tmp_path: Path, ed25519_keypair: tuple[Path, Path, bytes]
     ) -> None:
-        """Second get() for the same project returns cached object (same identity)."""
+        """Second get() for the same project returns cached objects (same identity)."""
         priv_path, pub_path, _ = ed25519_keypair
         kf = tmp_path / "keys.json"
         kf.write_text(
@@ -158,7 +187,7 @@ class TestKeyCache:
         r1 = cache.get("proj")
         r2 = cache.get("proj")
         assert r1 is not None and r2 is not None
-        assert r1[0] is r2[0]  # same private key object (cached, not re-loaded)
+        assert r1[0][0] is r2[0][0]  # same private key object (cached, not re-loaded)
 
 
 # ── Signing ─────────────────────────────────────────────────────────────
@@ -661,7 +690,7 @@ class TestKeyCacheEdgeCases:
         kf.write_text(json.dumps({"proj": {"private_key": str(priv2), "public_key": str(pub2)}}))
         r2 = cache.get("proj")
         assert r1 is not None and r2 is not None
-        assert r1[0] is not r2[0]  # different private key object (re-loaded)
+        assert r1[0][0] is not r2[0][0]  # different private key object (re-loaded)
 
     def test_reloads_on_same_path_rotation(
         self, tmp_path: Path, ed25519_keypair: tuple[Path, Path, bytes]
@@ -689,4 +718,4 @@ class TestKeyCacheEdgeCases:
 
         r2 = cache.get("proj")
         assert r1 is not None and r2 is not None
-        assert r1[0] is not r2[0]  # different key object (reloaded from same path)
+        assert r1[0][0] is not r2[0][0]  # different key object (reloaded from same path)

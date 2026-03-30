@@ -107,69 +107,84 @@ def _write_msg(writer: asyncio.StreamWriter, msg_type: int, payload: bytes = b""
 
 
 _ResolvedKey = tuple[Ed25519PrivateKey | RSAPrivateKey, bytes, str]
-"""(private_key, pub_blob, comment) — cached per project."""
+"""(private_key, pub_blob, comment) — one loaded keypair."""
+
+# JSON entry: {"private_key": str, "public_key": str}
+_KeyEntry = dict[str, str]
+
+# Cache: fingerprint string → list of resolved keys
+_CacheSlot = tuple[str, list[_ResolvedKey]]
 
 
 class _KeyCache:
     """Caches resolved SSH key material per project.
 
-    On each :meth:`get` call the sidecar JSON is re-read (so ``ssh-init``
-    changes are visible without a proxy restart).  When the key *paths*
-    for a project haven't changed since the last load, the cached
-    private-key object, public-key blob, and comment are returned
-    directly — no disk I/O or crypto parsing on subsequent connections.
+    Each project may have one key (dict entry) or multiple keys (list of
+    dict entries) in ``ssh-keys.json``.  On each :meth:`get` call the
+    sidecar JSON is re-read (so ``ssh-init`` changes are visible without
+    a proxy restart).  When the key paths and mtimes haven't changed
+    since the last load, the cached material is returned directly.
 
     The file may not exist on a fresh install (returns ``None``).
     """
 
-    # Cache entry: (priv_path, pub_path, priv_mtime_ns, pub_mtime_ns, resolved)
-    _CacheEntry = tuple[str, str, int, int, _ResolvedKey]
-
     def __init__(self, keys_path: str) -> None:
         """Store the *keys_path* for on-demand reads."""
         self._path = Path(keys_path)
-        self._cache: dict[str, _KeyCache._CacheEntry] = {}
+        self._cache: dict[str, _CacheSlot] = {}
 
-    def get(self, project: str) -> _ResolvedKey | None:
-        """Return ``(private_key, pub_blob, comment)`` or ``None``."""
-        entry = self._lookup_paths(project)
-        if entry is None:
+    def get(self, project: str) -> list[_ResolvedKey] | None:
+        """Return a list of ``(private_key, pub_blob, comment)`` or ``None``."""
+        entries = self._lookup_entries(project)
+        if not entries:
             self._cache.pop(project, None)
             return None
-        priv_path, pub_path = entry["private_key"], entry["public_key"]
 
-        # Cache hit: paths and mtimes unchanged since last resolve
+        fingerprint = self._fingerprint(entries)
         cached = self._cache.get(project)
-        if cached:
-            c_priv, c_pub, c_priv_mt, c_pub_mt, c_resolved = cached
-            if c_priv == priv_path and c_pub == pub_path:
-                try:
-                    if (
-                        Path(priv_path).stat().st_mtime_ns == c_priv_mt
-                        and Path(pub_path).stat().st_mtime_ns == c_pub_mt
-                    ):
-                        return c_resolved
-                except OSError:
-                    pass  # file gone — fall through to reload
+        if cached and cached[0] == fingerprint:
+            return cached[1]
 
-        # Cache miss or stale: load from disk and cache
-        try:
-            private_key = _load_private_key(priv_path)
-            pub_blob, comment = _load_public_key_blob(pub_path)
-            priv_mt = Path(priv_path).stat().st_mtime_ns
-            pub_mt = Path(pub_path).stat().st_mtime_ns
-        except (OSError, ValueError) as exc:
-            _logger.error("Failed to load SSH key for project %r: %s", project, exc)
+        # Cache miss or stale: load all keys from disk
+        resolved: list[_ResolvedKey] = []
+        for entry in entries:
+            try:
+                private_key = _load_private_key(entry["private_key"])
+                pub_blob, comment = _load_public_key_blob(entry["public_key"])
+                resolved.append((private_key, pub_blob, comment))
+            except (OSError, ValueError) as exc:
+                _logger.error(
+                    "Failed to load SSH key for project %r (%s): %s",
+                    project,
+                    entry.get("private_key", "?"),
+                    exc,
+                )
+
+        if not resolved:
             self._cache.pop(project, None)
             return None
 
-        resolved: _ResolvedKey = (private_key, pub_blob, comment)
-        self._cache[project] = (priv_path, pub_path, priv_mt, pub_mt, resolved)
+        self._cache[project] = (fingerprint, resolved)
         return resolved
 
-    def _lookup_paths(self, project: str) -> dict[str, str] | None:
-        """Read ssh-keys.json and return the entry for *project*, or ``None``.
+    @staticmethod
+    def _fingerprint(entries: list[_KeyEntry]) -> str:
+        """Build a cache-invalidation fingerprint from paths + mtimes."""
+        parts: list[str] = []
+        for e in entries:
+            for key in ("private_key", "public_key"):
+                path = e[key]
+                try:
+                    mt = Path(path).stat().st_mtime_ns
+                except OSError:
+                    mt = 0
+                parts.append(f"{path}:{mt}")
+        return "|".join(parts)
 
+    def _lookup_entries(self, project: str) -> list[_KeyEntry] | None:
+        """Read ssh-keys.json and return the key entries for *project*.
+
+        Supports both a single dict entry (legacy) and a list of entries.
         Uses ``LOCK_SH`` to coordinate with the ``LOCK_EX`` writer in
         :func:`update_ssh_keys_json`.
         """
@@ -189,14 +204,18 @@ class _KeyCache:
             return None
         if not isinstance(mapping, dict):
             return None
-        entry = mapping.get(project)
-        if not isinstance(entry, dict):
+        raw = mapping.get(project)
+        if raw is None:
             return None
-        if not (
-            isinstance(entry.get("private_key"), str) and isinstance(entry.get("public_key"), str)
-        ):
-            return None
-        return entry
+        # Normalize: single dict → list of one
+        entries = raw if isinstance(raw, list) else [raw]
+        return [
+            e
+            for e in entries
+            if isinstance(e, dict)
+            and isinstance(e.get("private_key"), str)
+            and isinstance(e.get("public_key"), str)
+        ] or None
 
 
 # ---------------------------------------------------------------------------
@@ -314,13 +333,16 @@ async def _handle_connection(
             return
 
         project = token_info["project"]
-        resolved = key_cache.get(project)
-        if resolved is None:
+        keys = key_cache.get(project)
+        if not keys:
             _logger.warning("No SSH key configured for project %r", project)
             return
 
-        private_key, pub_blob, comment = resolved
-        _logger.debug("SSH agent session for project %r from %s", project, peer)
+        # Build a lookup: pub_blob → (private_key, comment) for sign requests
+        key_by_blob = {pub_blob: (priv, comment) for priv, pub_blob, comment in keys}
+        _logger.debug(
+            "SSH agent session for project %r from %s (%d key(s))", project, peer, len(keys)
+        )
 
         # --- Agent message loop ---
         while True:
@@ -330,10 +352,10 @@ async def _handle_connection(
                 break
 
             if msg_type == SSH_AGENTC_REQUEST_IDENTITIES:
-                # Respond with one identity: the project's public key
-                body = struct.pack(">I", 1)  # nkeys = 1
-                body += _pack_string(pub_blob)
-                body += _pack_string(comment.encode("utf-8"))
+                body = struct.pack(">I", len(keys))
+                for _priv, pub_blob, comment in keys:
+                    body += _pack_string(pub_blob)
+                    body += _pack_string(comment.encode("utf-8"))
                 _write_msg(writer, SSH_AGENT_IDENTITIES_ANSWER, body)
 
             elif msg_type == SSH_AGENTC_SIGN_REQUEST:
@@ -348,11 +370,12 @@ async def _handle_connection(
                     _logger.debug("Malformed sign request: %s", exc)
                     _write_msg(writer, SSH_AGENT_FAILURE)
                 else:
-                    if req_blob != pub_blob:
+                    match = key_by_blob.get(req_blob)
+                    if match is None:
                         _logger.debug("Sign request for unknown key, returning failure")
                         _write_msg(writer, SSH_AGENT_FAILURE)
                     else:
-                        sig_blob = _sign(private_key, sign_data, flags)
+                        sig_blob = _sign(match[0], sign_data, flags)
                         _write_msg(writer, SSH_AGENT_SIGN_RESPONSE, _pack_string(sig_blob))
 
             else:
