@@ -525,15 +525,20 @@ def main() -> None:
         "--pid-file", default=None, help="Write PID to this file (for lifecycle management)"
     )
     parser.add_argument("--log-level", default="INFO", help="Logging level (default: INFO)")
+    parser.add_argument("--log-file", default=None, help="Append log output to this file")
     args = parser.parse_args()
 
     if bool(args.ssh_agent_port) != bool(args.ssh_keys_file):
         parser.error("--ssh-agent-port and --ssh-keys-file must be provided together")
 
-    logging.basicConfig(
-        level=getattr(logging, args.log_level.upper(), logging.INFO),
-        format="%(asctime)s %(name)s %(levelname)s %(message)s",
-    )
+    log_level = getattr(logging, args.log_level.upper(), logging.INFO)
+    log_fmt = "%(asctime)s %(name)s %(levelname)s %(message)s"
+    handlers: list[logging.Handler] = []
+    if args.log_file:
+        handlers.append(logging.FileHandler(args.log_file))
+    else:
+        handlers.append(logging.StreamHandler())
+    logging.basicConfig(level=log_level, format=log_fmt, handlers=handlers)
 
     if args.pid_file:
         import os

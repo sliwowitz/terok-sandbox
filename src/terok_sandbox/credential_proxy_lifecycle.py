@@ -247,6 +247,9 @@ def start_daemon(cfg: SandboxConfig | None = None) -> None:
         ssh_keys_path.parent.mkdir(parents=True, exist_ok=True)
         ssh_keys_path.write_text("{}\n")
 
+    log_file = c.state_dir / "proxy" / "credential-proxy.log"
+    log_file.parent.mkdir(parents=True, exist_ok=True)
+
     cmd = [
         *_proxy_exec_prefix(),
         f"--socket-path={sock_path}",
@@ -256,10 +259,14 @@ def start_daemon(cfg: SandboxConfig | None = None) -> None:
         f"--port={c.proxy_port}",
         f"--ssh-agent-port={c.ssh_agent_port}",
         f"--ssh-keys-file={ssh_keys_path}",
+        f"--log-file={log_file}",
+        "--log-level=DEBUG",
     ]
 
     # Fork into background so the proxy survives shell exit.
     # The server writes its own PID file via --pid-file.
+    # stderr=PIPE only for the startup-failure detection window; the pipe is
+    # closed immediately after so the daemon's stderr does not block on a full buffer.
     import time
 
     proc = subprocess.Popen(
@@ -278,6 +285,9 @@ def start_daemon(cfg: SandboxConfig | None = None) -> None:
         if stderr:
             msg += f":\n{stderr}"
         raise SystemExit(msg)
+
+    # Close our end of the pipe — the daemon logs to the log file, not stderr.
+    proc.stderr.close()
 
 
 def stop_daemon(cfg: SandboxConfig | None = None) -> None:

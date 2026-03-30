@@ -318,7 +318,7 @@ async def _handle_connection(
         # --- Handshake ---
         token = await _read_handshake(reader)
         if not token:
-            _logger.debug("Handshake failed from %s", peer)
+            _logger.info("Handshake failed (no token) from %s", peer)
             return
 
         token_info = token_db.lookup_token(token)  # type: ignore[attr-defined]
@@ -331,15 +331,21 @@ async def _handle_connection(
             return
 
         project = token_info["project"]
+        _logger.info("SSH agent connection from %s for project %r", peer, project)
         keys = key_cache.get(project)
         if not keys:
-            _logger.warning("No SSH key configured for project %r", project)
+            _logger.warning(
+                "No SSH keys loaded for project %r — check ssh-keys.json paths", project
+            )
             return
 
         # Build a lookup: pub_blob → (private_key, comment) for sign requests
         key_by_blob = {pub_blob: (priv, comment) for priv, pub_blob, comment in keys}
-        _logger.debug(
-            "SSH agent session for project %r from %s (%d key(s))", project, peer, len(keys)
+        _logger.info(
+            "SSH agent session ready for project %r from %s — %d key(s) available",
+            project,
+            peer,
+            len(keys),
         )
 
         # --- Agent message loop ---
@@ -350,6 +356,9 @@ async def _handle_connection(
                 break
 
             if msg_type == SSH_AGENTC_REQUEST_IDENTITIES:
+                _logger.info(
+                    "Identity request for project %r — returning %d key(s)", project, len(keys)
+                )
                 body = struct.pack(">I", len(keys))
                 for _priv, pub_blob, comment in keys:
                     body += _pack_string(pub_blob)
@@ -365,14 +374,21 @@ async def _handle_connection(
                         raise ValueError("Payload too short for flags field")
                     (flags,) = struct.unpack_from(">I", mv, off)
                 except (ValueError, struct.error) as exc:
-                    _logger.debug("Malformed sign request: %s", exc)
+                    _logger.warning("Malformed sign request from %s: %s", peer, exc)
                     _write_msg(writer, SSH_AGENT_FAILURE)
                 else:
                     match = key_by_blob.get(req_blob)
                     if match is None:
-                        _logger.debug("Sign request for unknown key, returning failure")
+                        _logger.warning(
+                            "Sign request for unknown key from %s (project %r) — no matching key blob",
+                            peer,
+                            project,
+                        )
                         _write_msg(writer, SSH_AGENT_FAILURE)
                     else:
+                        _logger.info(
+                            "Sign request fulfilled for project %r key %r", project, match[1]
+                        )
                         sig_blob = _sign(match[0], sign_data, flags)
                         _write_msg(writer, SSH_AGENT_SIGN_RESPONSE, _pack_string(sig_blob))
 

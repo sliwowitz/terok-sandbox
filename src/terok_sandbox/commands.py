@@ -285,30 +285,52 @@ PROXY_COMMANDS: tuple[CommandDef, ...] = (
 
 
 def _handle_ssh_import(*, project: str, private_key: str, public_key: str | None = None) -> None:
-    """Register an existing SSH keypair in ssh-keys.json."""
+    """Copy an SSH keypair into the managed key store and register it in ssh-keys.json."""
+    import os
+    import shutil
     from pathlib import Path
 
     from .config import SandboxConfig
     from .ssh import SSHInitResult, update_ssh_keys_json
 
-    priv = Path(private_key).expanduser().resolve()
-    pub = Path(public_key).expanduser().resolve() if public_key else priv.with_suffix(".pub")
+    priv_src = Path(private_key).expanduser().resolve()
+    pub_src = (
+        Path(public_key).expanduser().resolve() if public_key else priv_src.with_suffix(".pub")
+    )
 
-    if not priv.exists():
-        raise SystemExit(f"Private key not found: {priv}")
-    if not pub.exists():
-        raise SystemExit(f"Public key not found: {pub} (use --public-key to specify explicitly)")
+    if not priv_src.exists():
+        raise SystemExit(f"Private key not found: {priv_src}")
+    if not pub_src.exists():
+        raise SystemExit(
+            f"Public key not found: {pub_src} (use --public-key to specify explicitly)"
+        )
+
+    cfg = SandboxConfig()
+    dest_dir = cfg.ssh_keys_dir / project
+    dest_dir.mkdir(parents=True, exist_ok=True)
+
+    priv_dst = dest_dir / priv_src.name
+    pub_dst = dest_dir / pub_src.name
+
+    print(f"Copying private key: {priv_src}")
+    print(f"              → {priv_dst}")
+    shutil.copy2(str(priv_src), str(priv_dst))
+    os.chmod(priv_dst, 0o600)
+
+    print(f"Copying public key:  {pub_src}")
+    print(f"              → {pub_dst}")
+    shutil.copy2(str(pub_src), str(pub_dst))
 
     result = SSHInitResult(
-        dir=str(priv.parent),
-        private_key=str(priv),
-        public_key=str(pub),
+        dir=str(dest_dir),
+        private_key=str(priv_dst),
+        public_key=str(pub_dst),
         config_path="",
-        key_name=priv.name,
+        key_name=priv_src.name,
     )
-    keys_path = SandboxConfig().ssh_keys_json_path
+    keys_path = cfg.ssh_keys_json_path
     update_ssh_keys_json(keys_path, project, result)
-    print(f"Registered key for project '{project}': {priv}")
+    print(f"Registered key for project '{project}': {priv_dst}")
 
 
 SSH_COMMANDS: tuple[CommandDef, ...] = (

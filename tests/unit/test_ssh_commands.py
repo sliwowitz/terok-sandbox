@@ -33,64 +33,134 @@ def keypair(tmp_path: Path) -> tuple[Path, Path]:
     return priv, pub
 
 
-class TestHandleSshImport:
-    """Verify _handle_ssh_import registers the keypair in ssh-keys.json."""
+def _mock_cfg(tmp_path: Path, keys_subdir: str = "ssh-keys") -> object:
+    """Return a mock SandboxConfig with paths in *tmp_path*."""
+    from unittest.mock import MagicMock
 
-    def test_registers_key(
+    cfg = MagicMock()
+    cfg.ssh_keys_dir = tmp_path / keys_subdir
+    cfg.ssh_keys_json_path = tmp_path / "proxy" / "ssh-keys.json"
+    return cfg
+
+
+class TestHandleSshImport:
+    """Verify _handle_ssh_import copies keypairs and registers them in ssh-keys.json."""
+
+    def test_copies_and_registers_key(
         self, tmp_path: Path, keypair: tuple[Path, Path], capsys: pytest.CaptureFixture[str]
     ) -> None:
-        """Registers key and prints confirmation."""
-        priv, pub = keypair
-        keys_path = tmp_path / "ssh-keys.json"
+        """Copies both key files to the managed dir and registers them."""
+        priv_src, pub_src = keypair
+        cfg = _mock_cfg(tmp_path)
 
-        with patch("terok_sandbox.config.SandboxConfig") as mock_cfg:
-            mock_cfg.return_value.ssh_keys_json_path = keys_path
-            _handle_ssh_import(project="myproj", private_key=str(priv))
+        with patch("terok_sandbox.config.SandboxConfig", return_value=cfg):
+            _handle_ssh_import(project="myproj", private_key=str(priv_src))
 
-        data = json.loads(keys_path.read_text())
-        assert data == {"myproj": [{"private_key": str(priv), "public_key": str(pub)}]}
+        # Files must exist in the managed directory
+        dest_dir = cfg.ssh_keys_dir / "myproj"
+        priv_dst = dest_dir / priv_src.name
+        pub_dst = dest_dir / pub_src.name
+        assert priv_dst.is_file(), "Private key must be copied to managed dir"
+        assert pub_dst.is_file(), "Public key must be copied to managed dir"
+
+        # JSON must reference the copies, not the originals
+        data = json.loads(cfg.ssh_keys_json_path.read_text())
+        assert data == {"myproj": [{"private_key": str(priv_dst), "public_key": str(pub_dst)}]}
+
         assert "myproj" in capsys.readouterr().out
 
+    def test_private_key_copy_has_600_permissions(
+        self, tmp_path: Path, keypair: tuple[Path, Path]
+    ) -> None:
+        """Copied private key must have 0o600 permissions."""
+        priv_src, _pub = keypair
+        cfg = _mock_cfg(tmp_path)
+
+        with patch("terok_sandbox.config.SandboxConfig", return_value=cfg):
+            _handle_ssh_import(project="myproj", private_key=str(priv_src))
+
+        priv_dst = cfg.ssh_keys_dir / "myproj" / priv_src.name
+        assert oct(priv_dst.stat().st_mode & 0o777) == oct(0o600)
+
     def test_explicit_public_key(self, tmp_path: Path, keypair: tuple[Path, Path]) -> None:
-        """Accepts an explicit --public-key path."""
-        priv, pub = keypair
-        keys_path = tmp_path / "ssh-keys.json"
+        """Accepts an explicit --public-key path and copies it."""
+        priv_src, pub_src = keypair
+        cfg = _mock_cfg(tmp_path)
 
-        with patch("terok_sandbox.config.SandboxConfig") as mock_cfg:
-            mock_cfg.return_value.ssh_keys_json_path = keys_path
-            _handle_ssh_import(project="proj", private_key=str(priv), public_key=str(pub))
+        with patch("terok_sandbox.config.SandboxConfig", return_value=cfg):
+            _handle_ssh_import(project="proj", private_key=str(priv_src), public_key=str(pub_src))
 
-        data = json.loads(keys_path.read_text())
-        assert data["proj"][0]["public_key"] == str(pub)
+        pub_dst = cfg.ssh_keys_dir / "proj" / pub_src.name
+        assert pub_dst.is_file()
+        data = json.loads(cfg.ssh_keys_json_path.read_text())
+        assert data["proj"][0]["public_key"] == str(pub_dst)
+
+    def test_original_files_not_modified(self, tmp_path: Path, keypair: tuple[Path, Path]) -> None:
+        """Source key files must remain unchanged after import."""
+        priv_src, pub_src = keypair
+        priv_orig = priv_src.read_bytes()
+        pub_orig = pub_src.read_text()
+        cfg = _mock_cfg(tmp_path)
+
+        with patch("terok_sandbox.config.SandboxConfig", return_value=cfg):
+            _handle_ssh_import(project="proj", private_key=str(priv_src))
+
+        assert priv_src.read_bytes() == priv_orig
+        assert pub_src.read_text() == pub_orig
 
     def test_missing_private_key_exits(self, tmp_path: Path) -> None:
         """Missing private key raises SystemExit."""
-        with pytest.raises(SystemExit, match="not found"):
-            _handle_ssh_import(project="proj", private_key=str(tmp_path / "no-such"))
+        cfg = _mock_cfg(tmp_path)
+        with patch("terok_sandbox.config.SandboxConfig", return_value=cfg):
+            with pytest.raises(SystemExit, match="not found"):
+                _handle_ssh_import(project="proj", private_key=str(tmp_path / "no-such"))
 
     def test_missing_public_key_exits(self, tmp_path: Path, keypair: tuple[Path, Path]) -> None:
         """Private key exists but .pub is missing raises SystemExit."""
         priv, pub = keypair
         pub.unlink()
-        with pytest.raises(SystemExit, match="not found"):
-            _handle_ssh_import(project="proj", private_key=str(priv))
+        cfg = _mock_cfg(tmp_path)
+        with patch("terok_sandbox.config.SandboxConfig", return_value=cfg):
+            with pytest.raises(SystemExit, match="not found"):
+                _handle_ssh_import(project="proj", private_key=str(priv))
 
     def test_second_key_appends(self, tmp_path: Path, keypair: tuple[Path, Path]) -> None:
         """Importing a second key for the same project appends to the list."""
         priv, pub = keypair
-        keys_path = tmp_path / "ssh-keys.json"
+        cfg = _mock_cfg(tmp_path)
 
         key2 = Ed25519PrivateKey.generate()
-        priv2 = tmp_path / "id_ed25519_proj_alt"
-        pub2 = tmp_path / "id_ed25519_proj_alt.pub"
+        # Use a different source directory so filenames don't clash
+        src2 = tmp_path / "keys2"
+        src2.mkdir()
+        priv2 = src2 / "id_ed25519_proj_alt"
+        pub2 = src2 / "id_ed25519_proj_alt.pub"
         priv2.write_bytes(key2.private_bytes(Encoding.PEM, PrivateFormat.OpenSSH, NoEncryption()))
         pub_raw2 = key2.public_key().public_bytes(Encoding.OpenSSH, PublicFormat.OpenSSH)
         pub2.write_text(f"{pub_raw2.decode()} alt\n")
 
-        with patch("terok_sandbox.config.SandboxConfig") as mock_cfg:
-            mock_cfg.return_value.ssh_keys_json_path = keys_path
+        with patch("terok_sandbox.config.SandboxConfig", return_value=cfg):
             _handle_ssh_import(project="proj", private_key=str(priv))
             _handle_ssh_import(project="proj", private_key=str(priv2))
 
-        data = json.loads(keys_path.read_text())
+        data = json.loads(cfg.ssh_keys_json_path.read_text())
         assert len(data["proj"]) == 2
+        # Both entries must point into the managed dir
+        dest_dir = cfg.ssh_keys_dir / "proj"
+        for entry in data["proj"]:
+            assert Path(entry["private_key"]).parent == dest_dir
+            assert Path(entry["public_key"]).parent == dest_dir
+
+    def test_reimport_same_key_is_idempotent(
+        self, tmp_path: Path, keypair: tuple[Path, Path]
+    ) -> None:
+        """Re-importing the same key by path does not duplicate the entry."""
+        priv_src, _pub = keypair
+        cfg = _mock_cfg(tmp_path)
+
+        with patch("terok_sandbox.config.SandboxConfig", return_value=cfg):
+            _handle_ssh_import(project="proj", private_key=str(priv_src))
+            _handle_ssh_import(project="proj", private_key=str(priv_src))
+
+        data = json.loads(cfg.ssh_keys_json_path.read_text())
+        assert len(data["proj"]) == 1
