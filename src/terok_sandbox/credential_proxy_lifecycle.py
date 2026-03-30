@@ -375,29 +375,64 @@ def get_proxy_status(cfg: SandboxConfig | None = None) -> CredentialProxyStatus:
     )
 
 
+def _wait_for_tcp_port(port: int, timeout: float = 5.0) -> bool:
+    """Wait up to *timeout* seconds for a TCP port on localhost to accept connections."""
+    import socket
+    import time
+
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        try:
+            if sock.connect_ex(("127.0.0.1", port)) == 0:
+                return True
+        finally:
+            sock.close()
+        time.sleep(0.2)
+    return False
+
+
 def ensure_proxy_reachable(cfg: SandboxConfig | None = None) -> None:
-    """Verify the credential proxy is running.
+    """Verify the credential proxy is running and its TCP ports are up.
+
+    For systemd socket activation the service may not have started yet
+    (e.g. after a fresh boot).  This function triggers a start via
+    ``systemctl --user start`` and waits for the HTTP and SSH agent TCP
+    ports to become reachable.
 
     Raises ``SystemExit`` with an actionable message if the proxy is down.
     Called before task creation when credential proxy is enabled.
     """
-    if is_socket_active() or is_daemon_running(cfg):
-        return
-
     c = _cfg(cfg)
-    hint = (
-        "  terokctl credentials install   (systemd socket activation)\n"
-        "  terokctl credentials start      (manual daemon)"
-    )
-    msg = (
-        "Credential proxy is not running.\n"
-        "\n"
-        "The credential proxy injects real API credentials into container\n"
-        "requests without exposing secrets to the container filesystem.\n"
-        "\n"
-        f"Start it with:\n{hint}\n"
-        f"\n"
-        f"Socket: {c.proxy_socket_path}\n"
-        f"DB:     {c.proxy_db_path}\n"
-    )
-    raise SystemExit(msg)
+
+    if not is_socket_active() and not is_daemon_running(cfg):
+        hint = (
+            "  terokctl credentials install   (systemd socket activation)\n"
+            "  terokctl credentials start      (manual daemon)"
+        )
+        raise SystemExit(
+            "Credential proxy is not running.\n"
+            "\n"
+            "The credential proxy injects real API credentials into container\n"
+            "requests without exposing secrets to the container filesystem.\n"
+            "\n"
+            f"Start it with:\n{hint}\n"
+            f"\n"
+            f"Socket: {c.proxy_socket_path}\n"
+            f"DB:     {c.proxy_db_path}\n"
+        )
+
+    # Systemd socket activation: the socket unit is active but the service
+    # may be idle.  Explicitly start the service so the TCP ports come up.
+    if is_socket_active():
+        subprocess.run(
+            ["systemctl", "--user", "start", _SERVICE_UNIT],
+            check=False,
+            timeout=10,
+        )
+
+    if not _wait_for_tcp_port(c.proxy_port):
+        raise SystemExit(
+            f"Credential proxy service started but TCP port {c.proxy_port} "
+            "is not reachable. Check: journalctl --user -u terok-credential-proxy"
+        )
