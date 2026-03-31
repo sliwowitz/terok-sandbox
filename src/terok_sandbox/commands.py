@@ -434,7 +434,7 @@ def _handle_ssh_add_key(
         if pub_text:
             print("Public key (add as deploy key):")
             print(f"  {pub_text}")
-    except Exception:
+    except Exception:  # noqa: BLE001  # nosec B110 — best-effort display
         pass
 
 
