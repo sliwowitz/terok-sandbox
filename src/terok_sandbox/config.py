@@ -62,11 +62,6 @@ class SandboxConfig:
     """DANGEROUS: when True, the egress firewall is completely disabled."""
 
     @property
-    def effective_envs_dir(self) -> Path:
-        """Return the shared agent auth mount directory."""
-        return self.credentials_dir / "envs"
-
-    @property
     def gate_base_path(self) -> Path:
         """Return the gate server's repo base path."""
         return self.state_dir / "gate"

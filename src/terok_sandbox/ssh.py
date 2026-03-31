@@ -95,7 +95,6 @@ class SSHManager:
         ssh_host_dir: Path | str | None = None,
         ssh_key_name: str | None = None,
         ssh_config_template: Path | str | None = None,
-        envs_base_dir: Path | str | None = None,
     ) -> None:
         """Initialize with plain parameters.
 
@@ -109,24 +108,16 @@ class SSHManager:
             Explicit key filename (overrides derived ``id_<type>_<id>``).
         ssh_config_template:
             Path to a user-provided SSH config template file.
-        envs_base_dir:
-            Base directory for environment data.  Falls back to
-            ``SandboxConfig().effective_envs_dir`` when not provided.
         """
         self._project_id = project_id
         self._ssh_host_dir = Path(ssh_host_dir) if ssh_host_dir else None
         self._ssh_key_name = ssh_key_name
         self._ssh_config_template = Path(ssh_config_template) if ssh_config_template else None
-        self._envs_base_dir = Path(envs_base_dir) if envs_base_dir else None
 
     @property
     def key_name(self) -> str:
         """Return the effective SSH key name."""
         return effective_ssh_key_name(self._project_id, ssh_key_name=self._ssh_key_name)
-
-    def _resolve_ssh_keys_base(self) -> Path:
-        """Return the SSH keys base directory, falling back to sandbox defaults."""
-        return self._envs_base_dir or SandboxConfig().ssh_keys_dir
 
     def init(
         self,
@@ -145,7 +136,7 @@ class SSHManager:
         if key_type not in ("ed25519", "rsa"):
             raise SystemExit("Unsupported --key-type. Use 'ed25519' or 'rsa'.")
 
-        target_dir = self._ssh_host_dir or (self._resolve_ssh_keys_base() / self._project_id)
+        target_dir = self._ssh_host_dir or (SandboxConfig().ssh_keys_dir / self._project_id)
         target_dir = Path(target_dir).expanduser().resolve()
         ensure_dir_writable(target_dir, "SSH host dir")
 
