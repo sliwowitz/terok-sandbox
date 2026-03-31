@@ -19,7 +19,7 @@ from cryptography.hazmat.primitives.serialization import (
 )
 
 from terok_sandbox.commands import _handle_ssh_add_key, _handle_ssh_import
-from terok_sandbox.ssh import _next_key_number
+from terok_sandbox.ssh import _next_key_number, generate_keypair
 
 
 @pytest.fixture()
@@ -429,3 +429,83 @@ class TestHandleSshAddKey:
         ):
             with pytest.raises(SystemExit, match="Invalid project ID"):
                 _handle_ssh_add_key(project=bad_project, name="key")
+
+    def test_invalid_key_type_exits(self, tmp_path: Path) -> None:
+        """Unsupported key type raises SystemExit."""
+        cfg = _mock_cfg(tmp_path)
+        with (
+            patch("terok_sandbox.config.SandboxConfig", return_value=cfg),
+            patch("terok_sandbox.ssh.subprocess.run", side_effect=_fake_keygen(tmp_path)),
+        ):
+            with pytest.raises(SystemExit, match="Unsupported --key-type"):
+                _handle_ssh_add_key(project="proj", name="k", key_type="dsa")
+
+    def test_permission_error_exits(self, tmp_path: Path) -> None:
+        """OSError during permission hardening raises SystemExit."""
+        cfg = _mock_cfg(tmp_path)
+        with (
+            patch("terok_sandbox.config.SandboxConfig", return_value=cfg),
+            patch("terok_sandbox.ssh.subprocess.run", side_effect=_fake_keygen(tmp_path)),
+            patch("terok_sandbox.ssh._harden_permissions", side_effect=OSError("perm denied")),
+        ):
+            with pytest.raises(SystemExit, match="Failed to set permissions"):
+                _handle_ssh_add_key(project="proj", name="k")
+
+    def test_pub_key_read_error_is_silent(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """Exception reading the public key for display does not abort."""
+        cfg = _mock_cfg(tmp_path)
+
+        def _keygen_then_remove_pub(cmd, **_kwargs):
+            _fake_keygen(tmp_path)(cmd)
+            # Remove the pub file after generation so the read fails
+            pub = Path(f"{cmd[4]}.pub")
+            pub.unlink()
+
+        with (
+            patch("terok_sandbox.config.SandboxConfig", return_value=cfg),
+            patch("terok_sandbox.ssh.subprocess.run", side_effect=_keygen_then_remove_pub),
+        ):
+            _handle_ssh_add_key(project="proj", name="k")
+
+        out = capsys.readouterr().out
+        assert "SSH key generated" in out
+        assert "Public key (add as deploy key)" not in out
+
+
+# ---------------------------------------------------------------------------
+# generate_keypair
+# ---------------------------------------------------------------------------
+
+
+class TestGenerateKeypair:
+    """Verify generate_keypair error handling."""
+
+    def test_missing_ssh_keygen_exits(self, tmp_path: Path) -> None:
+        """FileNotFoundError from missing ssh-keygen raises SystemExit."""
+        with patch("terok_sandbox.ssh.subprocess.run", side_effect=FileNotFoundError):
+            with pytest.raises(SystemExit, match="ssh-keygen not found"):
+                generate_keypair("ed25519", tmp_path / "k", tmp_path / "k.pub", "comment")
+
+    def test_ssh_keygen_failure_exits(self, tmp_path: Path) -> None:
+        """Non-zero exit from ssh-keygen raises SystemExit."""
+        import subprocess as sp
+
+        err = sp.CalledProcessError(1, "ssh-keygen")
+        with patch("terok_sandbox.ssh.subprocess.run", side_effect=err):
+            with pytest.raises(SystemExit, match="ssh-keygen failed"):
+                generate_keypair("ed25519", tmp_path / "k", tmp_path / "k.pub", "comment")
+
+    def test_removes_stale_files(self, tmp_path: Path) -> None:
+        """Stale key files are removed before generation."""
+        priv = tmp_path / "stale_key"
+        pub = tmp_path / "stale_key.pub"
+        priv.write_text("old")
+        pub.write_text("old")
+
+        with patch("terok_sandbox.ssh.subprocess.run", side_effect=_fake_keygen(tmp_path)):
+            generate_keypair("ed25519", priv, pub, "fresh")
+
+        assert priv.read_text() != "old"
+        assert pub.read_text() != "old"
