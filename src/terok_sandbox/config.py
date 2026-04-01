@@ -79,7 +79,9 @@ class SandboxConfig:
     @property
     def shield_profiles_dir(self) -> Path:
         """Return the directory for terok-managed shield profiles."""
-        return self.config_dir / "shield" / "profiles"
+        from .paths import umbrella_config_root
+
+        return umbrella_config_root() / "shield" / "profiles"
 
     @property
     def proxy_db_path(self) -> Path:
