@@ -281,18 +281,18 @@ def _make_log_handler() -> object:
 
     from terok_sandbox.gate.server import TokenStore, _make_handler_class
 
-    with tempfile.TemporaryDirectory() as td:
-        base = Path(td)
-        token_file = base / "tokens.json"
-        token_file.write_text(json.dumps({}))
-        store = TokenStore(token_file)
-        handler_class = _make_handler_class(base, store)
+    td = tempfile.mkdtemp()
+    base = Path(td)
+    token_file = base / "tokens.json"
+    token_file.write_text(json.dumps({}))
+    store = TokenStore(token_file)
+    handler_class = _make_handler_class(base, store)
 
-        handler = handler_class.__new__(handler_class)
-        handler.request = None
-        handler.client_address = LOCALHOST_PEER
-        handler.server = type("FakeServer", (), {"server_name": "localhost", "server_port": 0})()
-        return handler
+    handler = handler_class.__new__(handler_class)
+    handler.request = None
+    handler.client_address = LOCALHOST_PEER
+    handler.server = type("FakeServer", (), {"server_name": "localhost", "server_port": 0})()
+    return handler
 
 
 class TestGateHandlerLogMessage:
@@ -333,6 +333,6 @@ class TestGateHandlerLogMessage:
             # No args at all
             handler.log_message("no args")
             mock_logger.warning.assert_not_called()
-            # Non-string status
+            # Integer status (below 400) — handled gracefully via str()
             handler.log_message("%s %s", "GET /foo", 200)
             mock_logger.warning.assert_not_called()
