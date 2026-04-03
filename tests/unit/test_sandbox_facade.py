@@ -43,7 +43,6 @@ class TestRunSpec:
         """New security fields default to permissive-but-safe values."""
         spec = _make_spec()
         assert spec.unrestricted is True
-        assert spec.bypass_shield is False
 
     def test_restricted_mode(self) -> None:
         """Restricted spec carries through the frozen dataclass."""
@@ -177,7 +176,10 @@ class TestSandbox:
         assert "no-new-privileges" not in " ".join(cmd)
 
     def test_run_bypass_shield_uses_bypass_args(self) -> None:
-        """Bypass mode uses bypass_network_args instead of shield pre_start."""
+        """Bypass mode uses bypass_network_args when cfg.shield_bypass is set."""
+        from terok_sandbox.config import SandboxConfig
+
+        cfg = SandboxConfig(shield_bypass=True)
         with (
             patch("subprocess.run"),
             patch("builtins.print"),
@@ -187,8 +189,8 @@ class TestSandbox:
             ) as mock_bypass,
             patch("terok_sandbox.shield.pre_start") as mock_shield,
         ):
-            s = Sandbox()
-            s.run(_make_spec(bypass_shield=True))
+            s = Sandbox(config=cfg)
+            s.run(_make_spec())
 
         mock_bypass.assert_called_once()
         mock_shield.assert_not_called()

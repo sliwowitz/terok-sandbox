@@ -54,8 +54,7 @@ class TestHandleSshImport:
         priv_src, pub_src = keypair
         cfg = _mock_cfg(tmp_path)
 
-        with patch("terok_sandbox.config.SandboxConfig", return_value=cfg):
-            _handle_ssh_import(project="myproj", private_key=str(priv_src))
+        _handle_ssh_import(project="myproj", private_key=str(priv_src), cfg=cfg)
 
         # Files must exist in the managed directory
         dest_dir = cfg.ssh_keys_dir / "myproj"
@@ -77,8 +76,7 @@ class TestHandleSshImport:
         priv_src, _pub = keypair
         cfg = _mock_cfg(tmp_path)
 
-        with patch("terok_sandbox.config.SandboxConfig", return_value=cfg):
-            _handle_ssh_import(project="myproj", private_key=str(priv_src))
+        _handle_ssh_import(project="myproj", private_key=str(priv_src), cfg=cfg)
 
         priv_dst = cfg.ssh_keys_dir / "myproj" / priv_src.name
         assert oct(priv_dst.stat().st_mode & 0o777) == oct(0o600)
@@ -88,8 +86,9 @@ class TestHandleSshImport:
         priv_src, pub_src = keypair
         cfg = _mock_cfg(tmp_path)
 
-        with patch("terok_sandbox.config.SandboxConfig", return_value=cfg):
-            _handle_ssh_import(project="proj", private_key=str(priv_src), public_key=str(pub_src))
+        _handle_ssh_import(
+            project="proj", private_key=str(priv_src), public_key=str(pub_src), cfg=cfg
+        )
 
         pub_dst = cfg.ssh_keys_dir / "proj" / pub_src.name
         assert pub_dst.is_file()
@@ -103,8 +102,7 @@ class TestHandleSshImport:
         pub_orig = pub_src.read_text()
         cfg = _mock_cfg(tmp_path)
 
-        with patch("terok_sandbox.config.SandboxConfig", return_value=cfg):
-            _handle_ssh_import(project="proj", private_key=str(priv_src))
+        _handle_ssh_import(project="proj", private_key=str(priv_src), cfg=cfg)
 
         assert priv_src.read_bytes() == priv_orig
         assert pub_src.read_text() == pub_orig
@@ -112,18 +110,16 @@ class TestHandleSshImport:
     def test_missing_private_key_exits(self, tmp_path: Path) -> None:
         """Missing private key raises SystemExit."""
         cfg = _mock_cfg(tmp_path)
-        with patch("terok_sandbox.config.SandboxConfig", return_value=cfg):
-            with pytest.raises(SystemExit, match="not found"):
-                _handle_ssh_import(project="proj", private_key=str(tmp_path / "no-such"))
+        with pytest.raises(SystemExit, match="not found"):
+            _handle_ssh_import(project="proj", private_key=str(tmp_path / "no-such"), cfg=cfg)
 
     def test_missing_public_key_exits(self, tmp_path: Path, keypair: tuple[Path, Path]) -> None:
         """Private key exists but .pub is missing raises SystemExit."""
         priv, pub = keypair
         pub.unlink()
         cfg = _mock_cfg(tmp_path)
-        with patch("terok_sandbox.config.SandboxConfig", return_value=cfg):
-            with pytest.raises(SystemExit, match="not found"):
-                _handle_ssh_import(project="proj", private_key=str(priv))
+        with pytest.raises(SystemExit, match="not found"):
+            _handle_ssh_import(project="proj", private_key=str(priv), cfg=cfg)
 
     def test_second_key_appends(self, tmp_path: Path, keypair: tuple[Path, Path]) -> None:
         """Importing a second key for the same project appends to the list."""
@@ -140,9 +136,8 @@ class TestHandleSshImport:
         pub_raw2 = key2.public_key().public_bytes(Encoding.OpenSSH, PublicFormat.OpenSSH)
         pub2.write_text(f"{pub_raw2.decode()} alt\n")
 
-        with patch("terok_sandbox.config.SandboxConfig", return_value=cfg):
-            _handle_ssh_import(project="proj", private_key=str(priv))
-            _handle_ssh_import(project="proj", private_key=str(priv2))
+        _handle_ssh_import(project="proj", private_key=str(priv), cfg=cfg)
+        _handle_ssh_import(project="proj", private_key=str(priv2), cfg=cfg)
 
         data = json.loads(cfg.ssh_keys_json_path.read_text())
         assert len(data["proj"]) == 2
@@ -170,9 +165,8 @@ class TestHandleSshImport:
             pub_raw = key.public_key().public_bytes(Encoding.OpenSSH, PublicFormat.OpenSSH)
             pub.write_text(f"{pub_raw.decode()} comment\n")
 
-        with patch("terok_sandbox.config.SandboxConfig", return_value=cfg):
-            _handle_ssh_import(project="proj", private_key=str(src_a / "id_ed25519_proj"))
-            _handle_ssh_import(project="proj", private_key=str(src_b / "id_ed25519_proj"))
+        _handle_ssh_import(project="proj", private_key=str(src_a / "id_ed25519_proj"), cfg=cfg)
+        _handle_ssh_import(project="proj", private_key=str(src_b / "id_ed25519_proj"), cfg=cfg)
 
         data = json.loads(cfg.ssh_keys_json_path.read_text())
         assert len(data["proj"]) == 2
@@ -189,9 +183,8 @@ class TestHandleSshImport:
         priv_src, _pub = keypair
         cfg = _mock_cfg(tmp_path)
 
-        with patch("terok_sandbox.config.SandboxConfig", return_value=cfg):
-            _handle_ssh_import(project="proj", private_key=str(priv_src))
-            _handle_ssh_import(project="proj", private_key=str(priv_src))
+        _handle_ssh_import(project="proj", private_key=str(priv_src), cfg=cfg)
+        _handle_ssh_import(project="proj", private_key=str(priv_src), cfg=cfg)
 
         data = json.loads(cfg.ssh_keys_json_path.read_text())
         assert len(data["proj"]) == 1
@@ -214,9 +207,8 @@ class TestHandleSshImport:
         """Project IDs with path-traversal or invalid characters raise SystemExit."""
         priv_src, _pub = keypair
         cfg = _mock_cfg(tmp_path)
-        with patch("terok_sandbox.config.SandboxConfig", return_value=cfg):
-            with pytest.raises(SystemExit, match="Invalid project ID"):
-                _handle_ssh_import(project=bad_project, private_key=str(priv_src))
+        with pytest.raises(SystemExit, match="Invalid project ID"):
+            _handle_ssh_import(project=bad_project, private_key=str(priv_src), cfg=cfg)
 
 
 # ---------------------------------------------------------------------------
@@ -294,11 +286,8 @@ class TestHandleSshAddKey:
     ) -> None:
         """Generates a key with the given --name and correct comment."""
         cfg = _mock_cfg(tmp_path)
-        with (
-            patch("terok_sandbox.config.SandboxConfig", return_value=cfg),
-            patch("terok_sandbox.ssh.subprocess.run", side_effect=_fake_keygen(tmp_path)),
-        ):
-            _handle_ssh_add_key(project="myproj", name="deploy-gitlab")
+        with patch("terok_sandbox.ssh.subprocess.run", side_effect=_fake_keygen(tmp_path)):
+            _handle_ssh_add_key(project="myproj", name="deploy-gitlab", cfg=cfg)
 
         dest_dir = cfg.ssh_keys_dir / "myproj"
         assert (dest_dir / "id_ed25519_deploy-gitlab").is_file()
@@ -315,11 +304,8 @@ class TestHandleSshAddKey:
     def test_auto_numbering_key_1(self, tmp_path: Path) -> None:
         """Without --name, first key is key-1."""
         cfg = _mock_cfg(tmp_path)
-        with (
-            patch("terok_sandbox.config.SandboxConfig", return_value=cfg),
-            patch("terok_sandbox.ssh.subprocess.run", side_effect=_fake_keygen(tmp_path)),
-        ):
-            _handle_ssh_add_key(project="proj")
+        with patch("terok_sandbox.ssh.subprocess.run", side_effect=_fake_keygen(tmp_path)):
+            _handle_ssh_add_key(project="proj", cfg=cfg)
 
         dest_dir = cfg.ssh_keys_dir / "proj"
         assert (dest_dir / "id_ed25519_key-1").is_file()
@@ -327,12 +313,9 @@ class TestHandleSshAddKey:
     def test_auto_numbering_increments(self, tmp_path: Path) -> None:
         """Second call auto-generates key-2."""
         cfg = _mock_cfg(tmp_path)
-        with (
-            patch("terok_sandbox.config.SandboxConfig", return_value=cfg),
-            patch("terok_sandbox.ssh.subprocess.run", side_effect=_fake_keygen(tmp_path)),
-        ):
-            _handle_ssh_add_key(project="proj")
-            _handle_ssh_add_key(project="proj")
+        with patch("terok_sandbox.ssh.subprocess.run", side_effect=_fake_keygen(tmp_path)):
+            _handle_ssh_add_key(project="proj", cfg=cfg)
+            _handle_ssh_add_key(project="proj", cfg=cfg)
 
         dest_dir = cfg.ssh_keys_dir / "proj"
         assert (dest_dir / "id_ed25519_key-1").is_file()
@@ -341,11 +324,8 @@ class TestHandleSshAddKey:
     def test_rsa_key_type(self, tmp_path: Path) -> None:
         """RSA key type produces id_rsa_ filename prefix."""
         cfg = _mock_cfg(tmp_path)
-        with (
-            patch("terok_sandbox.config.SandboxConfig", return_value=cfg),
-            patch("terok_sandbox.ssh.subprocess.run", side_effect=_fake_keygen(tmp_path)),
-        ):
-            _handle_ssh_add_key(project="proj", key_type="rsa", name="my-key")
+        with patch("terok_sandbox.ssh.subprocess.run", side_effect=_fake_keygen(tmp_path)):
+            _handle_ssh_add_key(project="proj", key_type="rsa", name="my-key", cfg=cfg)
 
         assert (cfg.ssh_keys_dir / "proj" / "id_rsa_my-key").is_file()
 
@@ -358,11 +338,8 @@ class TestHandleSshAddKey:
             captured_cmds.append(list(cmd))
             _fake_keygen(tmp_path)(cmd)
 
-        with (
-            patch("terok_sandbox.config.SandboxConfig", return_value=cfg),
-            patch("terok_sandbox.ssh.subprocess.run", side_effect=_capture),
-        ):
-            _handle_ssh_add_key(project="proj", name="deploy")
+        with patch("terok_sandbox.ssh.subprocess.run", side_effect=_capture):
+            _handle_ssh_add_key(project="proj", name="deploy", cfg=cfg)
 
         assert len(captured_cmds) == 1
         args = dict(zip(captured_cmds[0][1::2], captured_cmds[0][2::2], strict=False))
@@ -375,12 +352,9 @@ class TestHandleSshAddKey:
         dest_dir.mkdir(parents=True)
         (dest_dir / "id_ed25519_my-key").touch()
 
-        with (
-            patch("terok_sandbox.config.SandboxConfig", return_value=cfg),
-            patch("terok_sandbox.ssh.subprocess.run", side_effect=_fake_keygen(tmp_path)),
-        ):
+        with patch("terok_sandbox.ssh.subprocess.run", side_effect=_fake_keygen(tmp_path)):
             with pytest.raises(SystemExit, match="already exists"):
-                _handle_ssh_add_key(project="proj", name="my-key")
+                _handle_ssh_add_key(project="proj", name="my-key", cfg=cfg)
 
     def test_existing_pub_key_refuses_overwrite(self, tmp_path: Path) -> None:
         """A lone .pub file also prevents generation."""
@@ -389,21 +363,15 @@ class TestHandleSshAddKey:
         dest_dir.mkdir(parents=True)
         (dest_dir / "id_ed25519_my-key.pub").touch()
 
-        with (
-            patch("terok_sandbox.config.SandboxConfig", return_value=cfg),
-            patch("terok_sandbox.ssh.subprocess.run", side_effect=_fake_keygen(tmp_path)),
-        ):
+        with patch("terok_sandbox.ssh.subprocess.run", side_effect=_fake_keygen(tmp_path)):
             with pytest.raises(SystemExit, match="already exists"):
-                _handle_ssh_add_key(project="proj", name="my-key")
+                _handle_ssh_add_key(project="proj", name="my-key", cfg=cfg)
 
     def test_registers_in_ssh_keys_json(self, tmp_path: Path) -> None:
         """Generated key is registered in ssh-keys.json."""
         cfg = _mock_cfg(tmp_path)
-        with (
-            patch("terok_sandbox.config.SandboxConfig", return_value=cfg),
-            patch("terok_sandbox.ssh.subprocess.run", side_effect=_fake_keygen(tmp_path)),
-        ):
-            _handle_ssh_add_key(project="proj", name="extra")
+        with patch("terok_sandbox.ssh.subprocess.run", side_effect=_fake_keygen(tmp_path)):
+            _handle_ssh_add_key(project="proj", name="extra", cfg=cfg)
 
         data = json.loads(cfg.ssh_keys_json_path.read_text())
         entry = data["proj"][0]
@@ -414,22 +382,16 @@ class TestHandleSshAddKey:
     def test_invalid_name_exits(self, tmp_path: Path, bad_name: str) -> None:
         """Names with invalid characters raise SystemExit."""
         cfg = _mock_cfg(tmp_path)
-        with (
-            patch("terok_sandbox.config.SandboxConfig", return_value=cfg),
-            patch("terok_sandbox.ssh.subprocess.run", side_effect=_fake_keygen(tmp_path)),
-        ):
+        with patch("terok_sandbox.ssh.subprocess.run", side_effect=_fake_keygen(tmp_path)):
             with pytest.raises(SystemExit, match="Invalid key name"):
-                _handle_ssh_add_key(project="proj", name=bad_name)
+                _handle_ssh_add_key(project="proj", name=bad_name, cfg=cfg)
 
     @pytest.mark.parametrize("good_name", ["deploy", "my-key", "DEPLOY", "my_key", "_private"])
     def test_valid_name_accepted(self, tmp_path: Path, good_name: str) -> None:
         """Alphanumeric, underscores, and hyphens are accepted."""
         cfg = _mock_cfg(tmp_path)
-        with (
-            patch("terok_sandbox.config.SandboxConfig", return_value=cfg),
-            patch("terok_sandbox.ssh.subprocess.run", side_effect=_fake_keygen(tmp_path)),
-        ):
-            _handle_ssh_add_key(project="proj", name=good_name)
+        with patch("terok_sandbox.ssh.subprocess.run", side_effect=_fake_keygen(tmp_path)):
+            _handle_ssh_add_key(project="proj", name=good_name, cfg=cfg)
 
         assert (cfg.ssh_keys_dir / "proj" / f"id_ed25519_{good_name}").is_file()
 
@@ -440,33 +402,26 @@ class TestHandleSshAddKey:
     def test_invalid_project_exits(self, tmp_path: Path, bad_project: str) -> None:
         """Invalid project IDs raise SystemExit."""
         cfg = _mock_cfg(tmp_path)
-        with (
-            patch("terok_sandbox.config.SandboxConfig", return_value=cfg),
-            patch("terok_sandbox.ssh.subprocess.run", side_effect=_fake_keygen(tmp_path)),
-        ):
+        with patch("terok_sandbox.ssh.subprocess.run", side_effect=_fake_keygen(tmp_path)):
             with pytest.raises(SystemExit, match="Invalid project ID"):
-                _handle_ssh_add_key(project=bad_project, name="key")
+                _handle_ssh_add_key(project=bad_project, name="key", cfg=cfg)
 
     def test_invalid_key_type_exits(self, tmp_path: Path) -> None:
         """Unsupported key type raises SystemExit."""
         cfg = _mock_cfg(tmp_path)
-        with (
-            patch("terok_sandbox.config.SandboxConfig", return_value=cfg),
-            patch("terok_sandbox.ssh.subprocess.run", side_effect=_fake_keygen(tmp_path)),
-        ):
+        with patch("terok_sandbox.ssh.subprocess.run", side_effect=_fake_keygen(tmp_path)):
             with pytest.raises(SystemExit, match="Unsupported --key-type"):
-                _handle_ssh_add_key(project="proj", name="k", key_type="dsa")
+                _handle_ssh_add_key(project="proj", name="k", key_type="dsa", cfg=cfg)
 
     def test_permission_error_exits(self, tmp_path: Path) -> None:
         """OSError during permission hardening raises SystemExit."""
         cfg = _mock_cfg(tmp_path)
         with (
-            patch("terok_sandbox.config.SandboxConfig", return_value=cfg),
             patch("terok_sandbox.ssh.subprocess.run", side_effect=_fake_keygen(tmp_path)),
             patch("terok_sandbox.ssh._harden_permissions", side_effect=OSError("perm denied")),
         ):
             with pytest.raises(SystemExit, match="Failed to set permissions"):
-                _handle_ssh_add_key(project="proj", name="k")
+                _handle_ssh_add_key(project="proj", name="k", cfg=cfg)
 
     def test_pub_key_read_error_is_silent(
         self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
@@ -480,11 +435,8 @@ class TestHandleSshAddKey:
             pub = Path(f"{cmd[4]}.pub")
             pub.unlink()
 
-        with (
-            patch("terok_sandbox.config.SandboxConfig", return_value=cfg),
-            patch("terok_sandbox.ssh.subprocess.run", side_effect=_keygen_then_remove_pub),
-        ):
-            _handle_ssh_add_key(project="proj", name="k")
+        with patch("terok_sandbox.ssh.subprocess.run", side_effect=_keygen_then_remove_pub):
+            _handle_ssh_add_key(project="proj", name="k", cfg=cfg)
 
         out = capsys.readouterr().out
         assert "SSH key generated" in out

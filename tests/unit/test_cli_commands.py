@@ -126,6 +126,24 @@ class TestShieldCLI:
         assert "enabled" in out
 
 
+class TestHandlerCfgSignatures:
+    """All command handlers in config-injected groups accept a ``cfg`` keyword argument."""
+
+    def test_gate_handlers_accept_cfg(self) -> None:
+        import inspect
+
+        for cmd in GATE_COMMANDS:
+            sig = inspect.signature(cmd.handler)
+            assert "cfg" in sig.parameters, f"{cmd.handler.__name__} missing cfg param"
+
+    def test_ssh_handlers_accept_cfg(self) -> None:
+        import inspect
+
+        for cmd in SSH_COMMANDS:
+            sig = inspect.signature(cmd.handler)
+            assert "cfg" in sig.parameters, f"{cmd.handler.__name__} missing cfg param"
+
+
 class TestGateCLI:
     """Verify gate subcommand dispatch."""
 
