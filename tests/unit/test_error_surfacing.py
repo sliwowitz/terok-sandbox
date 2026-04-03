@@ -187,6 +187,7 @@ class TestGetUpstreamHead:
         assert result is not None
         assert result["commit_hash"] == "abc123def456"
         assert result["ref_name"] == "refs/heads/main"
+        assert result["upstream_url"] == "git@example.com:repo.git"
 
 
 class TestGetGateBranchHead:
