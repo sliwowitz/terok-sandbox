@@ -261,7 +261,7 @@ def install_systemd_units(cfg: SandboxConfig | None = None) -> None:
     )
 
 
-def uninstall_systemd_units() -> None:
+def uninstall_systemd_units(cfg: SandboxConfig | None = None) -> None:  # noqa: ARG001
     """Disable+stop the socket and remove unit files."""
     unit_dir = _systemd_unit_dir()
 

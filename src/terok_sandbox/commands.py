@@ -20,6 +20,8 @@ from typing import TYPE_CHECKING, Any
 if TYPE_CHECKING:
     from collections.abc import Callable
 
+    from .config import SandboxConfig
+
 
 @dataclass(frozen=True)
 class ArgDef:
@@ -59,44 +61,46 @@ class CommandDef:
 # ---------------------------------------------------------------------------
 
 
-def _handle_gate_start(*, port: int | None = None, daemon: bool = False) -> None:
+def _handle_gate_start(
+    *, port: int | None = None, daemon: bool = False, cfg: SandboxConfig | None = None
+) -> None:
     """Start the gate server (systemd preferred, daemon fallback)."""
     from .gate_server import install_systemd_units, is_systemd_available, start_daemon
 
     if is_systemd_available() and not daemon:
-        install_systemd_units()
+        install_systemd_units(cfg=cfg)
         print("Gate server started via systemd socket activation.")
     else:
-        start_daemon(port=port)
+        start_daemon(port=port, cfg=cfg)
         print("Gate server daemon started.")
 
 
-def _handle_gate_stop() -> None:
+def _handle_gate_stop(*, cfg: SandboxConfig | None = None) -> None:
     """Stop the gate server."""
     from .gate_server import get_server_status, stop_daemon, uninstall_systemd_units
 
-    status = get_server_status()
+    status = get_server_status(cfg=cfg)
     if status.mode == "systemd":
-        uninstall_systemd_units()
+        uninstall_systemd_units(cfg=cfg)
         print("Gate server systemd units removed.")
     elif status.mode == "daemon":
-        stop_daemon()
+        stop_daemon(cfg=cfg)
         print("Gate server daemon stopped.")
     else:
         print("Gate server is not running.")
 
 
-def _handle_gate_status() -> None:
+def _handle_gate_status(*, cfg: SandboxConfig | None = None) -> None:
     """Show gate server status."""
     from .gate_server import check_units_outdated, get_gate_base_path, get_server_status
 
-    status = get_server_status()
+    status = get_server_status(cfg=cfg)
     print(f"Mode:      {status.mode}")
     print(f"Running:   {'yes' if status.running else 'no'}")
     print(f"Port:      {status.port}")
-    print(f"Base path: {get_gate_base_path()}")
+    print(f"Base path: {get_gate_base_path(cfg=cfg)}")
 
-    warning = check_units_outdated()
+    warning = check_units_outdated(cfg=cfg)
     if warning:
         import sys
 
@@ -285,14 +289,20 @@ PROXY_COMMANDS: tuple[CommandDef, ...] = (
 # ---------------------------------------------------------------------------
 
 
-def _handle_ssh_import(*, project: str, private_key: str, public_key: str | None = None) -> None:
+def _handle_ssh_import(
+    *,
+    project: str,
+    private_key: str,
+    public_key: str | None = None,
+    cfg: SandboxConfig | None = None,
+) -> None:
     """Copy an SSH keypair into the managed key store and register it in ssh-keys.json."""
     import os
     import re
     import shutil
     from pathlib import Path
 
-    from .config import SandboxConfig
+    from .config import SandboxConfig as _SandboxConfig
     from .ssh import SSHInitResult, update_ssh_keys_json
 
     if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*", project):
@@ -311,7 +321,8 @@ def _handle_ssh_import(*, project: str, private_key: str, public_key: str | None
             f"Public key not found: {pub_src} (use --public-key to specify explicitly)"
         )
 
-    cfg = SandboxConfig()
+    if cfg is None:
+        cfg = _SandboxConfig()
     dest_dir = cfg.ssh_keys_dir / project
     dest_dir.mkdir(parents=True, exist_ok=True)
 
@@ -361,11 +372,12 @@ def _handle_ssh_add_key(
     project: str,
     name: str | None = None,
     key_type: str = "ed25519",
+    cfg: SandboxConfig | None = None,
 ) -> None:
     """Generate a new SSH keypair and register it for a project."""
     import re
 
-    from .config import SandboxConfig
+    from .config import SandboxConfig as _SandboxConfig
     from .ssh import (
         SSHInitResult,
         _harden_permissions,
@@ -383,7 +395,8 @@ def _handle_ssh_add_key(
         raise SystemExit("Unsupported --key-type. Use 'ed25519' or 'rsa'.")
 
     algo = "ed25519" if key_type == "ed25519" else "rsa"
-    cfg = SandboxConfig()
+    if cfg is None:
+        cfg = _SandboxConfig()
     dest_dir = cfg.ssh_keys_dir / project
     dest_dir.mkdir(parents=True, exist_ok=True)
 

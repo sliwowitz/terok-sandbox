@@ -86,9 +86,6 @@ class RunSpec:
     unrestricted: bool = True
     """When False, adds ``--security-opt no-new-privileges``."""
 
-    bypass_shield: bool = False
-    """Skip the egress firewall entirely — dangerous fallback."""
-
 
 # ---------------------------------------------------------------------------
 # Facade
@@ -181,8 +178,8 @@ class Sandbox:
         if not spec.unrestricted:
             cmd += ["--security-opt", "no-new-privileges"]
 
-        if spec.bypass_shield:
-            print("\n!! SHIELD BYPASSED — egress firewall DISABLED (bypass_shield is set) !!\n")
+        if self._cfg.shield_bypass:
+            print("\n!! SHIELD BYPASSED — egress firewall DISABLED (shield_bypass is set) !!\n")
             cmd += bypass_network_args(self._cfg.gate_port)
         else:
             try:
