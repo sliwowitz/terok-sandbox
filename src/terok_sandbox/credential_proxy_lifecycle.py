@@ -7,9 +7,10 @@ Manages the ``terok-credential-proxy`` daemon: start, stop, status, and
 pre-task health checks.  Supports systemd socket activation (preferred)
 and a manual daemon fallback.
 
-**No auto-start.**  Task creation checks reachability via
-:func:`ensure_proxy_reachable` and fails with an actionable error
-rather than silently starting a daemon.
+The systemd socket unit listens on both the Unix socket and the TCP
+port used by containers.  A connection to either triggers the service.
+:func:`ensure_proxy_reachable` also performs an explicit start as a
+belt-and-suspenders measure before task creation.
 """
 
 from __future__ import annotations
@@ -86,7 +87,7 @@ def _is_managed_proxy(pid: int, cfg: SandboxConfig | None = None) -> bool:
 
 # ---------- Systemd helpers ----------
 
-_UNIT_VERSION = 3
+_UNIT_VERSION = 4
 """Bump when the systemd unit templates change."""
 
 _SOCKET_UNIT = "terok-credential-proxy.socket"
@@ -126,6 +127,25 @@ def is_socket_active() -> bool:
     try:
         result = subprocess.run(
             ["systemctl", "--user", "is-active", _SOCKET_UNIT],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        return result.stdout.strip() == "active"
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        return False
+
+
+def is_service_active() -> bool:
+    """Check whether the ``terok-credential-proxy.service`` unit is active.
+
+    Unlike :func:`is_socket_active`, this tells whether the proxy daemon
+    itself is running (TCP ports bound), not just whether the socket is
+    listening.  Does not trigger socket activation.
+    """
+    try:
+        result = subprocess.run(
+            ["systemctl", "--user", "is-active", _SERVICE_UNIT],
             capture_output=True,
             text=True,
             timeout=5,
@@ -424,8 +444,8 @@ def get_proxy_status(cfg: SandboxConfig | None = None) -> CredentialProxyStatus:
     # operators see the correct activation path and don't get mixed signals.
     if is_socket_installed():
         mode = "systemd"
-        running = is_socket_active()
-        healthy = running  # avoid triggering socket activation with a probe
+        running = is_service_active()
+        healthy = _probe_proxy(c.proxy_port) if running else False
     elif is_daemon_running(cfg):
         mode = "daemon"
         running = True

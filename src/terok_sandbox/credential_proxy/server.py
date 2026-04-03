@@ -36,6 +36,7 @@ import asyncio
 import json
 import logging
 import signal
+import socket
 import sqlite3
 import time
 from pathlib import Path
@@ -406,21 +407,27 @@ def _build_app(db_path: str, routes_path: str) -> web.Application:
     return app
 
 
-def _systemd_socket():
-    """Return the inherited socket from systemd activation, or ``None``.
+def _systemd_sockets() -> tuple[socket.socket | None, socket.socket | None]:
+    """Return ``(unix_sock, tcp_sock)`` inherited from systemd, or ``(None, None)``.
 
-    Implements the ``sd_listen_fds(3)`` protocol: if ``LISTEN_FDS=1`` and
-    ``LISTEN_PID`` matches the current process, file descriptor 3 is an
-    already-listening socket passed by systemd.
+    Implements the ``sd_listen_fds(3)`` protocol.  The socket unit
+    declares two ``ListenStream=`` entries (Unix path first, TCP port
+    second), so systemd passes file descriptors 3 and 4 respectively
+    when ``LISTEN_FDS=2``.
     """
     import os
-    import socket as _socket
 
-    if os.environ.get("LISTEN_FDS") == "1" and os.environ.get("LISTEN_PID") == str(os.getpid()):
-        sock = _socket.socket(fileno=3)
-        sock.setblocking(False)
-        return sock
-    return None
+    if os.environ.get("LISTEN_PID") != str(os.getpid()):
+        return None, None
+
+    if os.environ.get("LISTEN_FDS") != "2":
+        return None, None
+
+    unix_sock = socket.socket(fileno=3)
+    unix_sock.setblocking(False)
+    tcp_sock = socket.socket(fileno=4)
+    tcp_sock.setblocking(False)
+    return unix_sock, tcp_sock
 
 
 async def _run_multi(
@@ -441,10 +448,10 @@ async def _run_multi(
     await runner.setup()
     ssh_server = None
     try:
-        sd_sock = _systemd_socket()
-        if sd_sock:
-            _logger.info("Using systemd-inherited socket")
-            await SockSite(runner, sd_sock).start()
+        sd_unix, sd_tcp = _systemd_sockets()
+        if sd_unix:
+            _logger.info("Using systemd-inherited Unix socket")
+            await SockSite(runner, sd_unix).start()
         else:
             path = Path(sock_path)
             try:
@@ -470,7 +477,10 @@ async def _run_multi(
             _logger.info("Listening on %s", path)
             await UnixSite(runner, str(path)).start()
 
-        if port is not None:
+        if sd_tcp:
+            _logger.info("Using systemd-inherited TCP socket")
+            await SockSite(runner, sd_tcp).start()
+        elif port is not None:
             _logger.info("Listening on 127.0.0.1:%d", port)
             await TCPSite(runner, "127.0.0.1", port).start()
 

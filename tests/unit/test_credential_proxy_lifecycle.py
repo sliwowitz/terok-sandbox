@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import os
+import subprocess
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -23,6 +24,7 @@ from terok_sandbox.credential_proxy_lifecycle import (
     get_proxy_status,
     install_systemd_units,
     is_daemon_running,
+    is_service_active,
     is_socket_active,
     is_socket_installed,
     is_systemd_available,
@@ -479,21 +481,56 @@ class TestSystemdHelpers:
         with patch("subprocess.run", side_effect=FileNotFoundError):
             assert is_socket_active() is False
 
+    def test_is_service_active_true(self) -> None:
+        """Returns True when the service unit is active."""
+        result = MagicMock(stdout="active\n")
+        with patch("subprocess.run", return_value=result):
+            assert is_service_active() is True
+
+    def test_is_service_active_false(self) -> None:
+        """Returns False when the service unit is inactive."""
+        result = MagicMock(stdout="inactive\n")
+        with patch("subprocess.run", return_value=result):
+            assert is_service_active() is False
+
+    def test_is_service_active_no_systemctl(self) -> None:
+        """Returns False when systemctl is not found."""
+        with patch("subprocess.run", side_effect=FileNotFoundError):
+            assert is_service_active() is False
+
+    def test_is_service_active_timeout(self) -> None:
+        """Returns False on systemctl timeout."""
+        with patch("subprocess.run", side_effect=subprocess.TimeoutExpired("cmd", 5)):
+            assert is_service_active() is False
+
 
 class TestGetProxyStatusModes:
     """Verify mode detection and health probing in get_proxy_status."""
 
-    def test_systemd_mode_when_socket_installed(self, tmp_path: Path) -> None:
-        """Reports mode='systemd' and healthy=True when socket is active."""
+    def test_systemd_mode_service_active(self, tmp_path: Path) -> None:
+        """Reports running=True only when the service unit is active."""
         cfg = _make_cfg(tmp_path)
         with (
             patch(f"{_LIFECYCLE}.is_socket_installed", return_value=True),
-            patch(f"{_LIFECYCLE}.is_socket_active", return_value=True),
+            patch(f"{_LIFECYCLE}.is_service_active", return_value=True),
+            patch(f"{_LIFECYCLE}._probe_proxy", return_value=True),
         ):
             status = get_proxy_status(cfg)
         assert status.mode == "systemd"
         assert status.running is True
         assert status.healthy is True
+
+    def test_systemd_mode_service_idle(self, tmp_path: Path) -> None:
+        """Reports running=False when socket is installed but service is idle."""
+        cfg = _make_cfg(tmp_path)
+        with (
+            patch(f"{_LIFECYCLE}.is_socket_installed", return_value=True),
+            patch(f"{_LIFECYCLE}.is_service_active", return_value=False),
+        ):
+            status = get_proxy_status(cfg)
+        assert status.mode == "systemd"
+        assert status.running is False
+        assert status.healthy is False
 
     def test_daemon_mode_healthy(self, tmp_path: Path) -> None:
         """Reports mode='daemon' and healthy=True when health probe succeeds."""
@@ -533,17 +570,31 @@ class TestGetProxyStatusModes:
         assert status.running is False
         assert status.healthy is False
 
-    def test_systemd_mode_inactive_socket(self, tmp_path: Path) -> None:
-        """Reports healthy=False when socket is installed but inactive."""
+    def test_systemd_mode_service_active_but_unhealthy(self, tmp_path: Path) -> None:
+        """Reports running=True but healthy=False when service is up but probe fails."""
         cfg = _make_cfg(tmp_path)
         with (
             patch(f"{_LIFECYCLE}.is_socket_installed", return_value=True),
-            patch(f"{_LIFECYCLE}.is_socket_active", return_value=False),
+            patch(f"{_LIFECYCLE}.is_service_active", return_value=True),
+            patch(f"{_LIFECYCLE}._probe_proxy", return_value=False),
         ):
             status = get_proxy_status(cfg)
         assert status.mode == "systemd"
-        assert status.running is False
+        assert status.running is True
         assert status.healthy is False
+
+    def test_systemd_mode_falls_back_to_daemon(self, tmp_path: Path) -> None:
+        """When socket installed but service idle, daemon running is not consulted."""
+        cfg = _make_cfg(tmp_path)
+        with (
+            patch(f"{_LIFECYCLE}.is_socket_installed", return_value=True),
+            patch(f"{_LIFECYCLE}.is_service_active", return_value=False),
+            patch(f"{_LIFECYCLE}.is_daemon_running", return_value=True),
+        ):
+            status = get_proxy_status(cfg)
+        # Systemd takes precedence — daemon state is irrelevant
+        assert status.mode == "systemd"
+        assert status.running is False
 
 
 class TestProbeProxy:
@@ -629,6 +680,23 @@ class TestInstallSystemdUnits:
         assert ["systemctl", "--user", "daemon-reload"] in calls
         assert any("enable" in c and "--now" in c for c in calls)
         assert any("restart" in c for c in calls)
+
+    def test_socket_unit_has_both_listen_streams(self, tmp_path: Path) -> None:
+        """Socket unit declares both Unix socket and TCP port ListenStream entries."""
+        cfg = _make_cfg(tmp_path)
+        unit_dir = tmp_path / "systemd-units"
+        with (
+            patch(f"{_LIFECYCLE}._systemd_unit_dir", return_value=unit_dir),
+            patch("subprocess.run"),
+        ):
+            install_systemd_units(cfg)
+        socket_unit = (unit_dir / "terok-credential-proxy.socket").read_text()
+        listen_lines = [
+            line.strip() for line in socket_unit.splitlines() if line.startswith("ListenStream")
+        ]
+        assert len(listen_lines) == 2
+        assert any(str(cfg.proxy_socket_path) in entry for entry in listen_lines)
+        assert any(f"127.0.0.1:{cfg.proxy_port}" in entry for entry in listen_lines)
 
 
 class TestUninstallSystemdUnits:
