@@ -570,17 +570,31 @@ class TestGetProxyStatusModes:
         assert status.running is False
         assert status.healthy is False
 
-    def test_systemd_mode_inactive_socket(self, tmp_path: Path) -> None:
-        """Reports healthy=False when socket is installed but inactive."""
+    def test_systemd_mode_service_active_but_unhealthy(self, tmp_path: Path) -> None:
+        """Reports running=True but healthy=False when service is up but probe fails."""
         cfg = _make_cfg(tmp_path)
         with (
             patch(f"{_LIFECYCLE}.is_socket_installed", return_value=True),
-            patch(f"{_LIFECYCLE}.is_socket_active", return_value=False),
+            patch(f"{_LIFECYCLE}.is_service_active", return_value=True),
+            patch(f"{_LIFECYCLE}._probe_proxy", return_value=False),
         ):
             status = get_proxy_status(cfg)
         assert status.mode == "systemd"
-        assert status.running is False
+        assert status.running is True
         assert status.healthy is False
+
+    def test_systemd_mode_falls_back_to_daemon(self, tmp_path: Path) -> None:
+        """When socket installed but service idle, daemon running is not consulted."""
+        cfg = _make_cfg(tmp_path)
+        with (
+            patch(f"{_LIFECYCLE}.is_socket_installed", return_value=True),
+            patch(f"{_LIFECYCLE}.is_service_active", return_value=False),
+            patch(f"{_LIFECYCLE}.is_daemon_running", return_value=True),
+        ):
+            status = get_proxy_status(cfg)
+        # Systemd takes precedence — daemon state is irrelevant
+        assert status.mode == "systemd"
+        assert status.running is False
 
 
 class TestProbeProxy:
