@@ -210,6 +210,19 @@ class TestHandleSshImport:
         with pytest.raises(SystemExit, match="Invalid project ID"):
             _handle_ssh_import(project=bad_project, private_key=str(priv_src), cfg=cfg)
 
+    def test_standalone_fallback_without_cfg(
+        self, tmp_path: Path, keypair: tuple[Path, Path]
+    ) -> None:
+        """Handler creates SandboxConfig internally when cfg=None (standalone)."""
+        priv_src, _pub = keypair
+        cfg = _mock_cfg(tmp_path)
+
+        with patch("terok_sandbox.config.SandboxConfig", return_value=cfg):
+            _handle_ssh_import(project="proj", private_key=str(priv_src))
+
+        dest_dir = cfg.ssh_keys_dir / "proj"
+        assert (dest_dir / priv_src.name).is_file()
+
 
 # ---------------------------------------------------------------------------
 # _next_key_number
@@ -441,6 +454,17 @@ class TestHandleSshAddKey:
         out = capsys.readouterr().out
         assert "SSH key generated" in out
         assert "Public key (add as deploy key)" not in out
+
+    def test_standalone_fallback_without_cfg(self, tmp_path: Path) -> None:
+        """Handler creates SandboxConfig internally when cfg=None (standalone)."""
+        cfg = _mock_cfg(tmp_path)
+        with (
+            patch("terok_sandbox.config.SandboxConfig", return_value=cfg),
+            patch("terok_sandbox.ssh.subprocess.run", side_effect=_fake_keygen(tmp_path)),
+        ):
+            _handle_ssh_add_key(project="proj", name="standalone")
+
+        assert (cfg.ssh_keys_dir / "proj" / "id_ed25519_standalone").is_file()
 
 
 # ---------------------------------------------------------------------------

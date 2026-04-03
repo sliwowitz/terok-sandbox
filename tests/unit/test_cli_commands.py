@@ -175,6 +175,8 @@ class TestGateHandlerCfgPassthrough:
 
     def test_gate_stop_systemd_passes_cfg(self) -> None:
         """_handle_gate_stop propagates cfg through the systemd branch."""
+        from unittest.mock import sentinel
+
         from terok_sandbox.commands import _handle_gate_stop
         from terok_sandbox.gate_server import GateServerStatus
 
@@ -183,9 +185,9 @@ class TestGateHandlerCfgPassthrough:
             patch("terok_sandbox.gate_server.get_server_status", return_value=mock_status) as m_st,
             patch("terok_sandbox.gate_server.uninstall_systemd_units") as m_uninstall,
         ):
-            _handle_gate_stop(cfg=mock_status)
-        m_st.assert_called_once_with(cfg=mock_status)
-        m_uninstall.assert_called_once_with(cfg=mock_status)
+            _handle_gate_stop(cfg=sentinel.CFG)
+        m_st.assert_called_once_with(cfg=sentinel.CFG)
+        m_uninstall.assert_called_once_with(cfg=sentinel.CFG)
 
     def test_gate_stop_daemon_passes_cfg(self) -> None:
         """_handle_gate_stop propagates cfg through the daemon branch."""
