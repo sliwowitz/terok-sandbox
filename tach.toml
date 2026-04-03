@@ -147,6 +147,7 @@ depends_on = [
     "terok_sandbox.commands",
     "terok_sandbox.config",
     "terok_sandbox.credential_db",
+    "terok_sandbox.credential_proxy",
     "terok_sandbox.credential_proxy_lifecycle",
     "terok_sandbox.gate_server",
     "terok_sandbox.gate_tokens",

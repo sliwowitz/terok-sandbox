@@ -179,6 +179,10 @@ async def _handle_request(request: web.Request) -> web.StreamResponse:
         from .constants import PHANTOM_CREDENTIALS_MARKER
 
         if phantom == PHANTOM_CREDENTIALS_MARKER:
+            # Hardcoded to credential_set="default" — Claude OAuth is a
+            # shared credential, per-project credential sets are not
+            # supported for this path.
+            _logger.debug("Accepting static phantom marker for Claude OAuth")
             token_info = {
                 "project": "__static__",
                 "task": "__static__",
