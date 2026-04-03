@@ -502,7 +502,15 @@ SSH_COMMANDS: tuple[CommandDef, ...] = (
 
 
 def _handle_doctor(*, cfg: SandboxConfig | None = None) -> None:
-    """Run sandbox-level health checks and print results."""
+    """Run sandbox-level health checks and print results.
+
+    This is the standalone host-side doctor — it runs on the host, not
+    inside a container.  For non-host_side checks (network probes), we
+    execute the probe_cmd directly via subprocess instead of ``podman exec``.
+    For host_side checks (e.g. shield), we delegate to ``evaluate`` which
+    performs the check itself using Python APIs.
+    """
+    import subprocess
     import sys
 
     from .config import SandboxConfig as _SandboxConfig
@@ -519,8 +527,26 @@ def _handle_doctor(*, cfg: SandboxConfig | None = None) -> None:
     worst = "ok"
     markers = {"ok": "ok", "warn": "WARN", "error": "ERROR"}
     for check in checks:
-        # Evaluate with empty probe output (standalone = no container)
-        verdict = check.evaluate(0, "", "")
+        if check.host_side:
+            # Host-side checks perform the check inside evaluate() itself.
+            verdict = check.evaluate(0, "", "")
+        elif check.probe_cmd:
+            # Non-host_side checks: run probe_cmd directly on the host
+            # (the command targets host.containers.internal which resolves
+            # to localhost when not inside a container, so we rewrite to
+            # localhost for standalone execution).
+            try:
+                result = subprocess.run(  # noqa: S603
+                    check.probe_cmd,
+                    capture_output=True,
+                    text=True,
+                    timeout=5,
+                )
+                verdict = check.evaluate(result.returncode, result.stdout, result.stderr)
+            except (FileNotFoundError, subprocess.TimeoutExpired):
+                verdict = check.evaluate(1, "", "probe command unavailable or timed out")
+        else:
+            verdict = check.evaluate(0, "", "")
         tag = markers.get(verdict.severity, verdict.severity)
         print(f"  {check.label} .... {tag} ({verdict.detail})")
         if verdict.severity == "error" or worst == "error":

@@ -44,6 +44,18 @@ class DoctorCheck:
     orchestrator.  The ``evaluate`` callable interprets the result.
     If ``fix_cmd`` is set, the orchestrator may offer it when the check
     fails with ``fixable=True``.
+
+    **Dual execution modes:**
+
+    - *Container mode* (``host_side=False``): the orchestrator runs
+      ``probe_cmd`` via ``podman exec`` and passes the result to
+      ``evaluate``.  The standalone ``doctor`` command runs the same
+      ``probe_cmd`` directly via ``subprocess`` on the host.
+    - *Host-side mode* (``host_side=True``): the orchestrator bypasses
+      ``probe_cmd`` entirely and performs the check via Python APIs
+      (e.g. ``make_shield``), then passes resolved state to ``evaluate``.
+      The standalone ``doctor`` command calls ``evaluate(0, "", "")`` and
+      the function performs the check itself or reports a neutral result.
     """
 
     category: str
@@ -86,7 +98,7 @@ def _make_proxy_check(proxy_port: int) -> DoctorCheck:
             return CheckVerdict("ok", f"proxy reachable at port {proxy_port}")
         return CheckVerdict(
             "error",
-            f"proxy unreachable at {url} — check 'terok sickbay' on host",
+            f"proxy unreachable at {url} — check host proxy status",
         )
 
     return DoctorCheck(
@@ -135,7 +147,13 @@ def _make_shield_check(desired_state: str | None) -> DoctorCheck:
     _desired = desired_state
 
     def _eval(rc: int, stdout: str, stderr: str) -> CheckVerdict:
-        """Compare actual shield state (passed via stdout) against desired."""
+        """Compare actual shield state against desired.
+
+        In orchestrated mode (terok's ``container_doctor``), the caller
+        resolves the actual state via ``_check_shield_state()`` and passes
+        it as *stdout*.  In standalone mode, *stdout* is empty and the
+        function returns a neutral verdict when no desired state is set.
+        """
         actual = stdout.strip() if stdout else ""
         if _desired is None:
             return CheckVerdict("ok", "no desired state configured — shield not managed")

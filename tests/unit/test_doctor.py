@@ -110,7 +110,15 @@ class TestSSHAgentCheck:
 
 
 class TestShieldCheck:
-    """Shield state verification check."""
+    """Shield state verification check.
+
+    These tests exercise the ``evaluate`` callable in isolation by passing
+    state strings via the *stdout* parameter.  This matches how the
+    orchestrator (terok's ``container_doctor``) calls evaluate after
+    resolving the actual shield state on the host.  The host_side flag
+    means the orchestrator bypasses ``podman exec`` — it does NOT mean
+    the evaluate function itself performs a side-effect.
+    """
 
     def test_no_desired_state(self) -> None:
         check = _make_shield_check(None)
