@@ -483,17 +483,30 @@ class TestSystemdHelpers:
 class TestGetProxyStatusModes:
     """Verify mode detection and health probing in get_proxy_status."""
 
-    def test_systemd_mode_when_socket_installed(self, tmp_path: Path) -> None:
-        """Reports mode='systemd' and healthy=True when socket is active."""
+    def test_systemd_mode_service_active(self, tmp_path: Path) -> None:
+        """Reports running=True only when the service unit is active."""
         cfg = _make_cfg(tmp_path)
         with (
             patch(f"{_LIFECYCLE}.is_socket_installed", return_value=True),
-            patch(f"{_LIFECYCLE}.is_socket_active", return_value=True),
+            patch(f"{_LIFECYCLE}.is_service_active", return_value=True),
+            patch(f"{_LIFECYCLE}._probe_proxy", return_value=True),
         ):
             status = get_proxy_status(cfg)
         assert status.mode == "systemd"
         assert status.running is True
         assert status.healthy is True
+
+    def test_systemd_mode_service_idle(self, tmp_path: Path) -> None:
+        """Reports running=False when socket is installed but service is idle."""
+        cfg = _make_cfg(tmp_path)
+        with (
+            patch(f"{_LIFECYCLE}.is_socket_installed", return_value=True),
+            patch(f"{_LIFECYCLE}.is_service_active", return_value=False),
+        ):
+            status = get_proxy_status(cfg)
+        assert status.mode == "systemd"
+        assert status.running is False
+        assert status.healthy is False
 
     def test_daemon_mode_healthy(self, tmp_path: Path) -> None:
         """Reports mode='daemon' and healthy=True when health probe succeeds."""
