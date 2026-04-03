@@ -296,6 +296,86 @@ def _make_log_handler() -> object:
     return handler
 
 
+# ═══════════════════════════════════════════════════════════════════════════
+# 2b. git_gate — gate dir removal failure logging
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+class TestGateDirRemovalWarning:
+    """Verify logger.warning when shutil.rmtree fails during force_reinit."""
+
+    def test_rmtree_failure_logs_warning(self, tmp_path: Path) -> None:
+        """Failed gate dir removal logs a warning and continues."""
+        from terok_sandbox.git_gate import GitGate
+
+        gate_dir = tmp_path / "gate" / "myproject.git"
+        gate_dir.mkdir(parents=True)
+        gate = GitGate(
+            project_id="myproject",
+            gate_path=gate_dir,
+            upstream_url="https://example.com/org/repo.git",
+        )
+
+        with (
+            unittest.mock.patch("shutil.rmtree", side_effect=PermissionError("nope")),
+            unittest.mock.patch("terok_sandbox.git_gate._clone_gate_mirror"),
+            unittest.mock.patch("terok_sandbox.git_gate.logger") as mock_logger,
+        ):
+            try:
+                gate.sync(force_reinit=True)
+            except Exception:
+                pass  # clone may fail; we only care about the warning
+            mock_logger.warning.assert_called_once()
+            assert "Failed to remove gate dir" in mock_logger.warning.call_args[0][0]
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# 2c. runtime — stop_task_containers failure logging
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+class TestStopTaskContainersLogging:
+    """Verify log_debug when podman rm fails."""
+
+    def test_subprocess_failure_logs_debug(self) -> None:
+        """FileNotFoundError (podman missing) is caught and logged."""
+        from terok_sandbox.runtime import stop_task_containers
+
+        with unittest.mock.patch(
+            "subprocess.run", side_effect=FileNotFoundError("podman not found")
+        ), unittest.mock.patch("terok_sandbox.runtime.log_debug") as mock_log:
+            stop_task_containers(["test-container"])
+        # Should have logged the failure (not just start/done)
+        calls = [str(c) for c in mock_log.call_args_list]
+        assert any("failed" in c for c in calls)
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# 2d. credential_proxy_lifecycle — DB read failure logging
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+class TestCredentialProxyStatusDbFailure:
+    """Verify log_warning when credential DB read fails in get_proxy_status."""
+
+    def test_db_exception_logs_warning(self, tmp_path: Path) -> None:
+        """Corrupted DB triggers log_warning and returns empty credentials."""
+        from terok_sandbox import SandboxConfig
+        from terok_sandbox.credential_proxy_lifecycle import get_proxy_status
+
+        cfg = SandboxConfig(state_dir=tmp_path)
+        # Create a corrupt DB file
+        cfg.proxy_db_path.parent.mkdir(parents=True, exist_ok=True)
+        cfg.proxy_db_path.write_text("not a sqlite db")
+
+        with unittest.mock.patch(
+            "terok_sandbox.credential_proxy_lifecycle.log_warning"
+        ) as mock_warn:
+            get_proxy_status(cfg)
+        mock_warn.assert_called_once()
+        assert "credential db" in mock_warn.call_args[0][0].lower()
+
+
 class TestGateHandlerLogMessage:
     """Tests for GateRequestHandler.log_message filtering by HTTP status code."""
 
@@ -336,4 +416,11 @@ class TestGateHandlerLogMessage:
             mock_logger.warning.assert_not_called()
             # Integer status (below 400) — handled gracefully via str()
             handler.log_message("%s %s", "GET /foo", 200)
+            mock_logger.warning.assert_not_called()
+
+    def test_log_message_non_numeric_status_no_crash(self) -> None:
+        """Non-numeric status string hits ValueError catch without crashing."""
+        handler = _make_log_handler()
+        with unittest.mock.patch("terok_sandbox.gate.server._logger") as mock_logger:
+            handler.log_message("%s %s", "GET /foo", "not-a-number")
             mock_logger.warning.assert_not_called()
