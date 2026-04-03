@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import os
+import socket
 from unittest.mock import patch
 
 from terok_sandbox.credential_proxy.server import _systemd_sockets
@@ -23,10 +24,42 @@ class TestSystemdSockets:
 
     def test_returns_none_pair_wrong_pid(self) -> None:
         """Returns (None, None) when LISTEN_PID doesn't match."""
-        with patch.dict(os.environ, {"LISTEN_FDS": "1", "LISTEN_PID": "99999999"}):
+        with patch.dict(os.environ, {"LISTEN_FDS": "2", "LISTEN_PID": "99999999"}):
+            assert _systemd_sockets() == (None, None)
+
+    def test_returns_none_pair_wrong_fd_count(self) -> None:
+        """Returns (None, None) when LISTEN_FDS is not '2'."""
+        with patch.dict(os.environ, {"LISTEN_FDS": "1", "LISTEN_PID": str(os.getpid())}):
             assert _systemd_sockets() == (None, None)
 
     def test_returns_none_pair_zero_fds(self) -> None:
         """Returns (None, None) when LISTEN_FDS is '0'."""
         with patch.dict(os.environ, {"LISTEN_FDS": "0", "LISTEN_PID": str(os.getpid())}):
             assert _systemd_sockets() == (None, None)
+
+    def test_returns_two_sockets_on_listen_fds_2(self) -> None:
+        """Returns (unix_sock, tcp_sock) when LISTEN_FDS=2 and PID matches."""
+        # Create real sockets on FDs 3 and 4 so socket.socket(fileno=N) works.
+        unix_s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        tcp_s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        try:
+            # dup2 to the expected FDs (3 and 4)
+            os.dup2(unix_s.fileno(), 3)
+            os.dup2(tcp_s.fileno(), 4)
+            with patch.dict(os.environ, {"LISTEN_FDS": "2", "LISTEN_PID": str(os.getpid())}):
+                sd_unix, sd_tcp = _systemd_sockets()
+            assert sd_unix is not None
+            assert sd_tcp is not None
+            assert sd_unix.fileno() == 3
+            assert sd_tcp.fileno() == 4
+            # Sockets should be non-blocking
+            assert sd_unix.getblocking() is False
+            assert sd_tcp.getblocking() is False
+            # Detach so close() below doesn't close FD 3/4 twice
+            sd_unix.detach()
+            sd_tcp.detach()
+        finally:
+            os.close(3)
+            os.close(4)
+            unix_s.close()
+            tcp_s.close()

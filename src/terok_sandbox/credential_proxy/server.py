@@ -412,9 +412,7 @@ def _systemd_sockets() -> tuple:
     Implements the ``sd_listen_fds(3)`` protocol.  The socket unit
     declares two ``ListenStream=`` entries (Unix path first, TCP port
     second), so systemd passes file descriptors 3 and 4 respectively
-    when ``LISTEN_FDS=2``.  A single-socket unit (``LISTEN_FDS=1``) is
-    also supported for backwards compatibility — FD 3 is treated as the
-    Unix socket.
+    when ``LISTEN_FDS=2``.
     """
     import os
     import socket as _socket
@@ -422,18 +420,13 @@ def _systemd_sockets() -> tuple:
     if os.environ.get("LISTEN_PID") != str(os.getpid()):
         return None, None
 
-    n_fds = int(os.environ.get("LISTEN_FDS", "0") or "0")
-    if n_fds == 0:
+    if os.environ.get("LISTEN_FDS") != "2":
         return None, None
 
     unix_sock = _socket.socket(fileno=3)
     unix_sock.setblocking(False)
-
-    tcp_sock = None
-    if n_fds >= 2:
-        tcp_sock = _socket.socket(fileno=4)
-        tcp_sock.setblocking(False)
-
+    tcp_sock = _socket.socket(fileno=4)
+    tcp_sock.setblocking(False)
     return unix_sock, tcp_sock
 
 
