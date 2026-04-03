@@ -22,6 +22,7 @@ Value types returned by ``GitGate`` methods:
 - :class:`GateStalenessInfo` — frozen comparison of gate HEAD vs upstream HEAD
 """
 
+import logging
 import os
 import shlex
 import shutil
@@ -33,6 +34,8 @@ from pathlib import Path
 from typing import TypedDict
 
 from .ssh import effective_ssh_key_name
+
+logger = logging.getLogger(__name__)
 
 # ---------- Staleness dataclass ----------
 
@@ -172,7 +175,13 @@ def _get_upstream_head(upstream_url: str, branch: str, env: dict) -> dict | None
                 "upstream_url": upstream_url,
             }
         return None
-    except (subprocess.TimeoutExpired, Exception):
+    except (
+        subprocess.CalledProcessError,
+        subprocess.TimeoutExpired,
+        FileNotFoundError,
+        OSError,
+    ) as exc:
+        logger.debug(f"_get_upstream_head({branch}) failed: {exc}")
         return None
 
 
@@ -192,7 +201,13 @@ def _get_gate_branch_head(gate_dir: Path, branch: str, env: dict) -> str | None:
         if result.returncode == 0:
             return result.stdout.strip()
         return None
-    except Exception:
+    except (
+        subprocess.CalledProcessError,
+        subprocess.TimeoutExpired,
+        FileNotFoundError,
+        OSError,
+    ) as exc:
+        logger.debug(f"_get_gate_branch_head({branch}) failed: {exc}")
         return None
 
 
@@ -215,7 +230,13 @@ def _count_commits_range(gate_dir: Path, from_ref: str, to_ref: str, env: dict) 
         if result.returncode == 0:
             return int(result.stdout.strip())
         return None
-    except Exception:
+    except (
+        subprocess.CalledProcessError,
+        subprocess.TimeoutExpired,
+        FileNotFoundError,
+        OSError,
+    ) as exc:
+        logger.debug(f"_count_commits_range({from_ref}..{to_ref}) failed: {exc}")
         return None
 
 
@@ -322,8 +343,8 @@ class GitGate:
             try:
                 if gate_dir.is_dir():
                     shutil.rmtree(gate_dir)
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.warning(f"Failed to remove gate dir {gate_dir}: {exc}")
             gate_exists = False
 
         if not gate_exists:
