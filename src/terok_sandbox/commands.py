@@ -421,7 +421,7 @@ def _handle_ssh_add_key(
             "Use a different --name or remove the existing key first."
         )
 
-    comment = f"tk-side:{project} {key_name}"
+    comment = f"tk-side:{project}:{key_name}"
     generate_keypair(key_type, priv_path, pub_path, comment)
 
     try:
@@ -452,7 +452,88 @@ def _handle_ssh_add_key(
         pass
 
 
+def _handle_ssh_list(
+    *,
+    project: str | None = None,
+    cfg: SandboxConfig | None = None,
+) -> None:
+    """List SSH keys registered in the auth proxy's key store."""
+    import base64
+    import hashlib
+    import json
+    from pathlib import Path
+
+    from .config import SandboxConfig as _SandboxConfig
+
+    if cfg is None:
+        cfg = _SandboxConfig()
+
+    keys_path = cfg.ssh_keys_json_path
+    if not keys_path.is_file():
+        print("No SSH keys registered.")
+        return
+
+    try:
+        data = json.loads(keys_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise SystemExit(f"Cannot read {keys_path}: {exc}") from exc
+
+    if not data:
+        print("No SSH keys registered.")
+        return
+
+    if project and project in data:
+        projects = {project: data[project]}
+    elif project:
+        raise SystemExit(f"No keys registered for project {project!r}")
+    else:
+        projects = data
+
+    rows: list[tuple[str, str, str, str, str]] = []
+    for pid in sorted(projects):
+        for entry in projects[pid]:
+            pub_path = Path(entry.get("public_key", ""))
+            priv_path = entry.get("private_key", "")
+            if pub_path.is_file():
+                try:
+                    parts = pub_path.read_text(encoding="utf-8").strip().split()
+                    key_type = parts[0].removeprefix("ssh-") if parts else "?"
+                    blob = base64.b64decode(parts[1]) if len(parts) > 1 else b""
+                    comment = " ".join(parts[2:]) if len(parts) > 2 else pub_path.stem
+                    digest = base64.b64encode(hashlib.sha256(blob).digest()).rstrip(b"=")
+                    fingerprint = f"SHA256:{digest.decode()}"
+                except Exception:
+                    key_type, comment, fingerprint = "?", pub_path.stem, "(error)"
+            else:
+                key_type, comment, fingerprint = "?", Path(priv_path).stem, "(pub missing)"
+            rows.append((pid, comment, key_type, fingerprint, priv_path))
+
+    if not rows:
+        print("No SSH keys registered.")
+        return
+
+    headers = ("PROJECT", "KEY", "TYPE", "FINGERPRINT", "PATH")
+    widths = [max(len(h), *(len(r[i]) for r in rows)) for i, h in enumerate(headers)]
+    fmt = "  ".join(f"{{:<{w}}}" for w in widths)
+    print(fmt.format(*headers))
+    for row in rows:
+        print(fmt.format(*row))
+
+
 SSH_COMMANDS: tuple[CommandDef, ...] = (
+    CommandDef(
+        name="list",
+        help="List SSH keys registered in the auth proxy",
+        handler=_handle_ssh_list,
+        group="ssh",
+        args=(
+            ArgDef(
+                name="--project",
+                help="Show keys for a specific project only",
+                default=None,
+            ),
+        ),
+    ),
     CommandDef(
         name="import",
         help="Register an existing SSH keypair in ssh-keys.json",

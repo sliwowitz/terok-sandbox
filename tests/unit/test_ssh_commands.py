@@ -18,7 +18,7 @@ from cryptography.hazmat.primitives.serialization import (
     PublicFormat,
 )
 
-from terok_sandbox.commands import _handle_ssh_add_key, _handle_ssh_import
+from terok_sandbox.commands import _handle_ssh_add_key, _handle_ssh_import, _handle_ssh_list
 from terok_sandbox.ssh import _next_key_number, generate_keypair
 
 
@@ -312,7 +312,7 @@ class TestHandleSshAddKey:
 
         out = capsys.readouterr().out
         assert "deploy-gitlab" in out
-        assert "tk-side:myproj deploy-gitlab" in out
+        assert "tk-side:myproj:deploy-gitlab" in out
 
     def test_auto_numbering_key_1(self, tmp_path: Path) -> None:
         """Without --name, first key is key-1."""
@@ -356,7 +356,7 @@ class TestHandleSshAddKey:
 
         assert len(captured_cmds) == 1
         args = dict(zip(captured_cmds[0][1::2], captured_cmds[0][2::2], strict=False))
-        assert args["-C"] == "tk-side:proj deploy"
+        assert args["-C"] == "tk-side:proj:deploy"
 
     def test_existing_key_refuses_overwrite(self, tmp_path: Path) -> None:
         """Refuses to overwrite an existing key file."""
@@ -502,3 +502,168 @@ class TestGenerateKeypair:
 
         assert priv.read_text() != "old"
         assert pub.read_text() != "old"
+
+
+# ---------------------------------------------------------------------------
+# ssh list
+# ---------------------------------------------------------------------------
+
+
+def _write_keys_json(cfg: object, data: dict) -> None:
+    """Write *data* as the ssh-keys.json for *cfg*."""
+    p = cfg.ssh_keys_json_path  # type: ignore[union-attr]
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(json.dumps(data))
+
+
+def _make_pub_file(path: Path, *, comment: str = "test-key") -> None:
+    """Create a minimal ed25519 .pub file at *path*."""
+    key = Ed25519PrivateKey.generate()
+    pub_raw = key.public_key().public_bytes(Encoding.OpenSSH, PublicFormat.OpenSSH)
+    path.write_text(f"{pub_raw.decode()} {comment}\n")
+
+
+class TestHandleSshList:
+    """Verify _handle_ssh_list output and filtering."""
+
+    def test_no_json_file(self, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+        """Missing ssh-keys.json prints 'No SSH keys registered.'."""
+        cfg = _mock_cfg(tmp_path)
+        _handle_ssh_list(cfg=cfg)
+        assert "No SSH keys registered." in capsys.readouterr().out
+
+    def test_empty_json(self, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+        """Empty JSON object prints 'No SSH keys registered.'."""
+        cfg = _mock_cfg(tmp_path)
+        _write_keys_json(cfg, {})
+        _handle_ssh_list(cfg=cfg)
+        assert "No SSH keys registered." in capsys.readouterr().out
+
+    def test_single_project(self, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+        """One project with one key prints the table."""
+        cfg = _mock_cfg(tmp_path)
+        priv = tmp_path / "id_ed25519"
+        pub = tmp_path / "id_ed25519.pub"
+        priv.touch()
+        _make_pub_file(pub, comment="tk-main:myproj")
+
+        _write_keys_json(cfg, {"myproj": [{"private_key": str(priv), "public_key": str(pub)}]})
+        _handle_ssh_list(cfg=cfg)
+
+        out = capsys.readouterr().out
+        assert "myproj" in out
+        assert "tk-main:myproj" in out
+        assert "ed25519" in out
+        assert "SHA256:" in out
+
+    def test_multiple_projects(self, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+        """Two projects both appear in output."""
+        cfg = _mock_cfg(tmp_path)
+        rows = {}
+        for pid in ("alpha", "beta"):
+            d = tmp_path / pid
+            d.mkdir()
+            priv, pub = d / "id_ed25519", d / "id_ed25519.pub"
+            priv.touch()
+            _make_pub_file(pub, comment=f"tk-main:{pid}")
+            rows[pid] = [{"private_key": str(priv), "public_key": str(pub)}]
+
+        _write_keys_json(cfg, rows)
+        _handle_ssh_list(cfg=cfg)
+
+        out = capsys.readouterr().out
+        assert "alpha" in out
+        assert "beta" in out
+
+    def test_filter_project(self, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+        """--project filters to a single project."""
+        cfg = _mock_cfg(tmp_path)
+        rows = {}
+        for pid in ("show-me", "hide-me"):
+            d = tmp_path / pid
+            d.mkdir()
+            priv, pub = d / "id_ed25519", d / "id_ed25519.pub"
+            priv.touch()
+            _make_pub_file(pub, comment=f"tk-main:{pid}")
+            rows[pid] = [{"private_key": str(priv), "public_key": str(pub)}]
+
+        _write_keys_json(cfg, rows)
+        _handle_ssh_list(project="show-me", cfg=cfg)
+
+        out = capsys.readouterr().out
+        assert "show-me" in out
+        assert "hide-me" not in out
+
+    def test_filter_nonexistent_project_exits(self, tmp_path: Path) -> None:
+        """--project for unknown project raises SystemExit."""
+        cfg = _mock_cfg(tmp_path)
+        _write_keys_json(cfg, {"other": []})
+        with pytest.raises(SystemExit, match="No keys registered"):
+            _handle_ssh_list(project="ghost", cfg=cfg)
+
+    def test_side_key_comment(self, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+        """Side-key comments like 'tk-side:proj:keyname' are shown correctly."""
+        cfg = _mock_cfg(tmp_path)
+        priv = tmp_path / "id_ed25519_dbus"
+        pub = tmp_path / "id_ed25519_dbus.pub"
+        priv.touch()
+        _make_pub_file(pub, comment="tk-side:terok:terok-dbus")
+
+        _write_keys_json(cfg, {"terok": [{"private_key": str(priv), "public_key": str(pub)}]})
+        _handle_ssh_list(cfg=cfg)
+
+        out = capsys.readouterr().out
+        assert "tk-side:terok:terok-dbus" in out
+
+    def test_missing_pub_file(self, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+        """Missing .pub file shows '(pub missing)' instead of crashing."""
+        cfg = _mock_cfg(tmp_path)
+        priv = tmp_path / "id_ed25519"
+        priv.touch()
+
+        _write_keys_json(
+            cfg, {"proj": [{"private_key": str(priv), "public_key": str(tmp_path / "gone.pub")}]}
+        )
+        _handle_ssh_list(cfg=cfg)
+
+        out = capsys.readouterr().out
+        assert "(pub missing)" in out
+        assert "proj" in out
+
+    def test_corrupt_json_exits(self, tmp_path: Path) -> None:
+        """Corrupt ssh-keys.json raises SystemExit."""
+        cfg = _mock_cfg(tmp_path)
+        p = cfg.ssh_keys_json_path
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text("{bad json")
+        with pytest.raises(SystemExit, match="Cannot read"):
+            _handle_ssh_list(cfg=cfg)
+
+    def test_malformed_pub_file(self, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+        """Pub file with invalid base64 shows '(error)' gracefully."""
+        cfg = _mock_cfg(tmp_path)
+        priv = tmp_path / "id_ed25519"
+        pub = tmp_path / "id_ed25519.pub"
+        priv.touch()
+        pub.write_text("ssh-ed25519 !!!not-base64!!!\n")
+
+        _write_keys_json(cfg, {"proj": [{"private_key": str(priv), "public_key": str(pub)}]})
+        _handle_ssh_list(cfg=cfg)
+
+        out = capsys.readouterr().out
+        assert "(error)" in out
+
+    def test_standalone_fallback(self, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+        """Handler creates SandboxConfig when cfg=None."""
+        cfg = _mock_cfg(tmp_path)
+        _write_keys_json(cfg, {})
+        with patch("terok_sandbox.config.SandboxConfig", return_value=cfg):
+            _handle_ssh_list()
+        assert "No SSH keys registered." in capsys.readouterr().out
+
+    def test_all_empty_lists(self, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+        """Projects with empty key lists print 'No SSH keys registered.'."""
+        cfg = _mock_cfg(tmp_path)
+        _write_keys_json(cfg, {"proj": []})
+        _handle_ssh_list(cfg=cfg)
+        assert "No SSH keys registered." in capsys.readouterr().out
