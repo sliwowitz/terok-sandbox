@@ -511,8 +511,6 @@ class TestGenerateKeypair:
 
 def _write_keys_json(cfg: object, data: dict) -> None:
     """Write *data* as the ssh-keys.json for *cfg*."""
-    import json
-
     p = cfg.ssh_keys_json_path  # type: ignore[union-attr]
     p.parent.mkdir(parents=True, exist_ok=True)
     p.write_text(json.dumps(data))
@@ -631,3 +629,41 @@ class TestHandleSshList:
         out = capsys.readouterr().out
         assert "(pub missing)" in out
         assert "proj" in out
+
+    def test_corrupt_json_exits(self, tmp_path: Path) -> None:
+        """Corrupt ssh-keys.json raises SystemExit."""
+        cfg = _mock_cfg(tmp_path)
+        p = cfg.ssh_keys_json_path
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text("{bad json")
+        with pytest.raises(SystemExit, match="Cannot read"):
+            _handle_ssh_list(cfg=cfg)
+
+    def test_malformed_pub_file(self, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+        """Pub file with invalid base64 shows '(error)' gracefully."""
+        cfg = _mock_cfg(tmp_path)
+        priv = tmp_path / "id_ed25519"
+        pub = tmp_path / "id_ed25519.pub"
+        priv.touch()
+        pub.write_text("ssh-ed25519 !!!not-base64!!!\n")
+
+        _write_keys_json(cfg, {"proj": [{"private_key": str(priv), "public_key": str(pub)}]})
+        _handle_ssh_list(cfg=cfg)
+
+        out = capsys.readouterr().out
+        assert "(error)" in out
+
+    def test_standalone_fallback(self, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+        """Handler creates SandboxConfig when cfg=None."""
+        cfg = _mock_cfg(tmp_path)
+        _write_keys_json(cfg, {})
+        with patch("terok_sandbox.config.SandboxConfig", return_value=cfg):
+            _handle_ssh_list()
+        assert "No SSH keys registered." in capsys.readouterr().out
+
+    def test_all_empty_lists(self, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+        """Projects with empty key lists print 'No SSH keys registered.'."""
+        cfg = _mock_cfg(tmp_path)
+        _write_keys_json(cfg, {"proj": []})
+        _handle_ssh_list(cfg=cfg)
+        assert "No SSH keys registered." in capsys.readouterr().out

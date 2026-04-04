@@ -482,9 +482,12 @@ def _handle_ssh_list(
         print("No SSH keys registered.")
         return
 
-    projects = {project: data[project]} if project and project in data else data
-    if project and project not in data:
+    if project and project in data:
+        projects = {project: data[project]}
+    elif project:
         raise SystemExit(f"No keys registered for project {project!r}")
+    else:
+        projects = data
 
     rows: list[tuple[str, str, str, str, str]] = []
     for pid in sorted(projects):
