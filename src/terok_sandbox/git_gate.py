@@ -109,9 +109,12 @@ def _git_env_with_ssh(
     if key_path.is_file():
         ssh_cmd = [
             "ssh",
-            "-o", "IdentitiesOnly=yes",
-            "-o", f"IdentityFile={key_path}",
-            "-o", "StrictHostKeyChecking=no",
+            "-o",
+            "IdentitiesOnly=yes",
+            "-o",
+            f"IdentityFile={key_path}",
+            "-o",
+            "StrictHostKeyChecking=no",
         ]
         env["GIT_SSH_COMMAND"] = shlex.join(ssh_cmd)
         # Clear SSH_AUTH_SOCK so agent identities are not considered
