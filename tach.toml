@@ -27,7 +27,7 @@ layers = ["surface", "core", "foundation"]
 # ── Foundation ─────────────────────────────────────────────
 # Zero-dependency primitives, standalone servers, pure data.
 
-# Vendored utilities — importable by anything without declaration
+# Shared repo-local helpers (fs, logging, templates, naming conventions)
 [[modules]]
 path = "terok_sandbox._util"
 layer = "foundation"

@@ -297,7 +297,7 @@ def start_daemon(port: int | None = None, cfg: SandboxConfig | None = None) -> N
     cmd = [
         "terok-gate",
         f"--base-path={gate_base}",
-        f"--token-file={token_file_path()}",
+        f"--token-file={token_file_path(cfg)}",
         f"--port={effective_port}",
         "--detach",
         f"--pid-file={pidfile}",

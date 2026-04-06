@@ -121,7 +121,7 @@ class Sandbox:
         """Create a task-scoped gate access token."""
         from .gate.tokens import create_token
 
-        return create_token(task_id, project_id, self._cfg)
+        return create_token(project_id, task_id, self._cfg)
 
     def gate_url(self, repo_path: Path, token: str) -> str:
         """Build an HTTP URL for gate access to *repo_path*."""
