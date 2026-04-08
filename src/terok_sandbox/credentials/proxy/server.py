@@ -85,14 +85,14 @@ class _TokenDB:
         self._conn.execute("PRAGMA journal_mode=WAL")
 
     def lookup_token(self, token: str) -> dict | None:
-        """Return ``{project, task, credential_set, provider}`` or ``None``."""
+        """Return ``{scope, task, credential_set, provider}`` or ``None``."""
         row = self._conn.execute(
-            "SELECT project, task, credential_set, provider FROM proxy_tokens WHERE token = ?",
+            "SELECT scope, task, credential_set, provider FROM proxy_tokens WHERE token = ?",
             (token,),
         ).fetchone()
         if row is None:
             return None
-        return {"project": row[0], "task": row[1], "credential_set": row[2], "provider": row[3]}
+        return {"scope": row[0], "task": row[1], "credential_set": row[2], "provider": row[3]}
 
     def load_credential(self, credential_set: str, provider: str) -> dict | None:
         """Return parsed credential data dict, or ``None``."""
@@ -180,11 +180,11 @@ async def _handle_request(request: web.Request) -> web.StreamResponse:
 
         if phantom == PHANTOM_CREDENTIALS_MARKER:
             # Hardcoded to credential_set="default" — Claude OAuth is a
-            # shared credential, per-project credential sets are not
+            # shared credential, per-scope credential sets are not
             # supported for this path.
             _logger.debug("Accepting static phantom marker for Claude OAuth")
             token_info = {
-                "project": "__static__",
+                "scope": "__static__",
                 "task": "__static__",
                 "credential_set": "default",
                 "provider": "claude",
@@ -554,7 +554,7 @@ def main() -> None:
     parser.add_argument(
         "--ssh-keys-file",
         default=None,
-        help="Path to ssh-keys.json mapping project IDs to key file paths",
+        help="Path to ssh-keys.json mapping credential scopes to key file paths",
     )
     parser.add_argument(
         "--pid-file", default=None, help="Write PID to this file (for lifecycle management)"

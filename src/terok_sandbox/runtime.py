@@ -99,7 +99,7 @@ def redact_env_args(cmd: list[str]) -> list[str]:
 # ---------- Public functions ----------
 
 
-def get_project_container_states(name_prefix: str) -> dict[str, str]:
+def get_container_states(name_prefix: str) -> dict[str, str]:
     """Return ``{container_name: state}`` for all containers matching *name_prefix*.
 
     Uses a single ``podman ps -a`` call with a name filter instead of

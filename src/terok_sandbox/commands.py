@@ -292,9 +292,10 @@ PROXY_COMMANDS: tuple[CommandDef, ...] = (
 
 def _handle_ssh_import(
     *,
-    project: str,
+    scope: str,
     private_key: str,
     public_key: str | None = None,
+    create_scope: bool = False,
     cfg: SandboxConfig | None = None,
 ) -> None:
     """Copy an SSH keypair into the managed key store and register it in ssh-keys.json."""
@@ -306,11 +307,16 @@ def _handle_ssh_import(
     from .config import SandboxConfig as _SandboxConfig
     from .credentials.ssh import SSHInitResult, update_ssh_keys_json
 
-    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*", project):
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*", scope):
         raise SystemExit(
-            f"Invalid project ID {project!r}: must start with a letter or digit "
+            f"Invalid scope {scope!r}: must start with a letter or digit "
             "and contain only [A-Za-z0-9._-]"
         )
+
+    if cfg is None:
+        cfg = _SandboxConfig()
+
+    _validate_scope_exists(scope, create_scope, cfg)
 
     priv_src = Path(private_key).expanduser().resolve()
     pub_src = Path(public_key).expanduser().resolve() if public_key else Path(f"{priv_src}.pub")
@@ -322,9 +328,7 @@ def _handle_ssh_import(
             f"Public key not found: {pub_src} (use --public-key to specify explicitly)"
         )
 
-    if cfg is None:
-        cfg = _SandboxConfig()
-    dest_dir = cfg.ssh_keys_dir / project
+    dest_dir = cfg.ssh_keys_dir / scope
     dest_dir.mkdir(parents=True, exist_ok=True)
 
     def _unique_dst(src: Path) -> Path:
@@ -364,18 +368,19 @@ def _handle_ssh_import(
         key_name=priv_dst.name,
     )
     keys_path = cfg.ssh_keys_json_path
-    update_ssh_keys_json(keys_path, project, result)
-    print(f"Registered key for project '{project}': {priv_dst}")
+    update_ssh_keys_json(keys_path, scope, result)
+    print(f"Registered key for scope '{scope}': {priv_dst}")
 
 
 def _handle_ssh_add_key(
     *,
-    project: str,
+    scope: str,
     name: str | None = None,
     key_type: str = "ed25519",
+    create_scope: bool = False,
     cfg: SandboxConfig | None = None,
 ) -> None:
-    """Generate a new SSH keypair and register it for a project."""
+    """Generate a new SSH keypair and register it for a credential scope."""
     import re
 
     from .config import SandboxConfig as _SandboxConfig
@@ -387,9 +392,9 @@ def _handle_ssh_add_key(
         update_ssh_keys_json,
     )
 
-    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*", project):
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*", scope):
         raise SystemExit(
-            f"Invalid project ID {project!r}: must start with a letter or digit "
+            f"Invalid scope {scope!r}: must start with a letter or digit "
             "and contain only [A-Za-z0-9._-]"
         )
     if key_type not in ("ed25519", "rsa"):
@@ -398,7 +403,10 @@ def _handle_ssh_add_key(
     algo = "ed25519" if key_type == "ed25519" else "rsa"
     if cfg is None:
         cfg = _SandboxConfig()
-    dest_dir = cfg.ssh_keys_dir / project
+
+    _validate_scope_exists(scope, create_scope, cfg)
+
+    dest_dir = cfg.ssh_keys_dir / scope
     dest_dir.mkdir(parents=True, exist_ok=True)
 
     if name is not None:
@@ -421,7 +429,7 @@ def _handle_ssh_add_key(
             "Use a different --name or remove the existing key first."
         )
 
-    comment = f"tk-side:{project}:{key_name}"
+    comment = f"tk-side:{scope}:{key_name}"
     generate_keypair(key_type, priv_path, pub_path, comment)
 
     try:
@@ -436,9 +444,9 @@ def _handle_ssh_add_key(
         config_path="",
         key_name=filename,
     )
-    update_ssh_keys_json(cfg.ssh_keys_json_path, project, result)
+    update_ssh_keys_json(cfg.ssh_keys_json_path, scope, result)
 
-    print(f"SSH key generated for project '{project}':")
+    print(f"SSH key generated for scope '{scope}':")
     print(f"  name:        {key_name}")
     print(f"  private key: {priv_path}")
     print(f"  public key:  {pub_path}")
@@ -452,9 +460,33 @@ def _handle_ssh_add_key(
         pass
 
 
+def _validate_scope_exists(scope: str, create_scope: bool, cfg: SandboxConfig) -> None:
+    """Reject unknown scopes unless ``--create-scope`` was passed.
+
+    Scopes are considered "known" if they appear in ``ssh-keys.json``.
+    """
+    import json
+
+    keys_path = cfg.ssh_keys_json_path
+    existing: dict = {}
+    if keys_path.is_file():
+        try:
+            existing = json.loads(keys_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            pass
+    if scope in existing or create_scope:
+        return
+    known = sorted(existing)
+    msg = f"Unknown scope {scope!r}."
+    if known:
+        msg += f" Known scopes: {', '.join(known)}"
+    msg += "\nUse --create-scope to create a new credential scope."
+    raise SystemExit(msg)
+
+
 def _handle_ssh_list(
     *,
-    project: str | None = None,
+    scope: str | None = None,
     cfg: SandboxConfig | None = None,
 ) -> None:
     """List SSH keys registered in the auth proxy's key store."""
@@ -482,16 +514,16 @@ def _handle_ssh_list(
         print("No SSH keys registered.")
         return
 
-    if project and project in data:
-        projects = {project: data[project]}
-    elif project:
-        raise SystemExit(f"No keys registered for project {project!r}")
+    if scope and scope in data:
+        scopes = {scope: data[scope]}
+    elif scope:
+        raise SystemExit(f"No keys registered for scope {scope!r}")
     else:
-        projects = data
+        scopes = data
 
     rows: list[tuple[str, str, str, str, str]] = []
-    for pid in sorted(projects):
-        for entry in projects[pid]:
+    for sid in sorted(scopes):
+        for entry in scopes[sid]:
             pub_path = Path(entry.get("public_key", ""))
             priv_path = entry.get("private_key", "")
             if pub_path.is_file():
@@ -506,13 +538,13 @@ def _handle_ssh_list(
                     key_type, comment, fingerprint = "?", pub_path.stem, "(error)"
             else:
                 key_type, comment, fingerprint = "?", Path(priv_path).stem, "(pub missing)"
-            rows.append((pid, comment, key_type, fingerprint, priv_path))
+            rows.append((sid, comment, key_type, fingerprint, priv_path))
 
     if not rows:
         print("No SSH keys registered.")
         return
 
-    headers = ("PROJECT", "KEY", "TYPE", "FINGERPRINT", "PATH")
+    headers = ("SCOPE", "KEY", "TYPE", "FINGERPRINT", "PATH")
     widths = [max(len(h), *(len(r[i]) for r in rows)) for i, h in enumerate(headers)]
     fmt = "  ".join(f"{{:<{w}}}" for w in widths)
     print(fmt.format(*headers))
@@ -528,8 +560,8 @@ SSH_COMMANDS: tuple[CommandDef, ...] = (
         group="ssh",
         args=(
             ArgDef(
-                name="--project",
-                help="Show keys for a specific project only",
+                name="--scope",
+                help="Show keys for a specific credential scope only",
                 default=None,
             ),
         ),
@@ -540,7 +572,7 @@ SSH_COMMANDS: tuple[CommandDef, ...] = (
         handler=_handle_ssh_import,
         group="ssh",
         args=(
-            ArgDef(name="project", help="Project ID to associate the key with"),
+            ArgDef(name="scope", help="Credential scope to associate the key with"),
             ArgDef(
                 name="--private-key",
                 help="Path to the private key file",
@@ -553,15 +585,21 @@ SSH_COMMANDS: tuple[CommandDef, ...] = (
                 default=None,
                 dest="public_key",
             ),
+            ArgDef(
+                name="--create-scope",
+                help="Allow creating a new credential scope",
+                action="store_true",
+                dest="create_scope",
+            ),
         ),
     ),
     CommandDef(
         name="add-key",
-        help="Generate a new SSH keypair for a project",
+        help="Generate a new SSH keypair for a credential scope",
         handler=_handle_ssh_add_key,
         group="ssh",
         args=(
-            ArgDef(name="project", help="Project ID to associate the key with"),
+            ArgDef(name="scope", help="Credential scope to associate the key with"),
             ArgDef(
                 name="--name",
                 help="Key name ([a-zA-Z_-]; auto-generates key-1, key-2, ... if omitted)",
@@ -572,6 +610,12 @@ SSH_COMMANDS: tuple[CommandDef, ...] = (
                 help="Key algorithm: ed25519 (default) or rsa",
                 default="ed25519",
                 dest="key_type",
+            ),
+            ArgDef(
+                name="--create-scope",
+                help="Allow creating a new credential scope",
+                action="store_true",
+                dest="create_scope",
             ),
         ),
     ),

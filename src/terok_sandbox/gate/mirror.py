@@ -98,7 +98,7 @@ class GitGate:
     def __init__(
         self,
         *,
-        project_id: str,
+        scope: str,
         gate_path: Path | str,
         upstream_url: str | None = None,
         default_branch: str | None = None,
@@ -110,8 +110,8 @@ class GitGate:
 
         Parameters
         ----------
-        project_id:
-            Identifier for this gate's owner.
+        scope:
+            Credential scope for this gate's owner.
         gate_path:
             Path to the bare git mirror on the host.
         upstream_url:
@@ -120,15 +120,15 @@ class GitGate:
             Branch name used for staleness comparisons.
         ssh_host_dir:
             Explicit SSH directory for git operations.  When ``None``,
-            falls back to ``SandboxConfig().ssh_keys_dir / project_id``.
+            falls back to ``SandboxConfig().ssh_keys_dir / scope``.
         ssh_key_name:
             Explicit SSH key filename.
         validate_gate_fn:
-            Optional callback ``(project_id) -> None`` that validates no other
-            project uses the same gate with a different upstream.  Injected by
+            Optional callback ``(scope) -> None`` that validates no other
+            scope uses the same gate with a different upstream.  Injected by
             the orchestration layer; omitted for standalone use.
         """
-        self._project_id = project_id
+        self._scope = scope
         self._gate_path = Path(gate_path)
         self._upstream_url = upstream_url
         self._default_branch = default_branch
@@ -139,7 +139,7 @@ class GitGate:
     def _ssh_env(self) -> dict:
         """Return a subprocess env dict with SSH configuration."""
         return _git_env_with_ssh(
-            project_id=self._project_id,
+            scope=self._scope,
             ssh_host_dir=self._ssh_host_dir,
             ssh_key_name=self._ssh_key_name,
         )
@@ -147,7 +147,7 @@ class GitGate:
     def _validate_gate(self) -> None:
         """Run the injected gate validation callback, if any."""
         if self._validate_gate_fn:
-            self._validate_gate_fn(self._project_id)
+            self._validate_gate_fn(self._scope)
 
     def sync(
         self,
@@ -370,11 +370,11 @@ class GitGate:
 
 def _git_env_with_ssh(
     *,
-    project_id: str,
+    scope: str,
     ssh_host_dir: Path | None,
     ssh_key_name: str | None,
 ) -> dict:
-    """Return an env that forces git to use the project's SSH key directly.
+    """Return an env that forces git to use the scope's SSH key directly.
 
     Builds ``GIT_SSH_COMMAND`` from the private key file — no SSH config file
     required.  The credential proxy handles container-side SSH auth; this
@@ -386,8 +386,8 @@ def _git_env_with_ssh(
     from ..config import SandboxConfig
 
     env = os.environ.copy()
-    ssh_dir = ssh_host_dir or (SandboxConfig().ssh_keys_dir / project_id)
-    eff_name = effective_ssh_key_name(project_id, ssh_key_name=ssh_key_name, key_type="ed25519")
+    ssh_dir = ssh_host_dir or (SandboxConfig().ssh_keys_dir / scope)
+    eff_name = effective_ssh_key_name(scope, ssh_key_name=ssh_key_name, key_type="ed25519")
     key_path = Path(ssh_dir) / eff_name
     if key_path.is_file():
         ssh_cmd = [

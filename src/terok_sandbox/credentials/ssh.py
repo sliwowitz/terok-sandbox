@@ -10,7 +10,7 @@ correctly.
 
 All constructor parameters are plain values (strings, paths) — no
 terok-specific types.  The orchestration layer constructs the manager
-from project configuration.
+from caller configuration.
 """
 
 import fcntl
@@ -46,14 +46,14 @@ class SSHManager:
 
     Handles the full SSH setup lifecycle: directory creation, keypair
     generation (ed25519 or RSA), config file rendering from templates, and
-    permission hardening.  Keys are stored under ``ssh_keys_dir/<project>``
+    permission hardening.  Keys are stored under ``ssh_keys_dir/<scope>``
     and used by the credential proxy's SSH agent for container access.
     """
 
     def __init__(
         self,
         *,
-        project_id: str,
+        scope: str,
         ssh_host_dir: Path | str | None = None,
         ssh_key_name: str | None = None,
         ssh_config_template: Path | str | None = None,
@@ -62,8 +62,8 @@ class SSHManager:
 
         Parameters
         ----------
-        project_id:
-            Identifier used for key naming and directory layout.
+        scope:
+            Credential scope used for key naming and directory layout.
         ssh_host_dir:
             Explicit SSH directory (overrides default ``<ssh_keys_dir>/<id>``).
         ssh_key_name:
@@ -71,7 +71,7 @@ class SSHManager:
         ssh_config_template:
             Path to a user-provided SSH config template file.
         """
-        self._project_id = project_id
+        self._scope = scope
         self._ssh_host_dir = Path(ssh_host_dir) if ssh_host_dir else None
         self._ssh_key_name = ssh_key_name
         self._ssh_config_template = Path(ssh_config_template) if ssh_config_template else None
@@ -79,7 +79,7 @@ class SSHManager:
     @property
     def key_name(self) -> str:
         """Return the effective SSH key name."""
-        return effective_ssh_key_name(self._project_id, ssh_key_name=self._ssh_key_name)
+        return effective_ssh_key_name(self._scope, ssh_key_name=self._ssh_key_name)
 
     def init(
         self,
@@ -91,20 +91,20 @@ class SSHManager:
 
         Location resolution:
           - If *ssh_host_dir* was provided, use that path.
-          - Otherwise: ``<ssh_keys_dir>/<project_id>``
+          - Otherwise: ``<ssh_keys_dir>/<scope>``
 
-        Key name defaults to ``id_<type>_<project_id>`` (e.g. ``id_ed25519_proj``).
+        Key name defaults to ``id_<type>_<scope>`` (e.g. ``id_ed25519_proj``).
         """
         if key_type not in ("ed25519", "rsa"):
             raise SystemExit("Unsupported --key-type. Use 'ed25519' or 'rsa'.")
 
-        target_dir = self._ssh_host_dir or (SandboxConfig().ssh_keys_dir / self._project_id)
+        target_dir = self._ssh_host_dir or (SandboxConfig().ssh_keys_dir / self._scope)
         target_dir = Path(target_dir).expanduser().resolve()
         ensure_dir_writable(target_dir, "SSH host dir")
 
         if not key_name:
             key_name = effective_ssh_key_name(
-                self._project_id, ssh_key_name=self._ssh_key_name, key_type=key_type
+                self._scope, ssh_key_name=self._ssh_key_name, key_type=key_type
             )
 
         # Reject path-like or reserved key names
@@ -136,11 +136,11 @@ class SSHManager:
                     )
 
         if force or not priv_path.exists() or not pub_path.exists():
-            self._generate_keypair(key_type, priv_path, pub_path, self._project_id)
+            self._generate_keypair(key_type, priv_path, pub_path, self._scope)
 
         if force or not cfg_path.exists():
             self._render_config(
-                cfg_path, key_name, priv_path, self._project_id, self._ssh_config_template
+                cfg_path, key_name, priv_path, self._scope, self._ssh_config_template
             )
 
         try:
@@ -157,23 +157,23 @@ class SSHManager:
         )
 
     @staticmethod
-    def _generate_keypair(key_type: str, priv_path: Path, pub_path: Path, project_id: str) -> None:
+    def _generate_keypair(key_type: str, priv_path: Path, pub_path: Path, scope: str) -> None:
         """Generate an SSH keypair, removing any stale half-existing files first."""
-        generate_keypair(key_type, priv_path, pub_path, f"tk-main:{project_id}")
+        generate_keypair(key_type, priv_path, pub_path, f"tk-main:{scope}")
 
     @staticmethod
     def _render_config(
         cfg_path: Path,
         key_name: str,
         priv_path: Path,
-        project_id: str,
+        scope: str,
         config_template: Path | None = None,
     ) -> None:
         """Render the SSH config from a user or packaged template."""
         variables = {
             "KEY_NAME": key_name,
             "IDENTITY_FILE": str(priv_path),
-            "PROJECT_ID": project_id,
+            "PROJECT_ID": scope,
         }
         user_config = _try_render_user_template(config_template, variables)
         config_text = (
@@ -182,7 +182,7 @@ class SSHManager:
         if config_text is None:
             raise SystemExit(
                 "Failed to render SSH config: no valid template. "
-                "Ensure a project ssh.config_template is set or the packaged template exists."
+                "Ensure an ssh.config_template is set or the packaged template exists."
             )
         try:
             cfg_path.write_text(config_text)
@@ -218,19 +218,19 @@ def generate_keypair(key_type: str, priv_path: Path, pub_path: Path, comment: st
         raise SystemExit(f"ssh-keygen failed: {e}")
 
 
-def update_ssh_keys_json(keys_json_path: Path, project_id: str, result: SSHInitResult) -> None:
-    """Update the SSH key mapping JSON with a project's key paths.
+def update_ssh_keys_json(keys_json_path: Path, scope: str, result: SSHInitResult) -> None:
+    """Update the SSH key mapping JSON with a scope's key paths.
 
-    The JSON file maps project IDs to their SSH key file paths, similar
-    to how ``routes.json`` maps provider names to proxy routes.  The
-    credential proxy's SSH agent handler reads this file to locate the
-    private key for signing requests.
+    The JSON file maps credential scopes to their SSH key file paths,
+    similar to how ``routes.json`` maps provider names to proxy routes.
+    The credential proxy's SSH agent handler reads this file to locate
+    the private key for signing requests.
 
     Key management rules (keyed by ``private_key`` path):
 
     - **No existing entry**: write a single-dict entry (simple case).
     - **Same private_key path**: replace in-place (idempotent re-run of ``ssh-init``).
-    - **Different private_key path**: expand to / append to a list, so a project can
+    - **Different private_key path**: expand to / append to a list, so a scope can
       hold multiple independent SSH keys (e.g. GitHub + GitLab).
 
     Uses ``fcntl.flock`` to prevent concurrent ``ssh-init`` invocations
@@ -249,7 +249,7 @@ def update_ssh_keys_json(keys_json_path: Path, project_id: str, result: SSHInitR
             chunks.append(chunk)
         raw = b"".join(chunks)
         mapping: dict = json.loads(raw) if raw.strip() else {}
-        entries: list[dict[str, str]] = mapping.get(project_id) or []
+        entries: list[dict[str, str]] = mapping.get(scope) or []
         if not isinstance(entries, list):
             entries = []
         for i, entry in enumerate(entries):
@@ -258,7 +258,7 @@ def update_ssh_keys_json(keys_json_path: Path, project_id: str, result: SSHInitR
                 break
         else:
             entries.append(new_entry)  # new path — append
-        mapping[project_id] = entries
+        mapping[scope] = entries
         data = (json.dumps(mapping, indent=2) + "\n").encode("utf-8")
         os.lseek(fd, 0, os.SEEK_SET)
         os.ftruncate(fd, 0)
@@ -318,16 +318,16 @@ def _harden_permissions(target_dir: Path, priv_path: Path, pub_path: Path, cfg_p
         os.chmod(cfg_path, 0o644)
 
 
-def _next_key_number(project_dir: Path, algo: str) -> int:
-    """Scan *project_dir* for ``id_<algo>_key-N`` files and return the next *N*.
+def _next_key_number(scope_dir: Path, algo: str) -> int:
+    """Scan *scope_dir* for ``id_<algo>_key-N`` files and return the next *N*.
 
     Returns 1 when no numbered keys exist yet.  Uses max+1 (no gap-filling)
     so that retired key numbers are never reused.
     """
     pattern = re.compile(rf"^id_{re.escape(algo)}_key-(\d+)$")
     max_n = 0
-    if project_dir.is_dir():
-        for entry in project_dir.iterdir():
+    if scope_dir.is_dir():
+        for entry in scope_dir.iterdir():
             if m := pattern.match(entry.name):
                 max_n = max(max_n, int(m.group(1)))
     return max_n + 1

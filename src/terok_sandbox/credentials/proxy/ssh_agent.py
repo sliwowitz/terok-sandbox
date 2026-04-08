@@ -117,9 +117,9 @@ _CacheSlot = tuple[str, list[_ResolvedKey]]
 
 
 class _KeyCache:
-    """Caches resolved SSH key material per project.
+    """Caches resolved SSH key material per credential scope.
 
-    Each project may have one key (dict entry) or multiple keys (list of
+    Each scope may have one key (dict entry) or multiple keys (list of
     dict entries) in ``ssh-keys.json``.  On each :meth:`get` call the
     sidecar JSON is re-read (so ``ssh-init`` changes are visible without
     a proxy restart).  When the key paths and mtimes haven't changed
@@ -133,15 +133,15 @@ class _KeyCache:
         self._path = Path(keys_path)
         self._cache: dict[str, _CacheSlot] = {}
 
-    def get(self, project: str) -> list[_ResolvedKey] | None:
+    def get(self, scope: str) -> list[_ResolvedKey] | None:
         """Return a list of ``(private_key, pub_blob, comment)`` or ``None``."""
-        entries = self._lookup_entries(project)
+        entries = self._lookup_entries(scope)
         if not entries:
-            self._cache.pop(project, None)
+            self._cache.pop(scope, None)
             return None
 
         fingerprint = self._fingerprint(entries)
-        cached = self._cache.get(project)
+        cached = self._cache.get(scope)
         if cached and cached[0] == fingerprint:
             return cached[1]
 
@@ -154,17 +154,17 @@ class _KeyCache:
                 resolved.append((private_key, pub_blob, comment))
             except (OSError, ValueError) as exc:
                 _logger.error(
-                    "Failed to load SSH key for project %r (%s): %s",
-                    project,
+                    "Failed to load SSH key for scope %r (%s): %s",
+                    scope,
                     entry.get("private_key", "?"),
                     exc,
                 )
 
         if not resolved:
-            self._cache.pop(project, None)
+            self._cache.pop(scope, None)
             return None
 
-        self._cache[project] = (fingerprint, resolved)
+        self._cache[scope] = (fingerprint, resolved)
         return resolved
 
     @staticmethod
@@ -181,10 +181,10 @@ class _KeyCache:
                 parts.append(f"{path}:{mt}")
         return "|".join(parts)
 
-    def _lookup_entries(self, project: str) -> list[_KeyEntry] | None:
-        """Read ssh-keys.json and return the key entries for *project*.
+    def _lookup_entries(self, scope: str) -> list[_KeyEntry] | None:
+        """Read ssh-keys.json and return the key entries for *scope*.
 
-        The JSON maps project IDs to lists of ``{"private_key", "public_key"}``
+        The JSON maps credential scopes to lists of ``{"private_key", "public_key"}``
         dicts.  Uses ``LOCK_SH`` to coordinate with the ``LOCK_EX`` writer in
         :func:`update_ssh_keys_json`.
         """
@@ -204,7 +204,7 @@ class _KeyCache:
             return None
         if not isinstance(mapping, dict):
             return None
-        entries = mapping.get(project)
+        entries = mapping.get(scope)
         if not isinstance(entries, list):
             return None
         return [
@@ -330,13 +330,11 @@ async def _handle_connection(
             _logger.warning("Token provider %r is not 'ssh', rejecting", token_info.get("provider"))
             return
 
-        project = token_info["project"]
-        _logger.info("SSH agent connection from %s for project %r", peer, project)
-        keys = key_cache.get(project)
+        scope = token_info["scope"]
+        _logger.info("SSH agent connection from %s for scope %r", peer, scope)
+        keys = key_cache.get(scope)
         if not keys:
-            _logger.warning(
-                "No SSH keys loaded for project %r — check ssh-keys.json paths", project
-            )
+            _logger.warning("No SSH keys loaded for scope %r — check ssh-keys.json paths", scope)
             return
 
         # Promote the tk-main key to the front so SSH offers it first to GitHub,
@@ -347,8 +345,8 @@ async def _handle_connection(
         # Build a lookup: pub_blob → (private_key, comment) for sign requests
         key_by_blob = {pub_blob: (priv, comment) for priv, pub_blob, comment in keys}
         _logger.info(
-            "SSH agent session ready for project %r from %s — %d key(s) available",
-            project,
+            "SSH agent session ready for scope %r from %s — %d key(s) available",
+            scope,
             peer,
             len(keys),
         )
@@ -362,7 +360,7 @@ async def _handle_connection(
 
             if msg_type == SSH_AGENTC_REQUEST_IDENTITIES:
                 _logger.info(
-                    "Identity request for project %r — returning %d key(s)", project, len(keys)
+                    "Identity request for scope %r — returning %d key(s)", scope, len(keys)
                 )
                 body = struct.pack(">I", len(keys))
                 for _priv, pub_blob, comment in keys:
@@ -385,15 +383,13 @@ async def _handle_connection(
                     match = key_by_blob.get(req_blob)
                     if match is None:
                         _logger.warning(
-                            "Sign request for unknown key from %s (project %r) — no matching key blob",
+                            "Sign request for unknown key from %s (scope %r) — no matching key blob",
                             peer,
-                            project,
+                            scope,
                         )
                         _write_msg(writer, SSH_AGENT_FAILURE)
                     else:
-                        _logger.info(
-                            "Sign request fulfilled for project %r key %r", project, match[1]
-                        )
+                        _logger.info("Sign request fulfilled for scope %r key %r", scope, match[1])
                         sig_blob = _sign(match[0], sign_data, flags)
                         _write_msg(writer, SSH_AGENT_SIGN_RESPONSE, _pack_string(sig_blob))
 
@@ -424,7 +420,7 @@ async def start_ssh_agent_server(
 
     Args:
         db_path: Path to the credential proxy sqlite3 database (for phantom token lookups).
-        keys_file: Path to ``ssh-keys.json`` mapping project IDs to key file paths.
+        keys_file: Path to ``ssh-keys.json`` mapping credential scopes to key file paths.
         host: Bind address (typically ``"127.0.0.1"``).
         port: TCP port to listen on.
 

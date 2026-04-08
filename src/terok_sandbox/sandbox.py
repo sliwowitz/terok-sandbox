@@ -117,11 +117,11 @@ class Sandbox:
 
         ensure_server_reachable(self._cfg)
 
-    def create_token(self, project_id: str, task_id: str) -> str:
+    def create_token(self, scope: str, task_id: str) -> str:
         """Create a task-scoped gate access token."""
         from .gate.tokens import create_token
 
-        return create_token(project_id, task_id, self._cfg)
+        return create_token(scope, task_id, self._cfg)
 
     def gate_url(self, repo_path: Path, token: str) -> str:
         """Build an HTTP URL for gate access to *repo_path*."""
@@ -255,8 +255,8 @@ class Sandbox:
 
     # -- SSH ----------------------------------------------------------------
 
-    def init_ssh(self, project_id: str) -> SSHManager:
-        """Create an SSH manager for *project_id*."""
+    def init_ssh(self, scope: str) -> SSHManager:
+        """Create an SSH manager for *scope*."""
         from .credentials.ssh import SSHManager
 
-        return SSHManager(project_id=project_id)
+        return SSHManager(scope=scope)

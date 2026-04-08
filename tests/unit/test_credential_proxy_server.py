@@ -152,9 +152,9 @@ class TestTokenDB:
         accessor.close()
 
     def test_lookup_valid_token(self, token_db: _TokenDB) -> None:
-        """Valid token returns project/task/credential_set/provider."""
+        """Valid token returns scope/task/credential_set/provider."""
         info = token_db.lookup_token(token_db._test_token)
-        assert info["project"] == "proj"
+        assert info["scope"] == "proj"
         assert info["credential_set"] == "default"
         assert info["provider"] == "claude"
 

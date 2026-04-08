@@ -3,7 +3,7 @@
 
 """Token CRUD for gate server per-task authentication.
 
-Each task gets a prefixed random 128-bit hex token scoped to its project.
+Each task gets a prefixed random 128-bit hex token scoped to a credential scope.
 Tokens are stored in ``state_root()/gate/tokens.json`` and read by the
 standalone gate server process (which receives the file path via
 ``--token-file``).
@@ -12,7 +12,7 @@ Token format: ``terok-g-<32 hex chars>`` (e.g. ``terok-g-a1b2c3…``).
 
 File format::
 
-    {"terok-g-<hex>": {"project": "<project_id>", "task": "<task_id>"}}
+    {"terok-g-<hex>": {"scope": "<scope>", "task": "<task_id>"}}
 """
 
 from __future__ import annotations
@@ -34,7 +34,7 @@ def token_file_path(cfg: SandboxConfig | None = None) -> Path:
     return (cfg or SandboxConfig()).token_file_path
 
 
-def create_token(project_id: str, task_id: str, cfg: SandboxConfig | None = None) -> str:
+def create_token(scope: str, task_id: str, cfg: SandboxConfig | None = None) -> str:
     """Generate a 128-bit hex token, persist atomically, and return it.
 
     Uses ``secrets.token_hex(16)`` for cryptographic randomness.
@@ -44,20 +44,20 @@ def create_token(project_id: str, task_id: str, cfg: SandboxConfig | None = None
     path = token_file_path(cfg)
     with _token_lock(path):
         tokens = _read_tokens(path)
-        tokens[token] = {"project": project_id, "task": task_id}
+        tokens[token] = {"scope": scope, "task": task_id}
         _write_tokens(path, tokens)
     return token
 
 
-def revoke_token_for_task(project_id: str, task_id: str, cfg: SandboxConfig | None = None) -> None:
-    """Remove all tokens for the given project+task pair.  Idempotent."""
+def revoke_token_for_task(scope: str, task_id: str, cfg: SandboxConfig | None = None) -> None:
+    """Remove all tokens for the given scope+task pair.  Idempotent."""
     path = token_file_path(cfg)
     with _token_lock(path):
         tokens = _read_tokens(path)
         to_remove = [
             t
             for t, info in tokens.items()
-            if info.get("project") == project_id and info.get("task") == task_id
+            if info.get("scope") == scope and info.get("task") == task_id
         ]
         if not to_remove:
             return
@@ -81,7 +81,7 @@ def _read_tokens(path: Path) -> dict[str, dict[str, str]]:
         for tok, info in data.items()
         if isinstance(tok, str)
         and isinstance(info, dict)
-        and isinstance(info.get("project"), str)
+        and isinstance(info.get("scope"), str)
         and isinstance(info.get("task"), str)
     }
 

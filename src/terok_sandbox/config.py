@@ -110,7 +110,7 @@ class SandboxConfig:
 
     @property
     def ssh_keys_dir(self) -> Path:
-        """Return the base directory for per-project SSH keys."""
+        """Return the base directory for per-scope SSH keys."""
         return self.state_dir / "ssh-keys"
 
     @property

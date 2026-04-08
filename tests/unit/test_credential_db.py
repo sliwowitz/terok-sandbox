@@ -71,7 +71,7 @@ class TestProxyTokens:
         assert len(token) == 8 + 32  # prefix + hex(16 bytes)
         info = db.lookup_proxy_token(token)
         assert info == {
-            "project": "proj1",
+            "scope": "proj1",
             "task": "task-42",
             "credential_set": "default",
             "provider": "claude",
@@ -105,7 +105,7 @@ class TestProxyTokens:
         assert db.lookup_proxy_token(t2) is not None
 
     def test_revoke_removes_all_for_task(self, db: CredentialDB) -> None:
-        """revoke_proxy_tokens removes all tokens for a project/task pair."""
+        """revoke_proxy_tokens removes all tokens for a scope/task pair."""
         t1 = db.create_proxy_token("proj", "task-1", "default", "claude")
         t2 = db.create_proxy_token("proj", "task-1", "default", "claude")
         t3 = db.create_proxy_token("proj", "task-2", "default", "claude")

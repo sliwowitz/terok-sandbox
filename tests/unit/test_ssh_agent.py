@@ -114,12 +114,12 @@ class TestWireFormat:
 
 
 class TestKeyCache:
-    """Verify project-keyed SSH key cache."""
+    """Verify scope-keyed SSH key cache."""
 
-    def test_get_known_project(
+    def test_get_known_scope(
         self, tmp_path: Path, ed25519_keypair: tuple[Path, Path, bytes]
     ) -> None:
-        """Known project with valid keys returns list of resolved key material."""
+        """Known scope with valid keys returns list of resolved key material."""
         priv_path, pub_path, expected_blob = ed25519_keypair
         kf = tmp_path / "keys.json"
         kf.write_text(
@@ -135,7 +135,7 @@ class TestKeyCache:
     def test_get_multiple_keys(
         self, tmp_path: Path, ed25519_keypair: tuple[Path, Path, bytes]
     ) -> None:
-        """Project with a list of key entries returns all resolved keys."""
+        """Scope with a list of key entries returns all resolved keys."""
         priv1, pub1, blob1 = ed25519_keypair
         # Generate second keypair
         key2 = Ed25519PrivateKey.generate()
@@ -161,8 +161,8 @@ class TestKeyCache:
         assert keys[0][1] == blob1
         assert keys[1][2] == "key-two"
 
-    def test_get_unknown_project(self, tmp_path: Path) -> None:
-        """Unknown project returns None."""
+    def test_get_unknown_scope(self, tmp_path: Path) -> None:
+        """Unknown scope returns None."""
         kf = tmp_path / "keys.json"
         kf.write_text("{}")
         assert _KeyCache(str(kf)).get("nope") is None
@@ -170,7 +170,7 @@ class TestKeyCache:
     def test_caches_across_calls(
         self, tmp_path: Path, ed25519_keypair: tuple[Path, Path, bytes]
     ) -> None:
-        """Second get() for the same project returns cached objects (same identity)."""
+        """Second get() for the same scope returns cached objects (same identity)."""
         priv_path, pub_path, _ = ed25519_keypair
         kf = tmp_path / "keys.json"
         kf.write_text(
@@ -241,7 +241,7 @@ class TestSSHAgentRoundTrip:
     """Full TCP round-trip tests using a real asyncio server."""
 
     async def test_identity_listing(self, ssh_agent_env) -> None:
-        """REQUEST_IDENTITIES returns the project's public key."""
+        """REQUEST_IDENTITIES returns the scope's public key."""
         db_path, keys_file, token, pub_blob = ssh_agent_env
 
         server = await start_ssh_agent_server(db_path, keys_file, "127.0.0.1", 0)
@@ -300,7 +300,7 @@ class TestSSHAgentRoundTrip:
             await server.wait_closed()
 
     async def test_multi_key_identity_listing_and_signing(self, tmp_path: Path) -> None:
-        """IDENTITIES_ANSWER returns all keys for a list-format project; each key signs."""
+        """IDENTITIES_ANSWER returns all keys for a list-format scope; each key signs."""
 
         # Generate two independent ed25519 keypairs
         def _make_pair(name: str, comment: str | None = None) -> tuple[Path, Path, bytes]:
@@ -689,7 +689,7 @@ class TestKeyCacheEdgeCases:
     """Verify _KeyCache re-reads the file, caches, and handles malformed data."""
 
     def test_missing_file_returns_none(self, tmp_path: Path) -> None:
-        """Non-existent keys file returns None for any project."""
+        """Non-existent keys file returns None for any scope."""
         assert _KeyCache(str(tmp_path / "no-such.json")).get("any") is None
 
     def test_corrupt_json_returns_none(self, tmp_path: Path) -> None:
@@ -731,8 +731,8 @@ class TestKeyCacheEdgeCases:
         kf.write_text(json.dumps({"proj": [{"private_key": 42, "public_key": "/b"}]}))
         assert _KeyCache(str(kf)).get("proj") is None
 
-    def test_project_not_a_list_returns_none(self, tmp_path: Path) -> None:
-        """Project entry that is not a list returns None."""
+    def test_scope_not_a_list_returns_none(self, tmp_path: Path) -> None:
+        """Scope entry that is not a list returns None."""
         kf = tmp_path / "keys.json"
         kf.write_text(json.dumps({"proj": {"private_key": "/a", "public_key": "/a.pub"}}))
         assert _KeyCache(str(kf)).get("proj") is None
