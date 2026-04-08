@@ -32,7 +32,7 @@ class TestUpdateSshKeysJson:
         assert data == {"proj-a": [{"private_key": "/a/priv", "public_key": "/a/pub"}]}
 
     def test_appends_to_existing(self, tmp_path: Path) -> None:
-        """Adds a new project without overwriting existing entries."""
+        """Adds a new scope without overwriting existing entries."""
         keys_path = tmp_path / "ssh-keys.json"
         keys_path.write_text(json.dumps({"old": [{"private_key": "/o", "public_key": "/o.pub"}]}))
 
@@ -54,7 +54,7 @@ class TestUpdateSshKeysJson:
         assert data["proj"][0]["public_key"] == "/v1/pub-updated"
 
     def test_different_path_expands_to_list(self, tmp_path: Path) -> None:
-        """A second key with a different private_key path creates a list for the project."""
+        """A second key with a different private_key path creates a list for the scope."""
         keys_path = tmp_path / "ssh-keys.json"
         update_ssh_keys_json(keys_path, "proj", _result("/k1/priv", "/k1/pub"))
         update_ssh_keys_json(keys_path, "proj", _result("/k2/priv", "/k2/pub"))

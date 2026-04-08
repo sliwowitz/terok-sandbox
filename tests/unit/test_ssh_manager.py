@@ -17,9 +17,9 @@ class TestSSHManagerConstructor:
     """Verify SSHManager init stores parameters correctly."""
 
     def test_minimal_construction(self) -> None:
-        """SSHManager requires only project_id."""
-        mgr = SSHManager(project_id="demo")
-        assert mgr._project_id == "demo"
+        """SSHManager requires only scope."""
+        mgr = SSHManager(scope="demo")
+        assert mgr._scope == "demo"
         assert mgr._ssh_host_dir is None
         assert mgr._ssh_key_name is None
         assert mgr._ssh_config_template is None
@@ -29,7 +29,7 @@ class TestSSHManagerConstructor:
         host_dir = tmp_path / "ssh"
         template = tmp_path / "tpl"
         mgr = SSHManager(
-            project_id="proj",
+            scope="proj",
             ssh_host_dir=host_dir,
             ssh_key_name="my_key",
             ssh_config_template=template,
@@ -41,7 +41,7 @@ class TestSSHManagerConstructor:
     def test_string_paths_converted(self) -> None:
         """String paths are converted to Path objects."""
         mgr = SSHManager(
-            project_id="p",
+            scope="p",
             ssh_host_dir="/tmp/ssh",
             ssh_config_template="/tmp/tpl",
         )
@@ -51,20 +51,20 @@ class TestSSHManagerConstructor:
     def test_no_envs_base_dir_param(self) -> None:
         """SSHManager no longer accepts envs_base_dir."""
         with pytest.raises(TypeError, match="envs_base_dir"):
-            SSHManager(project_id="p", envs_base_dir="/tmp")  # type: ignore[call-arg]
+            SSHManager(scope="p", envs_base_dir="/tmp")  # type: ignore[call-arg]
 
 
 class TestKeyName:
     """Verify key_name property resolution."""
 
     def test_default_key_name(self) -> None:
-        """Default key name derives from project_id."""
-        mgr = SSHManager(project_id="myproj")
+        """Default key name derives from scope."""
+        mgr = SSHManager(scope="myproj")
         assert mgr.key_name == "id_ed25519_myproj"
 
     def test_custom_key_name(self) -> None:
         """Explicit ssh_key_name overrides the default."""
-        mgr = SSHManager(project_id="myproj", ssh_key_name="custom_key")
+        mgr = SSHManager(scope="myproj", ssh_key_name="custom_key")
         assert mgr.key_name == "custom_key"
 
 
@@ -72,7 +72,7 @@ class TestEffectiveKeyName:
     """Verify the effective_ssh_key_name helper."""
 
     def test_default(self) -> None:
-        """Default: id_ed25519_<project>."""
+        """Default: id_ed25519_<scope>."""
         assert effective_ssh_key_name("demo") == "id_ed25519_demo"
 
     def test_custom_name_passthrough(self) -> None:
@@ -105,7 +105,7 @@ class TestInitFallbackResolution:
     def test_init_uses_ssh_host_dir_when_set(self, tmp_path: Path) -> None:
         """Explicit ssh_host_dir is used as the target directory."""
         ssh_dir = tmp_path / "custom-ssh"
-        mgr = SSHManager(project_id="proj", ssh_host_dir=ssh_dir)
+        mgr = SSHManager(scope="proj", ssh_host_dir=ssh_dir)
         result = mgr.init()
         assert Path(result["dir"]) == ssh_dir.resolve()
 
@@ -114,7 +114,7 @@ class TestInitFallbackResolution:
     ) -> None:
         """Without ssh_host_dir, init() resolves via SandboxConfig().ssh_keys_dir."""
         monkeypatch.setenv("TEROK_SANDBOX_STATE_DIR", str(tmp_path / "sandbox"))
-        mgr = SSHManager(project_id="demo")
+        mgr = SSHManager(scope="demo")
         result = mgr.init()
         expected = (tmp_path / "sandbox" / "ssh-keys" / "demo").resolve()
         assert Path(result["dir"]) == expected

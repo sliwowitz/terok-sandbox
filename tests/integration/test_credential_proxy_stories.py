@@ -162,8 +162,8 @@ class TestStoreAndRetrieveCredentials:
         assert "claude" in providers
         assert "gh" in providers
 
-    def test_per_project_credential_isolation(self, db: CredentialDB) -> None:
-        """Different projects have independent credential sets."""
+    def test_per_scope_credential_isolation(self, db: CredentialDB) -> None:
+        """Different scopes have independent credential sets."""
         db.store_credential("default", "claude", {"access_token": "default-key"})
         db.store_credential("work", "claude", {"access_token": "work-key"})
 
@@ -183,7 +183,7 @@ class TestPhantomTokenLifecycle:
 
         # Token resolves to the right credential set and provider
         info = db.lookup_proxy_token(token)
-        assert info["project"] == "myproject"
+        assert info["scope"] == "myproject"
         assert info["credential_set"] == "default"
         assert info["provider"] == "claude"
 

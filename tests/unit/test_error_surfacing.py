@@ -311,7 +311,7 @@ class TestGateDirRemovalWarning:
         gate_dir = tmp_path / "gate" / "myproject.git"
         gate_dir.mkdir(parents=True)
         gate = GitGate(
-            project_id="myproject",
+            scope="myproject",
             gate_path=gate_dir,
             upstream_url="https://example.com/org/repo.git",
         )

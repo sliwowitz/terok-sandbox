@@ -9,7 +9,7 @@ component equivalent to ``git daemon``: a separate process that serves repos.
 Token validation:
     Each request must carry HTTP Basic Auth with the token as the username
     (password is ignored).  The token is looked up in a JSON file mapping
-    tokens to project IDs.  The requested repo must match the token's project.
+    tokens to credential scopes.  The requested repo must match the token's scope.
 
 Modes:
     --inetd   Handle one request on an inherited socket (fd 0), then exit.
@@ -49,7 +49,7 @@ _LISTEN_ADDR = "127.0.0.1"
 
 
 def _validate_token_data(data: object) -> dict[str, dict[str, str]]:
-    """Filter parsed JSON to only valid ``{token: {project, task}}`` entries."""
+    """Filter parsed JSON to only valid ``{token: {scope, task}}`` entries."""
     if not isinstance(data, dict):
         return {}
     return {
@@ -57,7 +57,7 @@ def _validate_token_data(data: object) -> dict[str, dict[str, str]]:
         for tok, info in data.items()
         if isinstance(tok, str)
         and isinstance(info, dict)
-        and isinstance(info.get("project"), str)
+        and isinstance(info.get("scope"), str)
         and isinstance(info.get("task"), str)
     }
 
@@ -73,7 +73,7 @@ class TokenStore:
         """Initialize with the path to the tokens JSON file.
 
         When *admin_token* is set, it grants access to **all** repos,
-        bypassing the per-task project scope.  Intended for host-level
+        bypassing the per-task scope restriction.  Intended for host-level
         access in containerised deployments.
         """
         self._path = token_file
@@ -98,7 +98,7 @@ class TokenStore:
             self._mtime_ns = st.st_mtime_ns
 
     def validate(self, token: str) -> str | None:
-        """Return project_id if *token* is valid, else ``None``.
+        """Return scope if *token* is valid, else ``None``.
 
         Returns :data:`_ADMIN_WILDCARD` (``"*"``) for admin tokens,
         granting access to any repo.  Reloads the token file when its
@@ -110,8 +110,8 @@ class TokenStore:
         info = self._tokens.get(token)
         if info is None:
             return None
-        project = info.get("project")
-        return project if isinstance(project, str) else None
+        scope = info.get("scope")
+        return scope if isinstance(scope, str) else None
 
 
 # ---------------------------------------------------------------------------
@@ -284,11 +284,11 @@ def _make_handler_class(base_path: Path, token_store: TokenStore) -> type[BaseHT
                 self._send_auth_required()
                 return
 
-            project_id = token_store.validate(token)
-            if project_id is None:
+            scope = token_store.validate(token)
+            if scope is None:
                 self.send_error(403, "Forbidden")
                 return
-            if project_id != _ADMIN_WILDCARD and repo != f"{project_id}.git":
+            if scope != _ADMIN_WILDCARD and repo != f"{scope}.git":
                 self.send_error(403, "Forbidden")
                 return
 

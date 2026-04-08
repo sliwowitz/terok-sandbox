@@ -18,7 +18,7 @@ class TestGitEnvWithSsh:
         key = tmp_path / "id_ed25519_myproj"
         key.write_text("fake-key")
 
-        env = _git_env_with_ssh(project_id="myproj", ssh_host_dir=tmp_path, ssh_key_name=None)
+        env = _git_env_with_ssh(scope="myproj", ssh_host_dir=tmp_path, ssh_key_name=None)
 
         assert "GIT_SSH_COMMAND" in env
         cmd = env["GIT_SSH_COMMAND"]
@@ -29,7 +29,7 @@ class TestGitEnvWithSsh:
 
     def test_no_git_ssh_command_when_key_missing(self, tmp_path: Path) -> None:
         """When no key file exists, env is returned unmodified (HTTPS fallback)."""
-        env = _git_env_with_ssh(project_id="myproj", ssh_host_dir=tmp_path, ssh_key_name=None)
+        env = _git_env_with_ssh(scope="myproj", ssh_host_dir=tmp_path, ssh_key_name=None)
 
         assert "GIT_SSH_COMMAND" not in env
 
@@ -38,8 +38,6 @@ class TestGitEnvWithSsh:
         key = tmp_path / "my_custom_key"
         key.write_text("fake-key")
 
-        env = _git_env_with_ssh(
-            project_id="myproj", ssh_host_dir=tmp_path, ssh_key_name="my_custom_key"
-        )
+        env = _git_env_with_ssh(scope="myproj", ssh_host_dir=tmp_path, ssh_key_name="my_custom_key")
 
         assert str(key) in env["GIT_SSH_COMMAND"]

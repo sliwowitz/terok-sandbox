@@ -50,7 +50,7 @@ class CredentialDB:
             );
             CREATE TABLE IF NOT EXISTS proxy_tokens (
                 token          TEXT PRIMARY KEY,
-                project        TEXT NOT NULL,
+                scope          TEXT NOT NULL,
                 task           TEXT NOT NULL,
                 credential_set TEXT NOT NULL,
                 provider       TEXT NOT NULL
@@ -93,37 +93,35 @@ class CredentialDB:
 
     # ── Phantom tokens ───────────────────────────────────────────────────
 
-    def create_proxy_token(
-        self, project: str, task: str, credential_set: str, provider: str
-    ) -> str:
+    def create_proxy_token(self, scope: str, task: str, credential_set: str, provider: str) -> str:
         """Create a per-task, per-provider phantom token.
 
         Token format: ``terok-p-<32 hex chars>``.
         """
         token = f"terok-p-{secrets.token_hex(16)}"
         self._conn.execute(
-            "INSERT INTO proxy_tokens (token, project, task, credential_set, provider)"
+            "INSERT INTO proxy_tokens (token, scope, task, credential_set, provider)"
             " VALUES (?, ?, ?, ?, ?)",
-            (token, project, task, credential_set, provider),
+            (token, scope, task, credential_set, provider),
         )
         self._conn.commit()
         return token
 
     def lookup_proxy_token(self, token: str) -> dict | None:
-        """Return ``{project, task, credential_set, provider}`` or ``None``."""
+        """Return ``{scope, task, credential_set, provider}`` or ``None``."""
         row = self._conn.execute(
-            "SELECT project, task, credential_set, provider FROM proxy_tokens WHERE token = ?",
+            "SELECT scope, task, credential_set, provider FROM proxy_tokens WHERE token = ?",
             (token,),
         ).fetchone()
         if row is None:
             return None
-        return {"project": row[0], "task": row[1], "credential_set": row[2], "provider": row[3]}
+        return {"scope": row[0], "task": row[1], "credential_set": row[2], "provider": row[3]}
 
-    def revoke_proxy_tokens(self, project: str, task: str) -> int:
-        """Revoke all tokens for a project/task pair.  Returns count revoked."""
+    def revoke_proxy_tokens(self, scope: str, task: str) -> int:
+        """Revoke all tokens for a scope/task pair.  Returns count revoked."""
         cur = self._conn.execute(
-            "DELETE FROM proxy_tokens WHERE project = ? AND task = ?",
-            (project, task),
+            "DELETE FROM proxy_tokens WHERE scope = ? AND task = ?",
+            (scope, task),
         )
         self._conn.commit()
         return cur.rowcount

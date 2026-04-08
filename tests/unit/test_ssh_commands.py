@@ -54,7 +54,7 @@ class TestHandleSshImport:
         priv_src, pub_src = keypair
         cfg = _mock_cfg(tmp_path)
 
-        _handle_ssh_import(project="myproj", private_key=str(priv_src), cfg=cfg)
+        _handle_ssh_import(scope="myproj", private_key=str(priv_src), create_scope=True, cfg=cfg)
 
         # Files must exist in the managed directory
         dest_dir = cfg.ssh_keys_dir / "myproj"
@@ -76,7 +76,7 @@ class TestHandleSshImport:
         priv_src, _pub = keypair
         cfg = _mock_cfg(tmp_path)
 
-        _handle_ssh_import(project="myproj", private_key=str(priv_src), cfg=cfg)
+        _handle_ssh_import(scope="myproj", private_key=str(priv_src), create_scope=True, cfg=cfg)
 
         priv_dst = cfg.ssh_keys_dir / "myproj" / priv_src.name
         assert oct(priv_dst.stat().st_mode & 0o777) == oct(0o600)
@@ -87,7 +87,11 @@ class TestHandleSshImport:
         cfg = _mock_cfg(tmp_path)
 
         _handle_ssh_import(
-            project="proj", private_key=str(priv_src), public_key=str(pub_src), cfg=cfg
+            scope="proj",
+            private_key=str(priv_src),
+            public_key=str(pub_src),
+            create_scope=True,
+            cfg=cfg,
         )
 
         pub_dst = cfg.ssh_keys_dir / "proj" / pub_src.name
@@ -102,7 +106,7 @@ class TestHandleSshImport:
         pub_orig = pub_src.read_text()
         cfg = _mock_cfg(tmp_path)
 
-        _handle_ssh_import(project="proj", private_key=str(priv_src), cfg=cfg)
+        _handle_ssh_import(scope="proj", private_key=str(priv_src), create_scope=True, cfg=cfg)
 
         assert priv_src.read_bytes() == priv_orig
         assert pub_src.read_text() == pub_orig
@@ -111,7 +115,9 @@ class TestHandleSshImport:
         """Missing private key raises SystemExit."""
         cfg = _mock_cfg(tmp_path)
         with pytest.raises(SystemExit, match="not found"):
-            _handle_ssh_import(project="proj", private_key=str(tmp_path / "no-such"), cfg=cfg)
+            _handle_ssh_import(
+                scope="proj", private_key=str(tmp_path / "no-such"), create_scope=True, cfg=cfg
+            )
 
     def test_missing_public_key_exits(self, tmp_path: Path, keypair: tuple[Path, Path]) -> None:
         """Private key exists but .pub is missing raises SystemExit."""
@@ -119,10 +125,10 @@ class TestHandleSshImport:
         pub.unlink()
         cfg = _mock_cfg(tmp_path)
         with pytest.raises(SystemExit, match="not found"):
-            _handle_ssh_import(project="proj", private_key=str(priv), cfg=cfg)
+            _handle_ssh_import(scope="proj", private_key=str(priv), create_scope=True, cfg=cfg)
 
     def test_second_key_appends(self, tmp_path: Path, keypair: tuple[Path, Path]) -> None:
-        """Importing a second key for the same project appends to the list."""
+        """Importing a second key for the same scope appends to the list."""
         priv, pub = keypair
         cfg = _mock_cfg(tmp_path)
 
@@ -136,8 +142,8 @@ class TestHandleSshImport:
         pub_raw2 = key2.public_key().public_bytes(Encoding.OpenSSH, PublicFormat.OpenSSH)
         pub2.write_text(f"{pub_raw2.decode()} alt\n")
 
-        _handle_ssh_import(project="proj", private_key=str(priv), cfg=cfg)
-        _handle_ssh_import(project="proj", private_key=str(priv2), cfg=cfg)
+        _handle_ssh_import(scope="proj", private_key=str(priv), create_scope=True, cfg=cfg)
+        _handle_ssh_import(scope="proj", private_key=str(priv2), cfg=cfg)
 
         data = json.loads(cfg.ssh_keys_json_path.read_text())
         assert len(data["proj"]) == 2
@@ -165,8 +171,10 @@ class TestHandleSshImport:
             pub_raw = key.public_key().public_bytes(Encoding.OpenSSH, PublicFormat.OpenSSH)
             pub.write_text(f"{pub_raw.decode()} comment\n")
 
-        _handle_ssh_import(project="proj", private_key=str(src_a / "id_ed25519_proj"), cfg=cfg)
-        _handle_ssh_import(project="proj", private_key=str(src_b / "id_ed25519_proj"), cfg=cfg)
+        _handle_ssh_import(
+            scope="proj", private_key=str(src_a / "id_ed25519_proj"), create_scope=True, cfg=cfg
+        )
+        _handle_ssh_import(scope="proj", private_key=str(src_b / "id_ed25519_proj"), cfg=cfg)
 
         data = json.loads(cfg.ssh_keys_json_path.read_text())
         assert len(data["proj"]) == 2
@@ -183,14 +191,14 @@ class TestHandleSshImport:
         priv_src, _pub = keypair
         cfg = _mock_cfg(tmp_path)
 
-        _handle_ssh_import(project="proj", private_key=str(priv_src), cfg=cfg)
-        _handle_ssh_import(project="proj", private_key=str(priv_src), cfg=cfg)
+        _handle_ssh_import(scope="proj", private_key=str(priv_src), create_scope=True, cfg=cfg)
+        _handle_ssh_import(scope="proj", private_key=str(priv_src), cfg=cfg)
 
         data = json.loads(cfg.ssh_keys_json_path.read_text())
         assert len(data["proj"]) == 1
 
     @pytest.mark.parametrize(
-        "bad_project",
+        "bad_scope",
         [
             "../other-dir",
             "dir/subdir",
@@ -201,14 +209,16 @@ class TestHandleSshImport:
             "has\x00null",
         ],
     )
-    def test_invalid_project_id_exits(
-        self, tmp_path: Path, keypair: tuple[Path, Path], bad_project: str
+    def test_invalid_scope_exits(
+        self, tmp_path: Path, keypair: tuple[Path, Path], bad_scope: str
     ) -> None:
-        """Project IDs with path-traversal or invalid characters raise SystemExit."""
+        """Scope IDs with path-traversal or invalid characters raise SystemExit."""
         priv_src, _pub = keypair
         cfg = _mock_cfg(tmp_path)
-        with pytest.raises(SystemExit, match="Invalid project ID"):
-            _handle_ssh_import(project=bad_project, private_key=str(priv_src), cfg=cfg)
+        with pytest.raises(SystemExit, match="Invalid scope"):
+            _handle_ssh_import(
+                scope=bad_scope, private_key=str(priv_src), create_scope=True, cfg=cfg
+            )
 
     def test_standalone_fallback_without_cfg(
         self, tmp_path: Path, keypair: tuple[Path, Path]
@@ -218,7 +228,7 @@ class TestHandleSshImport:
         cfg = _mock_cfg(tmp_path)
 
         with patch("terok_sandbox.config.SandboxConfig", return_value=cfg):
-            _handle_ssh_import(project="proj", private_key=str(priv_src))
+            _handle_ssh_import(scope="proj", private_key=str(priv_src), create_scope=True)
 
         dest_dir = cfg.ssh_keys_dir / "proj"
         assert (dest_dir / priv_src.name).is_file()
@@ -233,7 +243,7 @@ class TestNextKeyNumber:
     """Verify auto-numbering logic for side keys."""
 
     def test_empty_dir_returns_1(self, tmp_path: Path) -> None:
-        """Empty project directory starts numbering at 1."""
+        """Empty scope directory starts numbering at 1."""
         assert _next_key_number(tmp_path, "ed25519") == 1
 
     def test_nonexistent_dir_returns_1(self, tmp_path: Path) -> None:
@@ -302,7 +312,7 @@ class TestHandleSshAddKey:
         with patch(
             "terok_sandbox.credentials.ssh.subprocess.run", side_effect=_fake_keygen(tmp_path)
         ):
-            _handle_ssh_add_key(project="myproj", name="deploy-gitlab", cfg=cfg)
+            _handle_ssh_add_key(scope="myproj", name="deploy-gitlab", create_scope=True, cfg=cfg)
 
         dest_dir = cfg.ssh_keys_dir / "myproj"
         assert (dest_dir / "id_ed25519_deploy-gitlab").is_file()
@@ -322,7 +332,7 @@ class TestHandleSshAddKey:
         with patch(
             "terok_sandbox.credentials.ssh.subprocess.run", side_effect=_fake_keygen(tmp_path)
         ):
-            _handle_ssh_add_key(project="proj", cfg=cfg)
+            _handle_ssh_add_key(scope="proj", create_scope=True, cfg=cfg)
 
         dest_dir = cfg.ssh_keys_dir / "proj"
         assert (dest_dir / "id_ed25519_key-1").is_file()
@@ -333,8 +343,8 @@ class TestHandleSshAddKey:
         with patch(
             "terok_sandbox.credentials.ssh.subprocess.run", side_effect=_fake_keygen(tmp_path)
         ):
-            _handle_ssh_add_key(project="proj", cfg=cfg)
-            _handle_ssh_add_key(project="proj", cfg=cfg)
+            _handle_ssh_add_key(scope="proj", create_scope=True, cfg=cfg)
+            _handle_ssh_add_key(scope="proj", cfg=cfg)
 
         dest_dir = cfg.ssh_keys_dir / "proj"
         assert (dest_dir / "id_ed25519_key-1").is_file()
@@ -346,7 +356,9 @@ class TestHandleSshAddKey:
         with patch(
             "terok_sandbox.credentials.ssh.subprocess.run", side_effect=_fake_keygen(tmp_path)
         ):
-            _handle_ssh_add_key(project="proj", key_type="rsa", name="my-key", cfg=cfg)
+            _handle_ssh_add_key(
+                scope="proj", key_type="rsa", name="my-key", create_scope=True, cfg=cfg
+            )
 
         assert (cfg.ssh_keys_dir / "proj" / "id_rsa_my-key").is_file()
 
@@ -360,7 +372,7 @@ class TestHandleSshAddKey:
             _fake_keygen(tmp_path)(cmd)
 
         with patch("terok_sandbox.credentials.ssh.subprocess.run", side_effect=_capture):
-            _handle_ssh_add_key(project="proj", name="deploy", cfg=cfg)
+            _handle_ssh_add_key(scope="proj", name="deploy", create_scope=True, cfg=cfg)
 
         assert len(captured_cmds) == 1
         args = dict(zip(captured_cmds[0][1::2], captured_cmds[0][2::2], strict=False))
@@ -377,7 +389,7 @@ class TestHandleSshAddKey:
             "terok_sandbox.credentials.ssh.subprocess.run", side_effect=_fake_keygen(tmp_path)
         ):
             with pytest.raises(SystemExit, match="already exists"):
-                _handle_ssh_add_key(project="proj", name="my-key", cfg=cfg)
+                _handle_ssh_add_key(scope="proj", name="my-key", create_scope=True, cfg=cfg)
 
     def test_existing_pub_key_refuses_overwrite(self, tmp_path: Path) -> None:
         """A lone .pub file also prevents generation."""
@@ -390,7 +402,7 @@ class TestHandleSshAddKey:
             "terok_sandbox.credentials.ssh.subprocess.run", side_effect=_fake_keygen(tmp_path)
         ):
             with pytest.raises(SystemExit, match="already exists"):
-                _handle_ssh_add_key(project="proj", name="my-key", cfg=cfg)
+                _handle_ssh_add_key(scope="proj", name="my-key", create_scope=True, cfg=cfg)
 
     def test_registers_in_ssh_keys_json(self, tmp_path: Path) -> None:
         """Generated key is registered in ssh-keys.json."""
@@ -398,7 +410,7 @@ class TestHandleSshAddKey:
         with patch(
             "terok_sandbox.credentials.ssh.subprocess.run", side_effect=_fake_keygen(tmp_path)
         ):
-            _handle_ssh_add_key(project="proj", name="extra", cfg=cfg)
+            _handle_ssh_add_key(scope="proj", name="extra", create_scope=True, cfg=cfg)
 
         data = json.loads(cfg.ssh_keys_json_path.read_text())
         entry = data["proj"][0]
@@ -413,7 +425,7 @@ class TestHandleSshAddKey:
             "terok_sandbox.credentials.ssh.subprocess.run", side_effect=_fake_keygen(tmp_path)
         ):
             with pytest.raises(SystemExit, match="Invalid key name"):
-                _handle_ssh_add_key(project="proj", name=bad_name, cfg=cfg)
+                _handle_ssh_add_key(scope="proj", name=bad_name, create_scope=True, cfg=cfg)
 
     @pytest.mark.parametrize("good_name", ["deploy", "my-key", "DEPLOY", "my_key", "_private"])
     def test_valid_name_accepted(self, tmp_path: Path, good_name: str) -> None:
@@ -422,22 +434,22 @@ class TestHandleSshAddKey:
         with patch(
             "terok_sandbox.credentials.ssh.subprocess.run", side_effect=_fake_keygen(tmp_path)
         ):
-            _handle_ssh_add_key(project="proj", name=good_name, cfg=cfg)
+            _handle_ssh_add_key(scope="proj", name=good_name, create_scope=True, cfg=cfg)
 
         assert (cfg.ssh_keys_dir / "proj" / f"id_ed25519_{good_name}").is_file()
 
     @pytest.mark.parametrize(
-        "bad_project",
+        "bad_scope",
         ["../other", "dir/sub", "/absolute", "..", "", "has space"],
     )
-    def test_invalid_project_exits(self, tmp_path: Path, bad_project: str) -> None:
-        """Invalid project IDs raise SystemExit."""
+    def test_invalid_scope_exits(self, tmp_path: Path, bad_scope: str) -> None:
+        """Invalid scope IDs raise SystemExit."""
         cfg = _mock_cfg(tmp_path)
         with patch(
             "terok_sandbox.credentials.ssh.subprocess.run", side_effect=_fake_keygen(tmp_path)
         ):
-            with pytest.raises(SystemExit, match="Invalid project ID"):
-                _handle_ssh_add_key(project=bad_project, name="key", cfg=cfg)
+            with pytest.raises(SystemExit, match="Invalid scope"):
+                _handle_ssh_add_key(scope=bad_scope, name="key", create_scope=True, cfg=cfg)
 
     def test_invalid_key_type_exits(self, tmp_path: Path) -> None:
         """Unsupported key type raises SystemExit."""
@@ -446,7 +458,9 @@ class TestHandleSshAddKey:
             "terok_sandbox.credentials.ssh.subprocess.run", side_effect=_fake_keygen(tmp_path)
         ):
             with pytest.raises(SystemExit, match="Unsupported --key-type"):
-                _handle_ssh_add_key(project="proj", name="k", key_type="dsa", cfg=cfg)
+                _handle_ssh_add_key(
+                    scope="proj", name="k", key_type="dsa", create_scope=True, cfg=cfg
+                )
 
     def test_permission_error_exits(self, tmp_path: Path) -> None:
         """OSError during permission hardening raises SystemExit."""
@@ -461,7 +475,7 @@ class TestHandleSshAddKey:
             ),
         ):
             with pytest.raises(SystemExit, match="Failed to set permissions"):
-                _handle_ssh_add_key(project="proj", name="k", cfg=cfg)
+                _handle_ssh_add_key(scope="proj", name="k", create_scope=True, cfg=cfg)
 
     def test_pub_key_read_error_is_silent(
         self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
@@ -478,7 +492,7 @@ class TestHandleSshAddKey:
         with patch(
             "terok_sandbox.credentials.ssh.subprocess.run", side_effect=_keygen_then_remove_pub
         ):
-            _handle_ssh_add_key(project="proj", name="k", cfg=cfg)
+            _handle_ssh_add_key(scope="proj", name="k", create_scope=True, cfg=cfg)
 
         out = capsys.readouterr().out
         assert "SSH key generated" in out
@@ -493,9 +507,87 @@ class TestHandleSshAddKey:
                 "terok_sandbox.credentials.ssh.subprocess.run", side_effect=_fake_keygen(tmp_path)
             ),
         ):
-            _handle_ssh_add_key(project="proj", name="standalone")
+            _handle_ssh_add_key(scope="proj", name="standalone", create_scope=True)
 
         assert (cfg.ssh_keys_dir / "proj" / "id_ed25519_standalone").is_file()
+
+
+# ---------------------------------------------------------------------------
+# --create-scope validation
+# ---------------------------------------------------------------------------
+
+
+class TestCreateScopeValidationAddKey:
+    """Verify _handle_ssh_add_key rejects unknown scopes without --create-scope."""
+
+    def test_unknown_scope_without_create_scope_exits(self, tmp_path: Path) -> None:
+        """add-key with unknown scope and no --create-scope raises SystemExit."""
+        cfg = _mock_cfg(tmp_path)
+        # Pre-populate ssh-keys.json with a different scope
+        _write_keys_json(cfg, {"existing-scope": []})
+        with patch(
+            "terok_sandbox.credentials.ssh.subprocess.run", side_effect=_fake_keygen(tmp_path)
+        ):
+            with pytest.raises(SystemExit, match=r"(?s)Unknown scope.*Use --create-scope"):
+                _handle_ssh_add_key(scope="brand-new", name="k", cfg=cfg)
+
+    def test_unknown_scope_with_create_scope_succeeds(self, tmp_path: Path) -> None:
+        """add-key with unknown scope and create_scope=True succeeds."""
+        cfg = _mock_cfg(tmp_path)
+        _write_keys_json(cfg, {"existing-scope": []})
+        with patch(
+            "terok_sandbox.credentials.ssh.subprocess.run", side_effect=_fake_keygen(tmp_path)
+        ):
+            _handle_ssh_add_key(scope="brand-new", name="k", create_scope=True, cfg=cfg)
+        data = json.loads(cfg.ssh_keys_json_path.read_text())
+        assert "brand-new" in data
+
+    def test_known_scope_without_create_scope_succeeds(self, tmp_path: Path) -> None:
+        """add-key with known scope (pre-populated ssh-keys.json) succeeds without --create-scope."""
+        cfg = _mock_cfg(tmp_path)
+        _write_keys_json(cfg, {"known-scope": [{"private_key": "/old", "public_key": "/old.pub"}]})
+        with patch(
+            "terok_sandbox.credentials.ssh.subprocess.run", side_effect=_fake_keygen(tmp_path)
+        ):
+            _handle_ssh_add_key(scope="known-scope", name="k", cfg=cfg)
+        data = json.loads(cfg.ssh_keys_json_path.read_text())
+        assert len(data["known-scope"]) == 2
+
+
+class TestCreateScopeValidationImport:
+    """Verify _handle_ssh_import rejects unknown scopes without --create-scope."""
+
+    def test_unknown_scope_without_create_scope_exits(
+        self, tmp_path: Path, keypair: tuple[Path, Path]
+    ) -> None:
+        """import with unknown scope and no --create-scope raises SystemExit."""
+        priv_src, _pub = keypair
+        cfg = _mock_cfg(tmp_path)
+        _write_keys_json(cfg, {"existing-scope": []})
+        with pytest.raises(SystemExit, match=r"(?s)Unknown scope.*Use --create-scope"):
+            _handle_ssh_import(scope="brand-new", private_key=str(priv_src), cfg=cfg)
+
+    def test_unknown_scope_with_create_scope_succeeds(
+        self, tmp_path: Path, keypair: tuple[Path, Path]
+    ) -> None:
+        """import with unknown scope and create_scope=True succeeds."""
+        priv_src, _pub = keypair
+        cfg = _mock_cfg(tmp_path)
+        _write_keys_json(cfg, {"existing-scope": []})
+        _handle_ssh_import(scope="brand-new", private_key=str(priv_src), create_scope=True, cfg=cfg)
+        data = json.loads(cfg.ssh_keys_json_path.read_text())
+        assert "brand-new" in data
+
+    def test_known_scope_without_create_scope_succeeds(
+        self, tmp_path: Path, keypair: tuple[Path, Path]
+    ) -> None:
+        """import with known scope (pre-populated ssh-keys.json) succeeds without --create-scope."""
+        priv_src, _pub = keypair
+        cfg = _mock_cfg(tmp_path)
+        _write_keys_json(cfg, {"known-scope": [{"private_key": "/old", "public_key": "/old.pub"}]})
+        _handle_ssh_import(scope="known-scope", private_key=str(priv_src), cfg=cfg)
+        data = json.loads(cfg.ssh_keys_json_path.read_text())
+        assert len(data["known-scope"]) == 2
 
 
 # ---------------------------------------------------------------------------
@@ -572,8 +664,8 @@ class TestHandleSshList:
         _handle_ssh_list(cfg=cfg)
         assert "No SSH keys registered." in capsys.readouterr().out
 
-    def test_single_project(self, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
-        """One project with one key prints the table."""
+    def test_single_scope(self, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+        """One scope with one key prints the table."""
         cfg = _mock_cfg(tmp_path)
         priv = tmp_path / "id_ed25519"
         pub = tmp_path / "id_ed25519.pub"
@@ -589,8 +681,8 @@ class TestHandleSshList:
         assert "ed25519" in out
         assert "SHA256:" in out
 
-    def test_multiple_projects(self, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
-        """Two projects both appear in output."""
+    def test_multiple_scopes(self, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+        """Two scopes both appear in output."""
         cfg = _mock_cfg(tmp_path)
         rows = {}
         for pid in ("alpha", "beta"):
@@ -608,8 +700,8 @@ class TestHandleSshList:
         assert "alpha" in out
         assert "beta" in out
 
-    def test_filter_project(self, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
-        """--project filters to a single project."""
+    def test_filter_scope(self, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+        """--scope filters to a single scope."""
         cfg = _mock_cfg(tmp_path)
         rows = {}
         for pid in ("show-me", "hide-me"):
@@ -621,18 +713,18 @@ class TestHandleSshList:
             rows[pid] = [{"private_key": str(priv), "public_key": str(pub)}]
 
         _write_keys_json(cfg, rows)
-        _handle_ssh_list(project="show-me", cfg=cfg)
+        _handle_ssh_list(scope="show-me", cfg=cfg)
 
         out = capsys.readouterr().out
         assert "show-me" in out
         assert "hide-me" not in out
 
-    def test_filter_nonexistent_project_exits(self, tmp_path: Path) -> None:
-        """--project for unknown project raises SystemExit."""
+    def test_filter_nonexistent_scope_exits(self, tmp_path: Path) -> None:
+        """--scope for unknown scope raises SystemExit."""
         cfg = _mock_cfg(tmp_path)
         _write_keys_json(cfg, {"other": []})
         with pytest.raises(SystemExit, match="No keys registered"):
-            _handle_ssh_list(project="ghost", cfg=cfg)
+            _handle_ssh_list(scope="ghost", cfg=cfg)
 
     def test_side_key_comment(self, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
         """Side-key comments like 'tk-side:proj:keyname' are shown correctly."""
@@ -695,7 +787,7 @@ class TestHandleSshList:
         assert "No SSH keys registered." in capsys.readouterr().out
 
     def test_all_empty_lists(self, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
-        """Projects with empty key lists print 'No SSH keys registered.'."""
+        """Scopes with empty key lists print 'No SSH keys registered.'."""
         cfg = _mock_cfg(tmp_path)
         _write_keys_json(cfg, {"proj": []})
         _handle_ssh_list(cfg=cfg)
