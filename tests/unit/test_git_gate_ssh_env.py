@@ -27,9 +27,21 @@ class TestGitEnvWithSsh:
         assert "StrictHostKeyChecking=no" in cmd
         assert env["SSH_AUTH_SOCK"] == ""
 
-    def test_no_git_ssh_command_when_key_missing(self, tmp_path: Path) -> None:
-        """When no key file exists, env is returned unmodified (HTTPS fallback)."""
+    def test_blocks_host_keys_when_key_missing(self, tmp_path: Path) -> None:
+        """When no key file exists, host keys are blocked by default."""
         env = _git_env_with_ssh(scope="myproj", ssh_host_dir=tmp_path, ssh_key_name=None)
+
+        assert "GIT_SSH_COMMAND" in env
+        cmd = env["GIT_SSH_COMMAND"]
+        assert "IdentitiesOnly=yes" in cmd
+        assert "IdentityFile" not in cmd
+        assert env["SSH_AUTH_SOCK"] == ""
+
+    def test_allows_host_keys_when_opted_in(self, tmp_path: Path) -> None:
+        """When allow_host_keys=True and key is missing, env is unmodified."""
+        env = _git_env_with_ssh(
+            scope="myproj", ssh_host_dir=tmp_path, ssh_key_name=None, allow_host_keys=True
+        )
 
         assert "GIT_SSH_COMMAND" not in env
 
