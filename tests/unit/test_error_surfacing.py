@@ -325,8 +325,11 @@ class TestGateDirRemovalWarning:
                 gate.sync(force_reinit=True)
             except Exception:
                 pass  # clone may fail; we only care about the warning
-            mock_logger.warning.assert_called_once()
-            assert "Failed to remove gate dir" in mock_logger.warning.call_args[0][0]
+            rmtree_warnings = [
+                c for c in mock_logger.warning.call_args_list
+                if "Failed to remove gate dir" in str(c)
+            ]
+            assert len(rmtree_warnings) == 1
 
 
 # ═══════════════════════════════════════════════════════════════════════════

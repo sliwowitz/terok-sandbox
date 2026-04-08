@@ -104,6 +104,7 @@ class GitGate:
         default_branch: str | None = None,
         ssh_host_dir: Path | str | None = None,
         ssh_key_name: str | None = None,
+        allow_host_keys: bool = False,
         validate_gate_fn: Callable[[str], None] | None = None,
     ) -> None:
         """Initialise with plain parameters.
@@ -123,6 +124,11 @@ class GitGate:
             falls back to ``SandboxConfig().ssh_keys_dir / scope``.
         ssh_key_name:
             Explicit SSH key filename.
+        allow_host_keys:
+            When ``True``, fall back to the user's ``~/.ssh`` keys and
+            SSH agent if no terok-managed key is found.  Default
+            ``False`` — blocks host-key probing to prevent accidental
+            exposure of personal credentials.
         validate_gate_fn:
             Optional callback ``(scope) -> None`` that validates no other
             scope uses the same gate with a different upstream.  Injected by
@@ -134,6 +140,7 @@ class GitGate:
         self._default_branch = default_branch
         self._ssh_host_dir = Path(ssh_host_dir) if ssh_host_dir else None
         self._ssh_key_name = ssh_key_name
+        self._allow_host_keys = allow_host_keys
         self._validate_gate_fn = validate_gate_fn
 
     def _ssh_env(self) -> dict:
@@ -142,6 +149,7 @@ class GitGate:
             scope=self._scope,
             ssh_host_dir=self._ssh_host_dir,
             ssh_key_name=self._ssh_key_name,
+            allow_host_keys=self._allow_host_keys,
         )
 
     def _validate_gate(self) -> None:
@@ -373,6 +381,7 @@ def _git_env_with_ssh(
     scope: str,
     ssh_host_dir: Path | None,
     ssh_key_name: str | None,
+    allow_host_keys: bool = False,
 ) -> dict:
     """Return an env that forces git to use the scope's SSH key directly.
 
@@ -380,8 +389,9 @@ def _git_env_with_ssh(
     required.  The credential proxy handles container-side SSH auth; this
     helper only covers host-side gate operations (clone, fetch).
 
-    Falls back to the unmodified env when no key file is found (e.g. HTTPS
-    upstreams that need no SSH at all).
+    When the key file is not found and *allow_host_keys* is ``False``
+    (default), SSH is configured to reject all identities so that the
+    user's personal ``~/.ssh`` keys are never tried silently.
     """
     from ..config import SandboxConfig
 
@@ -400,7 +410,14 @@ def _git_env_with_ssh(
             "StrictHostKeyChecking=no",
         ]
         env["GIT_SSH_COMMAND"] = shlex.join(ssh_cmd)
-        # Clear SSH_AUTH_SOCK so agent identities are not considered
+        env["SSH_AUTH_SOCK"] = ""
+    elif allow_host_keys:
+        pass  # unmodified env — host SSH agent + ~/.ssh keys allowed
+    else:
+        # Block host-key probing: IdentitiesOnly with no IdentityFile.
+        logger.warning("SSH key not found at %s — host keys blocked", key_path)
+        ssh_cmd = ["ssh", "-o", "IdentitiesOnly=yes", "-o", "StrictHostKeyChecking=no"]
+        env["GIT_SSH_COMMAND"] = shlex.join(ssh_cmd)
         env["SSH_AUTH_SOCK"] = ""
     return env
 
