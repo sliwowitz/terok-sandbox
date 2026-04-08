@@ -326,7 +326,8 @@ class TestGateDirRemovalWarning:
             except Exception:
                 pass  # clone may fail; we only care about the warning
             rmtree_warnings = [
-                c for c in mock_logger.warning.call_args_list
+                c
+                for c in mock_logger.warning.call_args_list
                 if "Failed to remove gate dir" in str(c)
             ]
             assert len(rmtree_warnings) == 1
