@@ -925,6 +925,32 @@ class TestHandleSshRemoveKey:
             with pytest.raises(SystemExit, match="Aborted"):
                 _handle_ssh_remove_key(name="tk-side:*", keep_files=True, cfg=cfg)
 
+    def test_single_match_still_confirms(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """Single parameterized match without --yes prompts 'Remove this key?'."""
+        cfg = _mock_cfg(tmp_path)
+        _populate_keys(tmp_path, cfg, count=1)
+
+        with patch("builtins.input", return_value="y"):
+            _handle_ssh_remove_key(scope="scope-0", keep_files=True, cfg=cfg)
+
+        out = capsys.readouterr().out
+        assert "Removed 1 key" in out
+
+    def test_single_match_declined_aborts(self, tmp_path: Path) -> None:
+        """Declining single-match confirmation aborts without removing."""
+        cfg = _mock_cfg(tmp_path)
+        _populate_keys(tmp_path, cfg, count=1)
+
+        with patch("builtins.input", return_value="n"):
+            with pytest.raises(SystemExit, match="Aborted"):
+                _handle_ssh_remove_key(scope="scope-0", keep_files=True, cfg=cfg)
+
+        # Key must still be in the registry
+        data = json.loads(cfg.ssh_keys_json_path.read_text())
+        assert "scope-0" in data
+
     # -- Interactive mode (no filters) ----------------------------------------
 
     def test_interactive_select_single(

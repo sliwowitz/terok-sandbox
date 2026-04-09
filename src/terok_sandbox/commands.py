@@ -322,9 +322,17 @@ def _build_key_rows(cfg: SandboxConfig) -> list[KeyRow]:
     except (OSError, json.JSONDecodeError) as exc:
         raise SystemExit(f"Cannot read {keys_path}: {exc}") from exc
 
+    if not isinstance(data, dict):
+        raise SystemExit(f"Cannot read {keys_path}: expected top-level JSON object")
+
     rows: list[KeyRow] = []
     for scope in sorted(data):
-        for entry in data[scope]:
+        entries = data[scope]
+        if not isinstance(entries, list):
+            continue
+        for entry in entries:
+            if not isinstance(entry, dict):
+                continue
             pub_path = Path(entry.get("public_key", ""))
             priv_path = entry.get("private_key", "")
             if pub_path.is_file():
@@ -633,21 +641,30 @@ def _remove_keys_from_json(keys_json_path: Path, removals: list[KeyRow]) -> None
         os.close(fd)
 
 
-def _delete_key_files(rows: list[KeyRow]) -> int:
+def _delete_key_files(rows: list[KeyRow]) -> tuple[int, list[str]]:
     """Remove private and public key files from disk.
 
-    Returns the number of files actually deleted.
+    Continues past per-file failures so partial cleanup still completes.
+    The registry has already been updated by the time this runs, so
+    leaving a stale file is better than aborting mid-deletion.
+
+    Returns:
+        Tuple of (files deleted, list of error messages for failed deletions).
     """
     from pathlib import Path
 
     deleted = 0
+    errors: list[str] = []
     for row in rows:
         for p in (row.private_key, row.public_key):
             path = Path(p)
             if path.is_file():
-                path.unlink()
-                deleted += 1
-    return deleted
+                try:
+                    path.unlink()
+                    deleted += 1
+                except OSError as exc:
+                    errors.append(f"{path}: {exc}")
+    return deleted, errors
 
 
 def _filter_key_rows(
@@ -723,11 +740,14 @@ def _handle_ssh_remove_key(
         candidates = _filter_key_rows(all_rows, scope=scope, name=name, fingerprint=fingerprint)
         if not candidates:
             raise SystemExit("No keys match the given filters.")
-        if len(candidates) > 1 and not yes:
-            print(f"Multiple keys match ({len(candidates)}):\n")
+        if not yes:
+            n = len(candidates)
+            if n > 1:
+                print(f"Multiple keys match ({n}):\n")
             _print_key_table(candidates)
+            prompt = f"\nRemove all {n} keys? [y/N]: " if n > 1 else "\nRemove this key? [y/N]: "
             try:
-                answer = input(f"\nRemove all {len(candidates)} keys? [y/N]: ").strip().lower()
+                answer = input(prompt).strip().lower()
             except (EOFError, KeyboardInterrupt):
                 print()
                 raise SystemExit("Aborted.") from None
@@ -766,7 +786,7 @@ def _handle_ssh_remove_key(
 
     # Execute removal
     _remove_keys_from_json(cfg.ssh_keys_json_path, candidates)
-    files_deleted = _delete_key_files(candidates) if do_delete else 0
+    files_deleted, file_errors = _delete_key_files(candidates) if do_delete else (0, [])
 
     n = len(candidates)
     msg = f"Removed {n} key{'s' if n != 1 else ''} from registry."
@@ -775,6 +795,8 @@ def _handle_ssh_remove_key(
     elif not do_delete:
         msg += " Key files kept on disk."
     print(msg)
+    for err in file_errors:
+        print(f"  Warning: could not delete {err}", file=__import__("sys").stderr)
 
 
 SSH_COMMANDS: tuple[CommandDef, ...] = (
