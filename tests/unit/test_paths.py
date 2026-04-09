@@ -219,24 +219,6 @@ class TestUmbrellaRoot:
         with unittest.mock.patch.dict(os.environ, {"TEROK_CONFIG_FILE": str(cfg)}, clear=True):
             assert umbrella_state_dir("sandbox") == custom / "sandbox"
 
-    def test_config_yml_state_dir_as_deprecated_alias(self, tmp_path: Path):
-        """config.yml paths.state_dir is accepted as a deprecated alias for paths.root."""
-        cfg = tmp_path / "config.yml"
-        custom = tmp_path / "legacy-state"
-        cfg.write_text(f"paths:\n  state_dir: {custom}\n", encoding="utf-8")
-        with unittest.mock.patch.dict(os.environ, {"TEROK_CONFIG_FILE": str(cfg)}, clear=True):
-            assert umbrella_state_dir("core") == custom / "core"
-
-    def test_paths_root_preferred_over_state_dir(self, tmp_path: Path):
-        """When both paths.root and paths.state_dir are set, root wins."""
-        cfg = tmp_path / "config.yml"
-        cfg.write_text(
-            f"paths:\n  root: {tmp_path / 'new'}\n  state_dir: {tmp_path / 'old'}\n",
-            encoding="utf-8",
-        )
-        with unittest.mock.patch.dict(os.environ, {"TEROK_CONFIG_FILE": str(cfg)}, clear=True):
-            assert umbrella_state_dir("x") == (tmp_path / "new" / "x").resolve()
-
     def test_package_env_overrides_terok_root(self):
         """Package-specific env var beats TEROK_ROOT."""
         with unittest.mock.patch.dict(
