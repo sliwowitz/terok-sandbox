@@ -89,14 +89,12 @@ def _config_file_path() -> Path:
 def _umbrella_root() -> Path | None:
     """Return the configured umbrella state root, or ``None`` for platform default.
 
-    Resolution: ``TEROK_ROOT`` env var → ``config.yml`` ``paths.root``
-    (with ``paths.state_dir`` as deprecated fallback).
+    Resolution: ``TEROK_ROOT`` env var → ``config.yml`` ``paths.root``.
     """
     env = os.getenv(_TEROK_ROOT_ENV)
     if env:
         return Path(env).expanduser()
-    cfg = _read_config_paths()
-    val = cfg.get("root") or cfg.get("state_dir")  # state_dir = deprecated alias
+    val = _read_config_paths().get("root")
     return Path(val).expanduser().resolve() if val else None
 
 
