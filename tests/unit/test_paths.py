@@ -10,6 +10,9 @@ import os
 import unittest.mock
 from pathlib import Path
 
+import pytest
+
+import terok_sandbox.paths as _paths_mod
 from terok_sandbox.paths import (
     config_root,
     credentials_root,
@@ -188,6 +191,86 @@ class TestUmbrellaConfigRoot:
 # ---------------------------------------------------------------------------
 
 _UMBRELLA_ROOT = "terok"
+
+
+@pytest.fixture(autouse=True)
+def _reset_config_cache():
+    """Clear the config paths cache between tests."""
+    _paths_mod._config_paths_cache = None
+    yield
+    _paths_mod._config_paths_cache = None
+
+
+class TestUmbrellaRoot:
+    """Tests for TEROK_ROOT env var and config.yml paths.root reading."""
+
+    def test_terok_root_env_overrides_platform_default(self):
+        """TEROK_ROOT moves the umbrella state root for all subdirs."""
+        with unittest.mock.patch.dict(os.environ, {"TEROK_ROOT": str(MOCK_BASE / "custom")}):
+            assert umbrella_state_dir("sandbox") == MOCK_BASE / "custom" / "sandbox"
+            assert umbrella_state_dir("agent") == MOCK_BASE / "custom" / "agent"
+            assert umbrella_state_dir() == MOCK_BASE / "custom"
+
+    def test_config_yml_paths_root(self, tmp_path: Path):
+        """config.yml paths.root is honored when no env var is set."""
+        cfg = tmp_path / "config.yml"
+        custom = tmp_path / "from-config"
+        cfg.write_text(f"paths:\n  root: {custom}\n", encoding="utf-8")
+        with unittest.mock.patch.dict(os.environ, {"TEROK_CONFIG_FILE": str(cfg)}, clear=True):
+            assert umbrella_state_dir("sandbox") == custom / "sandbox"
+
+    def test_config_yml_state_dir_as_deprecated_alias(self, tmp_path: Path):
+        """config.yml paths.state_dir is accepted as a deprecated alias for paths.root."""
+        cfg = tmp_path / "config.yml"
+        custom = tmp_path / "legacy-state"
+        cfg.write_text(f"paths:\n  state_dir: {custom}\n", encoding="utf-8")
+        with unittest.mock.patch.dict(os.environ, {"TEROK_CONFIG_FILE": str(cfg)}, clear=True):
+            assert umbrella_state_dir("core") == custom / "core"
+
+    def test_paths_root_preferred_over_state_dir(self, tmp_path: Path):
+        """When both paths.root and paths.state_dir are set, root wins."""
+        cfg = tmp_path / "config.yml"
+        cfg.write_text(
+            f"paths:\n  root: {tmp_path / 'new'}\n  state_dir: {tmp_path / 'old'}\n",
+            encoding="utf-8",
+        )
+        with unittest.mock.patch.dict(os.environ, {"TEROK_CONFIG_FILE": str(cfg)}, clear=True):
+            assert umbrella_state_dir("x") == (tmp_path / "new" / "x").resolve()
+
+    def test_package_env_overrides_terok_root(self):
+        """Package-specific env var beats TEROK_ROOT."""
+        with unittest.mock.patch.dict(
+            os.environ,
+            {"TEROK_ROOT": str(MOCK_BASE / "root"), "MY_PKG": str(MOCK_BASE / "pkg")},
+        ):
+            assert umbrella_state_dir("x", "MY_PKG") == MOCK_BASE / "pkg"
+
+    def test_terok_root_overrides_config_yml(self, tmp_path: Path):
+        """TEROK_ROOT env var beats config.yml paths.root."""
+        cfg = tmp_path / "config.yml"
+        cfg.write_text(f"paths:\n  root: {tmp_path / 'from-config'}\n", encoding="utf-8")
+        with unittest.mock.patch.dict(
+            os.environ,
+            {"TEROK_CONFIG_FILE": str(cfg), "TEROK_ROOT": str(MOCK_BASE / "from-env")},
+        ):
+            assert umbrella_state_dir("sandbox") == MOCK_BASE / "from-env" / "sandbox"
+
+    def test_missing_config_yml_falls_through(self):
+        """Missing config.yml is silently ignored."""
+        with unittest.mock.patch.dict(
+            os.environ, {"TEROK_CONFIG_FILE": "/nonexistent/config.yml"}, clear=True
+        ):
+            result = umbrella_state_dir("sandbox")
+            assert isinstance(result, Path)
+            assert result.name == "sandbox"
+
+    def test_malformed_config_yml_falls_through(self, tmp_path: Path):
+        """Malformed config.yml is silently ignored."""
+        cfg = tmp_path / "config.yml"
+        cfg.write_text("not: [valid: yaml: {{{\n", encoding="utf-8")
+        with unittest.mock.patch.dict(os.environ, {"TEROK_CONFIG_FILE": str(cfg)}, clear=True):
+            result = umbrella_state_dir("sandbox")
+            assert isinstance(result, Path)
 
 
 class TestUmbrellaStateDir:

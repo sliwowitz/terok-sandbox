@@ -24,6 +24,9 @@ except ImportError:  # optional dependency
 
 _UMBRELLA = "terok"
 
+_TEROK_ROOT_ENV = "TEROK_ROOT"
+"""Env var overriding the umbrella state root for all ecosystem packages."""
+
 
 def _is_root() -> bool:
     """Return True if the current process is running as root."""
@@ -34,28 +37,100 @@ def _is_root() -> bool:
 
 
 # ---------------------------------------------------------------------------
+# Shared config reader (Podman model: all packages read one config.yml)
+# ---------------------------------------------------------------------------
+
+_config_paths_cache: dict[str, str] | None = None
+
+
+def _read_config_paths() -> dict[str, str]:
+    """Read ``paths:`` from the shared terok config (cached, fail-silent).
+
+    Follows the Podman model: one config file (``~/.config/terok/config.yml``)
+    is the source of truth for directory layout across all ecosystem packages.
+    Only the ``paths`` section is read — other keys are package-specific and
+    ignored here.
+    """
+    global _config_paths_cache  # noqa: PLW0603
+    if _config_paths_cache is not None:
+        return _config_paths_cache
+
+    _config_paths_cache = {}
+    cfg = _config_file_path()
+    if not cfg.is_file():
+        return _config_paths_cache
+    try:
+        from yaml import safe_load  # lazy: PyYAML is a transitive dep via terok-shield
+
+        data = safe_load(cfg.read_text(encoding="utf-8")) or {}
+        paths = data.get("paths") or {}
+        _config_paths_cache = {k: str(v) for k, v in paths.items() if v}
+    except Exception:  # noqa: BLE001 — fail-silent; bad config should not crash path resolution
+        pass
+    return _config_paths_cache
+
+
+def _config_file_path() -> Path:
+    """Return the well-known terok config.yml location.
+
+    ``TEROK_CONFIG_FILE`` → ``/etc/terok/config.yml`` (root)
+    → ``~/.config/terok/config.yml``.
+    """
+    env = os.getenv("TEROK_CONFIG_FILE")
+    if env:
+        return Path(env).expanduser()
+    if _is_root():
+        return Path("/etc") / _UMBRELLA / "config.yml"
+    if _user_config_dir is not None:
+        return Path(_user_config_dir(_UMBRELLA)) / "config.yml"
+    return Path.home() / ".config" / _UMBRELLA / "config.yml"
+
+
+def _umbrella_root() -> Path | None:
+    """Return the configured umbrella state root, or ``None`` for platform default.
+
+    Resolution: ``TEROK_ROOT`` env var → ``config.yml`` ``paths.root``
+    (with ``paths.state_dir`` as deprecated fallback).
+    """
+    env = os.getenv(_TEROK_ROOT_ENV)
+    if env:
+        return Path(env).expanduser()
+    cfg = _read_config_paths()
+    val = cfg.get("root") or cfg.get("state_dir")  # state_dir = deprecated alias
+    return Path(val).expanduser().resolve() if val else None
+
+
+# ---------------------------------------------------------------------------
 # Generic umbrella resolvers (DRY: used by sandbox, agent, and terok)
 # ---------------------------------------------------------------------------
+
+
+def _platform_state_base() -> Path:
+    """Return the platform-default state base (no config override)."""
+    if _is_root():
+        return Path("/var/lib") / _UMBRELLA
+    if _user_data_dir is not None:
+        return Path(_user_data_dir(_UMBRELLA))
+    xdg = os.getenv("XDG_DATA_HOME")
+    return Path(xdg) / _UMBRELLA if xdg else Path.home() / ".local" / "share" / _UMBRELLA
 
 
 def umbrella_state_dir(subdir: str = "", env_var: str | None = None) -> Path:
     """Resolve a state directory under the ``terok/`` umbrella namespace.
 
-    Priority: *env_var* → ``/var/lib/terok/<subdir>`` (root) → platformdirs
-    → ``$XDG_DATA_HOME/terok/<subdir>`` → ``~/.local/share/terok/<subdir>``.
+    Priority:
+
+    1. *env_var* (package-specific override, e.g. ``TEROK_SANDBOX_STATE_DIR``)
+    2. ``TEROK_ROOT`` env var (umbrella override)
+    3. ``config.yml`` → ``paths.root`` (Podman model — all packages honor it)
+    4. Platform default (``/var/lib/terok/<subdir>`` or XDG)
     """
     if env_var:
         val = os.getenv(env_var)
         if val:
             return Path(val).expanduser()
-    base: Path
-    if _is_root():
-        base = Path("/var/lib") / _UMBRELLA
-    elif _user_data_dir is not None:
-        base = Path(_user_data_dir(_UMBRELLA))
-    else:
-        xdg = os.getenv("XDG_DATA_HOME")
-        base = Path(xdg) / _UMBRELLA if xdg else Path.home() / ".local" / "share" / _UMBRELLA
+    root = _umbrella_root()
+    base = root if root else _platform_state_base()
     return base / subdir if subdir else base
 
 
