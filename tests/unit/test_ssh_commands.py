@@ -18,7 +18,12 @@ from cryptography.hazmat.primitives.serialization import (
     PublicFormat,
 )
 
-from terok_sandbox.commands import _handle_ssh_add_key, _handle_ssh_import, _handle_ssh_list
+from terok_sandbox.commands import (
+    _handle_ssh_add_key,
+    _handle_ssh_import,
+    _handle_ssh_list,
+    _handle_ssh_remove_key,
+)
 from terok_sandbox.credentials.ssh import _next_key_number, generate_keypair
 
 
@@ -792,3 +797,256 @@ class TestHandleSshList:
         _write_keys_json(cfg, {"proj": []})
         _handle_ssh_list(cfg=cfg)
         assert "No SSH keys registered." in capsys.readouterr().out
+
+
+# ---------------------------------------------------------------------------
+# ssh remove-key
+# ---------------------------------------------------------------------------
+
+
+def _populate_keys(tmp_path: Path, cfg: object, count: int = 2) -> list[tuple[Path, Path]]:
+    """Create *count* ed25519 keys under different scopes, register them, return paths."""
+    scopes = [f"scope-{i}" for i in range(count)]
+    pairs: list[tuple[Path, Path]] = []
+    data: dict[str, list[dict[str, str]]] = {}
+    for scope in scopes:
+        d = tmp_path / scope
+        d.mkdir()
+        priv = d / f"id_ed25519_{scope}"
+        pub = d / f"id_ed25519_{scope}.pub"
+        priv.write_text("FAKE-PRIVATE\n")
+        _make_pub_file(pub, comment=f"tk-side:{scope}")
+        data[scope] = [{"private_key": str(priv), "public_key": str(pub)}]
+        pairs.append((priv, pub))
+    _write_keys_json(cfg, data)
+    return pairs
+
+
+class TestHandleSshRemoveKey:
+    """Verify _handle_ssh_remove_key in both interactive and parameterized modes."""
+
+    # -- Parameterized mode (with filters) ------------------------------------
+
+    def test_remove_by_scope(self, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+        """Remove a single key by scope with --yes --keep-files."""
+        cfg = _mock_cfg(tmp_path)
+        pairs = _populate_keys(tmp_path, cfg, count=2)
+
+        _handle_ssh_remove_key(scope="scope-0", yes=True, keep_files=True, cfg=cfg)
+
+        out = capsys.readouterr().out
+        assert "Removed 1 key" in out
+        assert "kept on disk" in out
+
+        data = json.loads(cfg.ssh_keys_json_path.read_text())
+        assert "scope-0" not in data
+        assert "scope-1" in data
+        # Files still on disk
+        assert pairs[0][0].is_file()
+        assert pairs[0][1].is_file()
+
+    def test_remove_with_file_deletion(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """--delete-files removes key files from disk."""
+        cfg = _mock_cfg(tmp_path)
+        pairs = _populate_keys(tmp_path, cfg, count=1)
+
+        _handle_ssh_remove_key(scope="scope-0", yes=True, delete_files=True, cfg=cfg)
+
+        out = capsys.readouterr().out
+        assert "Deleted 2 file" in out
+        assert not pairs[0][0].exists()
+        assert not pairs[0][1].exists()
+
+    def test_remove_by_name_glob(self, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+        """Glob wildcard in --name matches keys."""
+        cfg = _mock_cfg(tmp_path)
+        _populate_keys(tmp_path, cfg, count=3)
+
+        _handle_ssh_remove_key(name="tk-side:scope-*", yes=True, keep_files=True, cfg=cfg)
+
+        out = capsys.readouterr().out
+        assert "Removed 3 keys" in out
+
+        data = json.loads(cfg.ssh_keys_json_path.read_text())
+        assert data == {}
+
+    def test_remove_by_fingerprint_prefix(self, tmp_path: Path) -> None:
+        """Fingerprint prefix match selects the right key."""
+        cfg = _mock_cfg(tmp_path)
+        _populate_keys(tmp_path, cfg, count=1)
+
+        # Get the fingerprint from the list output
+        from terok_sandbox.commands import _build_key_rows
+
+        rows = _build_key_rows(cfg)
+        fp = rows[0].fingerprint  # "SHA256:..."
+        prefix = fp[7:15]  # first 8 chars after "SHA256:"
+
+        _handle_ssh_remove_key(fingerprint=prefix, yes=True, keep_files=True, cfg=cfg)
+
+        data = json.loads(cfg.ssh_keys_json_path.read_text())
+        assert data == {}
+
+    def test_no_matches_exits(self, tmp_path: Path) -> None:
+        """No matching keys raises SystemExit."""
+        cfg = _mock_cfg(tmp_path)
+        _populate_keys(tmp_path, cfg, count=1)
+
+        with pytest.raises(SystemExit, match="No keys match"):
+            _handle_ssh_remove_key(scope="nonexistent", yes=True, keep_files=True, cfg=cfg)
+
+    def test_no_keys_registered_exits(self, tmp_path: Path) -> None:
+        """Empty key store raises SystemExit."""
+        cfg = _mock_cfg(tmp_path)
+        with pytest.raises(SystemExit, match="No SSH keys registered"):
+            _handle_ssh_remove_key(scope="any", yes=True, keep_files=True, cfg=cfg)
+
+    def test_multi_match_prompts_confirm(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """Multiple matches without --yes prompts for confirmation."""
+        cfg = _mock_cfg(tmp_path)
+        _populate_keys(tmp_path, cfg, count=2)
+
+        with patch("builtins.input", return_value="y"):
+            _handle_ssh_remove_key(name="tk-side:*", keep_files=True, cfg=cfg)
+
+        out = capsys.readouterr().out
+        assert "Removed 2 keys" in out
+
+    def test_multi_match_declined_aborts(self, tmp_path: Path) -> None:
+        """Declining multi-match confirmation aborts."""
+        cfg = _mock_cfg(tmp_path)
+        _populate_keys(tmp_path, cfg, count=2)
+
+        with patch("builtins.input", return_value="n"):
+            with pytest.raises(SystemExit, match="Aborted"):
+                _handle_ssh_remove_key(name="tk-side:*", keep_files=True, cfg=cfg)
+
+    # -- Interactive mode (no filters) ----------------------------------------
+
+    def test_interactive_select_single(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """Interactive mode: select one key by number."""
+        cfg = _mock_cfg(tmp_path)
+        _populate_keys(tmp_path, cfg, count=2)
+
+        with patch("builtins.input", side_effect=["1", "n"]):  # select 1, keep files
+            _handle_ssh_remove_key(cfg=cfg)
+
+        out = capsys.readouterr().out
+        assert "Removed 1 key" in out
+
+        data = json.loads(cfg.ssh_keys_json_path.read_text())
+        assert "scope-0" not in data
+        assert "scope-1" in data
+
+    def test_interactive_select_all(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """Interactive mode: 'all' removes every key."""
+        cfg = _mock_cfg(tmp_path)
+        _populate_keys(tmp_path, cfg, count=2)
+
+        with patch("builtins.input", side_effect=["all", "n"]):
+            _handle_ssh_remove_key(cfg=cfg)
+
+        out = capsys.readouterr().out
+        assert "Removed 2 keys" in out
+        data = json.loads(cfg.ssh_keys_json_path.read_text())
+        assert data == {}
+
+    def test_interactive_comma_separated(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """Interactive mode: comma-separated indices."""
+        cfg = _mock_cfg(tmp_path)
+        _populate_keys(tmp_path, cfg, count=3)
+
+        with patch("builtins.input", side_effect=["1,3", "n"]):
+            _handle_ssh_remove_key(cfg=cfg)
+
+        out = capsys.readouterr().out
+        assert "Removed 2 keys" in out
+
+        data = json.loads(cfg.ssh_keys_json_path.read_text())
+        assert "scope-1" in data
+        assert "scope-0" not in data
+        assert "scope-2" not in data
+
+    def test_interactive_invalid_number_exits(self, tmp_path: Path) -> None:
+        """Invalid selection number raises SystemExit."""
+        cfg = _mock_cfg(tmp_path)
+        _populate_keys(tmp_path, cfg, count=2)
+
+        with patch("builtins.input", return_value="5"):
+            with pytest.raises(SystemExit, match="Invalid selection"):
+                _handle_ssh_remove_key(cfg=cfg)
+
+    def test_interactive_empty_input_aborts(self, tmp_path: Path) -> None:
+        """Empty input in interactive mode aborts."""
+        cfg = _mock_cfg(tmp_path)
+        _populate_keys(tmp_path, cfg, count=1)
+
+        with patch("builtins.input", return_value=""):
+            with pytest.raises(SystemExit, match="Aborted"):
+                _handle_ssh_remove_key(cfg=cfg)
+
+    def test_interactive_eof_aborts(self, tmp_path: Path) -> None:
+        """EOFError (piped stdin) aborts gracefully."""
+        cfg = _mock_cfg(tmp_path)
+        _populate_keys(tmp_path, cfg, count=1)
+
+        with patch("builtins.input", side_effect=EOFError):
+            with pytest.raises(SystemExit, match="Aborted"):
+                _handle_ssh_remove_key(cfg=cfg)
+
+    def test_yes_without_filters_exits(self, tmp_path: Path) -> None:
+        """--yes without any filter flags raises SystemExit."""
+        cfg = _mock_cfg(tmp_path)
+        _populate_keys(tmp_path, cfg, count=1)
+
+        with pytest.raises(SystemExit, match="Cannot use --yes"):
+            _handle_ssh_remove_key(yes=True, keep_files=True, cfg=cfg)
+
+    # -- File deletion prompt -------------------------------------------------
+
+    def test_file_prompt_yes_deletes(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """Answering 'y' to file deletion prompt deletes files."""
+        cfg = _mock_cfg(tmp_path)
+        pairs = _populate_keys(tmp_path, cfg, count=1)
+
+        with patch("builtins.input", return_value="y"):
+            _handle_ssh_remove_key(scope="scope-0", yes=True, cfg=cfg)
+
+        assert not pairs[0][0].exists()
+        assert not pairs[0][1].exists()
+
+    def test_file_prompt_no_keeps(self, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+        """Answering 'n' to file deletion prompt keeps files."""
+        cfg = _mock_cfg(tmp_path)
+        pairs = _populate_keys(tmp_path, cfg, count=1)
+
+        with patch("builtins.input", return_value="n"):
+            _handle_ssh_remove_key(scope="scope-0", yes=True, cfg=cfg)
+
+        assert pairs[0][0].is_file()
+        assert pairs[0][1].is_file()
+
+    def test_deduplicates_interactive_selection(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """Duplicate indices in selection are deduplicated."""
+        cfg = _mock_cfg(tmp_path)
+        _populate_keys(tmp_path, cfg, count=2)
+
+        with patch("builtins.input", side_effect=["1,1,1", "n"]):
+            _handle_ssh_remove_key(cfg=cfg)
+
+        out = capsys.readouterr().out
+        assert "Removed 1 key" in out
