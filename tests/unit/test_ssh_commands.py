@@ -1022,7 +1022,7 @@ class TestHandleSshRemoveKey:
         pairs = _populate_keys(tmp_path, cfg, count=1)
 
         with patch("builtins.input", return_value="y"):
-            _handle_ssh_remove_key(scope="scope-0", yes=True, cfg=cfg)
+            _handle_ssh_remove_key(scope="scope-0", yes=True, delete_files=True, cfg=cfg)
 
         assert not pairs[0][0].exists()
         assert not pairs[0][1].exists()
@@ -1037,6 +1037,44 @@ class TestHandleSshRemoveKey:
 
         assert pairs[0][0].is_file()
         assert pairs[0][1].is_file()
+
+    def test_yes_implies_keep_files(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """--yes without --delete-files defaults to keeping files (no prompt)."""
+        cfg = _mock_cfg(tmp_path)
+        pairs = _populate_keys(tmp_path, cfg, count=1)
+
+        # No input() mock needed — --yes skips the file prompt entirely
+        _handle_ssh_remove_key(scope="scope-0", yes=True, cfg=cfg)
+
+        out = capsys.readouterr().out
+        assert "kept on disk" in out
+        assert pairs[0][0].is_file()
+
+    def test_conflicting_file_flags_exits(self, tmp_path: Path) -> None:
+        """--delete-files and --keep-files together raises SystemExit."""
+        cfg = _mock_cfg(tmp_path)
+        _populate_keys(tmp_path, cfg, count=1)
+
+        with pytest.raises(SystemExit, match="Cannot use both"):
+            _handle_ssh_remove_key(
+                scope="scope-0", yes=True, delete_files=True, keep_files=True, cfg=cfg
+            )
+
+    def test_remove_from_malformed_json_exits(self, tmp_path: Path) -> None:
+        """Malformed ssh-keys.json during removal raises clean SystemExit."""
+        cfg = _mock_cfg(tmp_path)
+        _populate_keys(tmp_path, cfg, count=1)
+
+        # Corrupt the JSON
+        cfg.ssh_keys_json_path.write_text("{bad json")
+
+        from terok_sandbox.commands import KeyRow, _remove_keys_from_json
+
+        dummy = [KeyRow("scope-0", "", "", "", "/fake", "/fake.pub")]
+        with pytest.raises(SystemExit, match="Cannot read"):
+            _remove_keys_from_json(cfg.ssh_keys_json_path, dummy)
 
     def test_deduplicates_interactive_selection(
         self, tmp_path: Path, capsys: pytest.CaptureFixture[str]

@@ -608,7 +608,13 @@ def _remove_keys_from_json(keys_json_path: Path, removals: list[KeyRow]) -> None
         while chunk := os.read(fd, 8192):
             chunks.append(chunk)
         raw = b"".join(chunks)
-        mapping: dict = json.loads(raw) if raw.strip() else {}
+        try:
+            parsed = json.loads(raw) if raw.strip() else {}
+        except json.JSONDecodeError as exc:
+            raise SystemExit(f"Cannot read {keys_json_path}: {exc}") from exc
+        if not isinstance(parsed, dict):
+            raise SystemExit(f"Cannot read {keys_json_path}: expected top-level JSON object")
+        mapping: dict = parsed
 
         for scope in list(mapping):
             entries = mapping[scope]
@@ -665,11 +671,17 @@ def _filter_key_rows(
     return rows
 
 
-def _prompt_file_action(*, delete_files: bool, keep_files: bool) -> bool:
-    """Determine whether to delete key files, prompting if neither flag is set."""
+def _prompt_file_action(*, delete_files: bool, keep_files: bool, yes: bool = False) -> bool:
+    """Determine whether to delete key files, prompting if neither flag is set.
+
+    Raises:
+        SystemExit: If both ``--delete-files`` and ``--keep-files`` are set.
+    """
+    if delete_files and keep_files:
+        raise SystemExit("Cannot use both --delete-files and --keep-files.")
     if delete_files:
         return True
-    if keep_files:
+    if keep_files or yes:
         return False
     try:
         answer = input("Also delete key files from disk? [y/N]: ").strip().lower()
@@ -750,7 +762,7 @@ def _handle_ssh_remove_key(
             candidates = [all_rows[i] for i in dict.fromkeys(indices)]
 
     # Determine file action
-    do_delete = _prompt_file_action(delete_files=delete_files, keep_files=keep_files)
+    do_delete = _prompt_file_action(delete_files=delete_files, keep_files=keep_files, yes=yes)
 
     # Execute removal
     _remove_keys_from_json(cfg.ssh_keys_json_path, candidates)
