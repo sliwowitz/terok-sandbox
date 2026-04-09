@@ -351,8 +351,32 @@ def _build_key_rows(cfg: SandboxConfig) -> list[KeyRow]:
     return rows
 
 
+def _sanitize_tty(s: str) -> str:
+    """Strip terminal control characters from untrusted strings before display.
+
+    SSH key comments, paths, and scope names originate from user-editable
+    files (public keys, ssh-keys.json).  Printing them raw allows ANSI/OSC
+    escape injection (CWE-150).  This replaces C0/C1 control characters
+    with their hex escape representation while preserving printable text.
+    """
+    import unicodedata
+
+    out: list[str] = []
+    for ch in s:
+        if ch in ("\n", "\r", "\t"):
+            out.append(" ")
+        elif unicodedata.category(ch).startswith("C"):
+            out.append(f"\\x{ord(ch):02x}")
+        else:
+            out.append(ch)
+    return "".join(out)
+
+
 def _print_key_table(rows: list[KeyRow], *, numbered: bool = False) -> None:
     """Print a formatted table of SSH key rows.
+
+    All untrusted fields are sanitized before display to prevent
+    terminal escape injection from crafted key comments or paths.
 
     Args:
         rows: Key rows to display.
@@ -363,8 +387,13 @@ def _print_key_table(rows: list[KeyRow], *, numbered: bool = False) -> None:
         return
 
     headers = ("SCOPE", "KEY", "TYPE", "FINGERPRINT", "PATH")
-    # Display rows use 5 columns (without public_key path)
-    display = [(r.scope, r.comment, r.key_type, r.fingerprint, r.private_key) for r in rows]
+    # Sanitize untrusted fields before computing widths and formatting
+    display = [
+        tuple(
+            _sanitize_tty(f) for f in (r.scope, r.comment, r.key_type, r.fingerprint, r.private_key)
+        )
+        for r in rows
+    ]
     widths = [max(len(h), *(len(d[i]) for d in display)) for i, h in enumerate(headers)]
 
     if numbered:
@@ -641,8 +670,12 @@ def _remove_keys_from_json(keys_json_path: Path, removals: list[KeyRow]) -> None
         os.close(fd)
 
 
-def _delete_key_files(rows: list[KeyRow]) -> tuple[int, list[str]]:
+def _delete_key_files(rows: list[KeyRow], cfg: SandboxConfig) -> tuple[int, list[str]]:
     """Remove private and public key files from disk.
+
+    Paths are validated against ``cfg.ssh_keys_dir`` to prevent a
+    tampered ``ssh-keys.json`` from steering deletions outside the
+    managed key directory (CWE-73).
 
     Continues past per-file failures so partial cleanup still completes.
     The registry has already been updated by the time this runs, so
@@ -653,17 +686,26 @@ def _delete_key_files(rows: list[KeyRow]) -> tuple[int, list[str]]:
     """
     from pathlib import Path
 
+    base = cfg.ssh_keys_dir.resolve()
     deleted = 0
     errors: list[str] = []
     for row in rows:
         for p in (row.private_key, row.public_key):
             path = Path(p)
-            if path.is_file():
-                try:
-                    path.unlink()
-                    deleted += 1
-                except OSError as exc:
-                    errors.append(f"{path}: {exc}")
+            try:
+                resolved = path.resolve(strict=True)
+            except (FileNotFoundError, OSError):
+                continue
+            if not resolved.is_file():
+                continue
+            if not resolved.is_relative_to(base):
+                errors.append(f"Refusing to delete outside managed dir: {resolved}")
+                continue
+            try:
+                resolved.unlink()
+                deleted += 1
+            except OSError as exc:
+                errors.append(f"{resolved}: {exc}")
     return deleted, errors
 
 
@@ -786,7 +828,7 @@ def _handle_ssh_remove_key(
 
     # Execute removal
     _remove_keys_from_json(cfg.ssh_keys_json_path, candidates)
-    files_deleted, file_errors = _delete_key_files(candidates) if do_delete else (0, [])
+    files_deleted, file_errors = _delete_key_files(candidates, cfg) if do_delete else (0, [])
 
     n = len(candidates)
     msg = f"Removed {n} key{'s' if n != 1 else ''} from registry."

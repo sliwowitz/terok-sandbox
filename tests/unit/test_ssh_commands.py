@@ -805,13 +805,13 @@ class TestHandleSshList:
 
 
 def _populate_keys(tmp_path: Path, cfg: object, count: int = 2) -> list[tuple[Path, Path]]:
-    """Create *count* ed25519 keys under different scopes, register them, return paths."""
+    """Create *count* ed25519 keys under the managed key dir, register them."""
     scopes = [f"scope-{i}" for i in range(count)]
     pairs: list[tuple[Path, Path]] = []
     data: dict[str, list[dict[str, str]]] = {}
     for scope in scopes:
-        d = tmp_path / scope
-        d.mkdir()
+        d = cfg.ssh_keys_dir / scope  # type: ignore[union-attr]
+        d.mkdir(parents=True, exist_ok=True)
         priv = d / f"id_ed25519_{scope}"
         pub = d / f"id_ed25519_{scope}.pub"
         priv.write_text("FAKE-PRIVATE\n")
@@ -1116,3 +1116,54 @@ class TestHandleSshRemoveKey:
 
         out = capsys.readouterr().out
         assert "Removed 1 key" in out
+
+    # -- Security: terminal sanitization --------------------------------------
+
+    def test_ansi_escape_in_comment_is_sanitized(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """ANSI escape sequences in key comments are escaped before display."""
+        cfg = _mock_cfg(tmp_path)
+        d = tmp_path / "evil"
+        d.mkdir()
+        priv = d / "id_ed25519_evil"
+        pub = d / "id_ed25519_evil.pub"
+        priv.write_text("FAKE\n")
+        # Craft a public key with an ANSI escape in the comment
+        key = Ed25519PrivateKey.generate()
+        pub_raw = key.public_key().public_bytes(Encoding.OpenSSH, PublicFormat.OpenSSH)
+        pub.write_text(f"{pub_raw.decode()} \x1b[31mEVIL\x1b[0m\n")
+
+        _write_keys_json(cfg, {"evil": [{"private_key": str(priv), "public_key": str(pub)}]})
+        _handle_ssh_list(cfg=cfg)
+
+        out = capsys.readouterr().out
+        # Raw ESC byte must not appear in output
+        assert "\x1b" not in out
+        # The escaped form should appear instead
+        assert "\\x1b" in out
+
+    # -- Security: path-constrained file deletion -----------------------------
+
+    def test_delete_refuses_outside_managed_dir(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """--delete-files refuses to unlink files outside cfg.ssh_keys_dir."""
+        cfg = _mock_cfg(tmp_path)
+        # Create a real key in the managed dir
+        _populate_keys(tmp_path, cfg, count=1)
+
+        # Tamper ssh-keys.json to point at a file outside the managed dir
+        outside = tmp_path / "precious.txt"
+        outside.write_text("important data")
+        import json
+
+        data = json.loads(cfg.ssh_keys_json_path.read_text())
+        data["scope-0"][0]["private_key"] = str(outside)
+        cfg.ssh_keys_json_path.write_text(json.dumps(data))
+
+        _handle_ssh_remove_key(scope="scope-0", yes=True, delete_files=True, cfg=cfg)
+
+        err = capsys.readouterr().err
+        assert "Refusing to delete outside managed dir" in err
+        assert outside.is_file(), "File outside managed dir must not be deleted"
