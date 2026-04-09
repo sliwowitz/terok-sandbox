@@ -316,6 +316,16 @@ class TestUmbrellaStateDir:
             assert "~" not in str(result)
             assert result.is_absolute()
 
+    def test_absolute_subdir_rejected(self):
+        """Absolute subdir paths are rejected to prevent namespace escape."""
+        with pytest.raises(ValueError, match="relative"):
+            umbrella_state_dir("/tmp/evil")
+
+    def test_parent_traversal_rejected(self):
+        """Parent traversal in subdir is rejected."""
+        with pytest.raises(ValueError, match="relative"):
+            umbrella_state_dir("../escape")
+
 
 class TestUmbrellaConfigDir:
     """Tests for umbrella_config_dir()."""

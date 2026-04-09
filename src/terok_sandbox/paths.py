@@ -105,6 +105,15 @@ def _umbrella_root() -> Path | None:
 # ---------------------------------------------------------------------------
 
 
+def _safe_subdir(base: Path, subdir: str) -> Path:
+    """Join *subdir* to *base*, rejecting absolute or parent-traversal paths."""
+    if not subdir:
+        return base
+    if Path(subdir).is_absolute() or ".." in Path(subdir).parts:
+        raise ValueError(f"subdir must be relative without '..', got {subdir!r}")
+    return base / subdir
+
+
 def _platform_state_base() -> Path:
     """Return the platform-default state base (no config override)."""
     if _is_root():
@@ -131,7 +140,7 @@ def umbrella_state_dir(subdir: str = "", env_var: str | None = None) -> Path:
             return Path(val).expanduser()
     root = _umbrella_root()
     base = root if root else _platform_state_base()
-    return base / subdir if subdir else base
+    return _safe_subdir(base, subdir)
 
 
 def umbrella_config_dir(subdir: str = "", env_var: str | None = None) -> Path:
@@ -151,7 +160,7 @@ def umbrella_config_dir(subdir: str = "", env_var: str | None = None) -> Path:
         base = Path(_user_config_dir(_UMBRELLA))
     else:
         base = Path.home() / ".config" / _UMBRELLA
-    return base / subdir if subdir else base
+    return _safe_subdir(base, subdir)
 
 
 def umbrella_runtime_dir(subdir: str = "", env_var: str | None = None) -> Path:
@@ -179,7 +188,7 @@ def umbrella_runtime_dir(subdir: str = "", env_var: str | None = None) -> Path:
                 if xdg_state
                 else Path.home() / ".local" / "state" / _UMBRELLA
             )
-    return base / subdir if subdir else base
+    return _safe_subdir(base, subdir)
 
 
 # ---------------------------------------------------------------------------
