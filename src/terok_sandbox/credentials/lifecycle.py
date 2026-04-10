@@ -80,10 +80,7 @@ def ensure_proxy_reachable(cfg: SandboxConfig | None = None) -> None:
     c = _cfg(cfg)
 
     if not is_socket_active() and not is_daemon_running(cfg):
-        hint = (
-            "  terokctl credentials install   (systemd socket activation)\n"
-            "  terokctl credentials start      (manual daemon)"
-        )
+        hint = "  proxy install   (systemd socket activation)\n  proxy start     (manual daemon)"
         raise SystemExit(
             "Credential proxy is not reachable.\n"
             "\n"
@@ -335,7 +332,7 @@ def start_daemon(cfg: SandboxConfig | None = None) -> None:
         import logging
 
         logging.getLogger(__name__).info(
-            "Created empty routes file: %s — add routes via 'terokctl auth <provider>'",
+            "Created empty routes file: %s — populate via the orchestrator's auth command",
             routes_path,
         )
     except FileExistsError:

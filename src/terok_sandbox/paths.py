@@ -4,7 +4,7 @@
 
 """Platform-aware path resolution for the terok ecosystem.
 
-Provides generic **umbrella resolvers** that any sibling package can call
+Provides generic **namespace resolvers** that any sibling package can call
 to place its state/config/runtime under the shared ``terok/`` namespace,
 plus sandbox-specific thin wrappers for backward compatibility.
 """
@@ -25,7 +25,7 @@ except ImportError:  # optional dependency
 _NAMESPACE = "terok"
 
 _TEROK_ROOT_ENV = "TEROK_ROOT"
-"""Env var overriding the umbrella state root for all ecosystem packages."""
+"""Env var overriding the namespace state root for all ecosystem packages."""
 
 
 def _is_root() -> bool:
@@ -86,8 +86,8 @@ def _config_file_path() -> Path:
     return Path.home() / ".config" / _NAMESPACE / "config.yml"
 
 
-def _umbrella_root() -> Path | None:
-    """Return the configured umbrella state root, or ``None`` for platform default.
+def _namespace_root() -> Path | None:
+    """Return the configured namespace state root, or ``None`` for platform default.
 
     Resolution: ``TEROK_ROOT`` env var → ``config.yml`` ``paths.root``.
     """
@@ -99,7 +99,7 @@ def _umbrella_root() -> Path | None:
 
 
 # ---------------------------------------------------------------------------
-# Generic umbrella resolvers (DRY: used by sandbox, agent, and terok)
+# Generic namespace resolvers (DRY: used by sandbox, agent, and terok)
 # ---------------------------------------------------------------------------
 
 
@@ -122,13 +122,13 @@ def _platform_state_base() -> Path:
     return Path(xdg) / _NAMESPACE if xdg else Path.home() / ".local" / "share" / _NAMESPACE
 
 
-def umbrella_state_dir(subdir: str = "", env_var: str | None = None) -> Path:
-    """Resolve a state directory under the ``terok/`` umbrella namespace.
+def namespace_state_dir(subdir: str = "", env_var: str | None = None) -> Path:
+    """Resolve a state directory under the ``terok/`` namespace.
 
     Priority:
 
     1. *env_var* (package-specific override, e.g. ``TEROK_SANDBOX_STATE_DIR``)
-    2. ``TEROK_ROOT`` env var (umbrella override)
+    2. ``TEROK_ROOT`` env var (namespace override)
     3. ``config.yml`` → ``paths.root`` (Podman model — all packages honor it)
     4. Platform default (``/var/lib/terok/<subdir>`` or XDG)
     """
@@ -136,13 +136,13 @@ def umbrella_state_dir(subdir: str = "", env_var: str | None = None) -> Path:
         val = os.getenv(env_var)
         if val:
             return Path(val).expanduser()
-    root = _umbrella_root()
+    root = _namespace_root()
     base = root if root else _platform_state_base()
     return _safe_subdir(base, subdir)
 
 
-def umbrella_config_dir(subdir: str = "", env_var: str | None = None) -> Path:
-    """Resolve a config directory under the ``terok/`` umbrella namespace.
+def namespace_config_dir(subdir: str = "", env_var: str | None = None) -> Path:
+    """Resolve a config directory under the ``terok/`` namespace.
 
     Priority: *env_var* → ``/etc/terok/<subdir>`` (root) → platformdirs
     → ``~/.config/terok/<subdir>``.
@@ -161,8 +161,8 @@ def umbrella_config_dir(subdir: str = "", env_var: str | None = None) -> Path:
     return _safe_subdir(base, subdir)
 
 
-def umbrella_runtime_dir(subdir: str = "", env_var: str | None = None) -> Path:
-    """Resolve a runtime directory under the ``terok/`` umbrella namespace.
+def namespace_runtime_dir(subdir: str = "", env_var: str | None = None) -> Path:
+    """Resolve a runtime directory under the ``terok/`` namespace.
 
     Priority: *env_var* → ``/run/terok/<subdir>`` (root)
     → ``$XDG_RUNTIME_DIR/terok/<subdir>`` → ``$XDG_STATE_HOME/terok/<subdir>``
@@ -200,7 +200,7 @@ def config_root() -> Path:
     Priority: ``TEROK_SANDBOX_CONFIG_DIR`` → ``/etc/terok/sandbox`` (root)
     → ``~/.config/terok/sandbox``.
     """
-    return umbrella_config_dir("sandbox", "TEROK_SANDBOX_CONFIG_DIR")
+    return namespace_config_dir("sandbox", "TEROK_SANDBOX_CONFIG_DIR")
 
 
 def state_root() -> Path:
@@ -209,7 +209,7 @@ def state_root() -> Path:
     Priority: ``TEROK_SANDBOX_STATE_DIR`` → ``/var/lib/terok/sandbox`` (root)
     → ``~/.local/share/terok/sandbox``.
     """
-    return umbrella_state_dir("sandbox", "TEROK_SANDBOX_STATE_DIR")
+    return namespace_state_dir("sandbox", "TEROK_SANDBOX_STATE_DIR")
 
 
 def runtime_root() -> Path:
@@ -219,7 +219,7 @@ def runtime_root() -> Path:
     ``$XDG_RUNTIME_DIR/terok/sandbox`` → ``$XDG_STATE_HOME/terok/sandbox`` →
     ``~/.local/state/terok/sandbox``.
     """
-    return umbrella_runtime_dir("sandbox", "TEROK_SANDBOX_RUNTIME_DIR")
+    return namespace_runtime_dir("sandbox", "TEROK_SANDBOX_RUNTIME_DIR")
 
 
 def credentials_root() -> Path:
@@ -228,14 +228,14 @@ def credentials_root() -> Path:
     Priority: ``TEROK_CREDENTIALS_DIR`` → ``/var/lib/terok/credentials`` (root)
     → XDG data dir.
     """
-    return umbrella_state_dir("credentials", "TEROK_CREDENTIALS_DIR")
+    return namespace_state_dir("credentials", "TEROK_CREDENTIALS_DIR")
 
 
-def umbrella_config_root() -> Path:
-    """Return the top-level terok config root (umbrella, not sandbox-scoped).
+def namespace_config_root() -> Path:
+    """Return the top-level terok config root (namespace, not sandbox-scoped).
 
     Used for cross-package paths like shield profiles that live under
-    the shared ``~/.config/terok/`` umbrella rather than under any single
+    the shared ``~/.config/terok/`` namespace rather than under any single
     package's config directory.
     """
-    return umbrella_config_dir("", "TEROK_CONFIG_DIR")
+    return namespace_config_dir("", "TEROK_CONFIG_DIR")
