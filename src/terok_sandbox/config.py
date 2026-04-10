@@ -41,7 +41,7 @@ class SandboxConfig:
     """Sandbox-scoped configuration root.
 
     Note: shield profiles are resolved by :attr:`shield_profiles_dir`
-    via :func:`~terok_sandbox.paths.umbrella_config_root`, not from
+    via :func:`~terok_sandbox.paths.namespace_config_root`, not from
     this directory.
     """
 
@@ -84,9 +84,9 @@ class SandboxConfig:
     @property
     def shield_profiles_dir(self) -> Path:
         """Return the directory for terok-managed shield profiles."""
-        from .paths import umbrella_config_root
+        from .paths import namespace_config_root
 
-        return umbrella_config_root() / "shield" / "profiles"
+        return namespace_config_root() / "shield" / "profiles"
 
     @property
     def proxy_db_path(self) -> Path:

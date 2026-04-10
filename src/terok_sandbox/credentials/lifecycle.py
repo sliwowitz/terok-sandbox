@@ -61,6 +61,30 @@ class CredentialProxyStatus:
     """Provider names with stored credentials."""
 
 
+class ProxyUnreachableError(RuntimeError):
+    """Raised when the credential proxy is not reachable.
+
+    Carries diagnostic paths so CLI layers can append their own
+    remediation hints (specific command names vary by package).
+    """
+
+    def __init__(self, *, socket_path: Path, db_path: Path) -> None:
+        self.socket_path = socket_path
+        self.db_path = db_path
+        super().__init__(
+            "Credential proxy is not reachable.\n"
+            "\n"
+            "The credential proxy injects real API credentials into container\n"
+            "requests without exposing secrets to the container filesystem.\n"
+            "\n"
+            "Start the credential proxy (socket activation or manual daemon)\n"
+            "before creating tasks.\n"
+            "\n"
+            f"Socket: {socket_path}\n"
+            f"DB:     {db_path}"
+        )
+
+
 # ---------- Public API ----------
 
 
@@ -74,26 +98,15 @@ def ensure_proxy_reachable(cfg: SandboxConfig | None = None) -> None:
 
     For **daemon** mode the ``/-/health`` endpoint is probed on the TCP port.
 
-    Raises ``SystemExit`` with an actionable message if the proxy is
-    unreachable.  Called before task creation when credential proxy is enabled.
+    Raises :class:`ProxyUnreachableError` if the proxy is unreachable.
+    Called before task creation when credential proxy is enabled.
     """
     c = _cfg(cfg)
 
     if not is_socket_active() and not is_daemon_running(cfg):
-        hint = (
-            "  terokctl credentials install   (systemd socket activation)\n"
-            "  terokctl credentials start      (manual daemon)"
-        )
-        raise SystemExit(
-            "Credential proxy is not reachable.\n"
-            "\n"
-            "The credential proxy injects real API credentials into container\n"
-            "requests without exposing secrets to the container filesystem.\n"
-            "\n"
-            f"Start it with:\n{hint}\n"
-            f"\n"
-            f"Socket: {c.proxy_socket_path}\n"
-            f"DB:     {c.proxy_db_path}\n"
+        raise ProxyUnreachableError(
+            socket_path=c.proxy_socket_path,
+            db_path=c.proxy_db_path,
         )
 
     # Systemd socket activation: the socket unit is active but the service
@@ -335,7 +348,7 @@ def start_daemon(cfg: SandboxConfig | None = None) -> None:
         import logging
 
         logging.getLogger(__name__).info(
-            "Created empty routes file: %s — add routes via 'terokctl auth <provider>'",
+            "Created empty routes file: %s — populate with: terok auth <provider> <project>",
             routes_path,
         )
     except FileExistsError:

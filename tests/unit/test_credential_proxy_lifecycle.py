@@ -15,6 +15,7 @@ import pytest
 from terok_sandbox.config import SandboxConfig
 from terok_sandbox.credentials.lifecycle import (
     CredentialProxyStatus,
+    ProxyUnreachableError,
     _is_managed_proxy,
     _pid_file,
     _probe_proxy,
@@ -373,12 +374,12 @@ class TestEnsureProxyReachable:
             ensure_proxy_reachable(cfg)
 
     def test_raises_when_stopped(self, tmp_path: Path) -> None:
-        """Raises SystemExit with actionable message when daemon is down."""
+        """Raises ProxyUnreachableError when daemon is down."""
         cfg = _make_cfg(tmp_path)
         with (
             patch(f"{_LIFECYCLE}.is_socket_active", return_value=False),
             patch(f"{_LIFECYCLE}.is_daemon_running", return_value=False),
-            pytest.raises(SystemExit, match="not reachable"),
+            pytest.raises(ProxyUnreachableError, match="not reachable"),
         ):
             ensure_proxy_reachable(cfg)
 
