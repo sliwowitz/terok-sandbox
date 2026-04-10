@@ -461,6 +461,7 @@ async def _run_multi(
     *,
     sock_path: str,
     port: int | None,
+    port_file: str | None = None,
     ssh_agent_port: int | None = None,
     ssh_keys_file: str | None = None,
     db_path: str | None = None,
@@ -503,12 +504,28 @@ async def _run_multi(
             _logger.info("Listening on %s", path)
             await UnixSite(runner, str(path)).start()
 
+        actual_port = port
         if sd_tcp:
             _logger.info("Using systemd-inherited TCP socket")
             await SockSite(runner, sd_tcp).start()
         elif port is not None:
-            _logger.info("Listening on 127.0.0.1:%d", port)
-            await TCPSite(runner, "127.0.0.1", port).start()
+            try:
+                await TCPSite(runner, "127.0.0.1", port).start()
+                _logger.info("Listening on 127.0.0.1:%d", port)
+            except OSError:
+                _logger.warning("Port %d busy, binding to OS-assigned port", port)
+                site = TCPSite(runner, "127.0.0.1", 0)
+                await site.start()
+                # Extract actual port from the listening socket
+                for sock in site._server.sockets:  # type: ignore[union-attr]
+                    actual_port = sock.getsockname()[1]
+                    break
+                _logger.info("Listening on 127.0.0.1:%d (fallback)", actual_port)
+
+        if port_file and actual_port is not None:
+            pf = Path(port_file)
+            pf.parent.mkdir(parents=True, exist_ok=True)
+            pf.write_text(str(actual_port), encoding="utf-8")
 
         if ssh_agent_port is not None and ssh_keys_file and db_path:
             from .ssh_agent import start_ssh_agent_server
@@ -566,6 +583,11 @@ def main() -> None:
     parser.add_argument(
         "--pid-file", default=None, help="Write PID to this file (for lifecycle management)"
     )
+    parser.add_argument(
+        "--port-file",
+        default=None,
+        help="Write actual TCP port to this file (multi-user discovery)",
+    )
     parser.add_argument("--log-level", default="INFO", help="Logging level (default: INFO)")
     parser.add_argument("--log-file", default=None, help="Append log output to this file")
     args = parser.parse_args()
@@ -602,6 +624,7 @@ def main() -> None:
                 app,
                 sock_path=args.socket_path,
                 port=args.port,
+                port_file=args.port_file,
                 ssh_agent_port=args.ssh_agent_port,
                 ssh_keys_file=args.ssh_keys_file,
                 db_path=args.db_path,

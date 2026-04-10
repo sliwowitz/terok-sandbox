@@ -193,8 +193,16 @@ def get_proxy_status(cfg: SandboxConfig | None = None) -> CredentialProxyStatus:
 
 
 def get_proxy_port(cfg: SandboxConfig | None = None) -> int:
-    """Return the configured credential proxy TCP port."""
-    return _cfg(cfg).proxy_port
+    """Return the live credential proxy TCP port (from port file, falling back to config).
+
+    In multi-user setups the actual bound port may differ from the configured
+    default — this function reads the port file written by the running daemon.
+    """
+    portfile = _port_file(cfg)
+    try:
+        return int(portfile.read_text().strip())
+    except (FileNotFoundError, ValueError):
+        return _cfg(cfg).proxy_port
 
 
 def get_ssh_agent_port(cfg: SandboxConfig | None = None) -> int:
@@ -366,12 +374,15 @@ def start_daemon(cfg: SandboxConfig | None = None) -> None:
     log_file = c.state_dir / "proxy" / "credential-proxy.log"
     log_file.parent.mkdir(parents=True, exist_ok=True)
 
+    portfile = _port_file(cfg)
+
     cmd = [
         *_proxy_exec_prefix(),
         f"--socket-path={sock_path}",
         f"--db-path={db_path}",
         f"--routes-file={routes_path}",
         f"--pid-file={pidfile}",
+        f"--port-file={portfile}",
         f"--port={c.proxy_port}",
         f"--ssh-agent-port={c.ssh_agent_port}",
         f"--ssh-keys-file={ssh_keys_path}",
@@ -390,8 +401,12 @@ def start_daemon(cfg: SandboxConfig | None = None) -> None:
         start_new_session=True,
     )
 
+    # Wait for the port file — the subprocess writes it after TCP bind, which
+    # may yield an ephemeral port different from the configured default.
+    actual_port = _poll_port_file(portfile) or c.proxy_port
+
     # Poll the /-/health endpoint until the server is actually ready.
-    if _wait_for_ready(c.proxy_port):
+    if _wait_for_ready(actual_port):
         # Close our end of the pipe — the daemon logs to the log file, not stderr.
         proc.stderr.close()
         return
@@ -407,7 +422,7 @@ def start_daemon(cfg: SandboxConfig | None = None) -> None:
     proc.stderr.close()
     raise SystemExit(
         "Credential proxy process started but did not become ready within 5 s.\n"
-        f"Check logs or try: curl http://127.0.0.1:{c.proxy_port}{_HEALTH_PATH}"
+        f"Check logs or try: curl http://127.0.0.1:{actual_port}{_HEALTH_PATH}"
     )
 
 
@@ -423,8 +438,8 @@ def stop_daemon(cfg: SandboxConfig | None = None) -> None:
     except (ValueError, ProcessLookupError, PermissionError):
         pass
     finally:
-        if pidfile.is_file():
-            pidfile.unlink()
+        for f in (pidfile, _port_file(cfg)):
+            f.unlink(missing_ok=True)
 
 
 def is_daemon_running(cfg: SandboxConfig | None = None) -> bool:
@@ -463,6 +478,24 @@ _SERVICE_UNIT = "terok-credential-proxy.service"
 def _pid_file(cfg: SandboxConfig | None = None) -> Path:
     """Return the PID file path for the managed proxy daemon."""
     return _cfg(cfg).proxy_pid_file_path
+
+
+def _port_file(cfg: SandboxConfig | None = None) -> Path:
+    """Return the port file path for multi-user discovery."""
+    return _cfg(cfg).proxy_port_file_path
+
+
+def _poll_port_file(path: Path, timeout: float = 3.0, interval: float = 0.1) -> int | None:
+    """Wait for a port file to appear and return its integer content, or None on timeout."""
+    import time
+
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        try:
+            return int(path.read_text().strip())
+        except (FileNotFoundError, ValueError):
+            time.sleep(interval)
+    return None
 
 
 def _is_managed_proxy(pid: int, cfg: SandboxConfig | None = None) -> bool:

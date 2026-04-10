@@ -146,8 +146,16 @@ def get_gate_base_path(cfg: SandboxConfig | None = None) -> Path:
 
 
 def get_gate_server_port(cfg: SandboxConfig | None = None) -> int:
-    """Return the configured gate server port."""
-    return _get_port(cfg)
+    """Return the live gate server port (from port file, falling back to config).
+
+    In multi-user setups the actual bound port may differ from the configured
+    default — this function reads the port file written by the running daemon.
+    """
+    portfile = _port_file(cfg)
+    try:
+        return int(portfile.read_text().strip())
+    except (FileNotFoundError, ValueError):
+        return _get_port(cfg)
 
 
 # ---------- Systemd lifecycle ----------
@@ -274,6 +282,8 @@ def start_daemon(port: int | None = None, cfg: SandboxConfig | None = None) -> N
     pidfile = _pid_file(cfg)
     pidfile.parent.mkdir(parents=True, exist_ok=True)
 
+    portfile = _port_file(cfg)
+
     cmd = [
         "terok-gate",
         f"--base-path={gate_base}",
@@ -281,6 +291,7 @@ def start_daemon(port: int | None = None, cfg: SandboxConfig | None = None) -> N
         f"--port={effective_port}",
         "--detach",
         f"--pid-file={pidfile}",
+        f"--port-file={portfile}",
     ]
     admin_token = os.environ.get("TEROK_GATE_ADMIN_TOKEN")
     if admin_token:
@@ -304,8 +315,8 @@ def stop_daemon(cfg: SandboxConfig | None = None) -> None:
     except (ValueError, ProcessLookupError, PermissionError):
         pass
     finally:
-        if pidfile.is_file():
-            pidfile.unlink()
+        for f in (pidfile, _port_file(cfg)):
+            f.unlink(missing_ok=True)
 
 
 def is_daemon_running(cfg: SandboxConfig | None = None) -> bool:
@@ -344,6 +355,11 @@ def _get_gate_base_path(cfg: SandboxConfig | None = None) -> Path:
 def _pid_file(cfg: SandboxConfig | None = None) -> Path:
     """Return the path to the PID file for the managed daemon."""
     return _cfg(cfg).pid_file_path
+
+
+def _port_file(cfg: SandboxConfig | None = None) -> Path:
+    """Return the path to the port file for multi-user discovery."""
+    return _cfg(cfg).gate_port_file_path
 
 
 def _systemd_unit_dir() -> Path:

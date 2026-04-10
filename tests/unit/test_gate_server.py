@@ -712,13 +712,19 @@ class TestPublicApi:
             assert get_gate_base_path(cfg) == GATE_BASE_PATH
         mock.assert_called_once_with(cfg)
 
-    def test_get_gate_server_port_forwards_cfg(self) -> None:
+    def test_get_gate_server_port_from_port_file(self, tmp_path: Path) -> None:
+        """Port file takes priority over configured default."""
         from terok_sandbox.gate.lifecycle import get_gate_server_port
 
-        cfg = unittest.mock.sentinel.cfg
-        with unittest.mock.patch(
-            "terok_sandbox.gate.lifecycle._get_port",
-            return_value=GATE_PORT,
-        ) as mock:
-            assert get_gate_server_port(cfg) == GATE_PORT
-        mock.assert_called_once_with(cfg)
+        port_file = tmp_path / "gate-server.port"
+        port_file.write_text("12345")
+        cfg = unittest.mock.Mock(gate_port_file_path=port_file)
+        assert get_gate_server_port(cfg) == 12345
+
+    def test_get_gate_server_port_falls_back_to_config(self, tmp_path: Path) -> None:
+        """Without a port file, falls back to configured gate_port."""
+        from terok_sandbox.gate.lifecycle import get_gate_server_port
+
+        port_file = tmp_path / "nonexistent.port"
+        cfg = unittest.mock.Mock(gate_port_file_path=port_file, gate_port=GATE_PORT)
+        assert get_gate_server_port(cfg) == GATE_PORT

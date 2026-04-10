@@ -82,6 +82,11 @@ class SandboxConfig:
         return self.runtime_dir / "gate-server.pid"
 
     @property
+    def gate_port_file_path(self) -> Path:
+        """Return the port file path for the gate server (multi-user discovery)."""
+        return self.runtime_dir / "gate-server.port"
+
+    @property
     def shield_profiles_dir(self) -> Path:
         """Return the directory for terok-managed shield profiles."""
         from .paths import namespace_config_root
@@ -102,6 +107,11 @@ class SandboxConfig:
     def proxy_pid_file_path(self) -> Path:
         """Return the PID file path for the managed credential proxy daemon."""
         return self.runtime_dir / "credential-proxy.pid"
+
+    @property
+    def proxy_port_file_path(self) -> Path:
+        """Return the port file path for the credential proxy (multi-user discovery)."""
+        return self.runtime_dir / "credential-proxy.port"
 
     @property
     def proxy_routes_path(self) -> Path:

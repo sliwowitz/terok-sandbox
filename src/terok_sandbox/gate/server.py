@@ -441,18 +441,32 @@ def _serve_daemon(
     token_store: TokenStore,
     port: int,
     pid_file: Path | None,
+    port_file: Path | None = None,
     bind: str = _LISTEN_ADDR,
 ) -> None:
-    """Bind socket, fork, write PID file, run accept loop in child."""
+    """Bind socket, fork, write PID + port files, run accept loop in child.
+
+    Tries the requested *port* first; if another process already holds it,
+    falls back to an OS-assigned ephemeral port (port 0) so that multiple
+    users on the same host can each run their own gate server.
+    """
     handler_class = _make_handler_class(base_path, token_store)
-    server = _ThreadingHTTPServer((bind, port), handler_class)
+    try:
+        server = _ThreadingHTTPServer((bind, port), handler_class)
+    except OSError:
+        _logger.warning("Port %d busy, binding to OS-assigned port", port)
+        server = _ThreadingHTTPServer((bind, 0), handler_class)
+    actual_port = server.server_address[1]
 
     pid = os.fork()
     if pid > 0:
-        # Parent: write child PID and exit
+        # Parent: write child PID and actual bound port, then exit
         if pid_file:
             pid_file.parent.mkdir(parents=True, exist_ok=True)
             pid_file.write_text(str(pid))
+        if port_file:
+            port_file.parent.mkdir(parents=True, exist_ok=True)
+            port_file.write_text(str(actual_port))
         sys.exit(0)
 
     # Child: detach
@@ -508,6 +522,7 @@ def main() -> None:
     parser.add_argument("--inetd", action="store_true", help="Handle one request on fd 0, exit")
     parser.add_argument("--detach", action="store_true", help="Fork and run as daemon")
     parser.add_argument("--pid-file", default=None, help="PID file path (daemon mode)")
+    parser.add_argument("--port-file", default=None, help="Port file path (multi-user discovery)")
     parser.add_argument(
         "--admin-token",
         default=None,
@@ -528,6 +543,14 @@ def main() -> None:
         _serve_inetd(base_path, token_store)
     elif args.detach:
         pid_file = Path(args.pid_file) if args.pid_file else None
-        _serve_daemon(base_path, token_store, args.port, pid_file, bind=args.bind)
+        port_file = Path(args.port_file) if args.port_file else None
+        _serve_daemon(
+            base_path,
+            token_store,
+            args.port,
+            pid_file,
+            port_file=port_file,
+            bind=args.bind,
+        )
     else:
         parser.error("One of --inetd or --detach is required")

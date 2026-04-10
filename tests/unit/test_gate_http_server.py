@@ -427,6 +427,7 @@ class TestDetach:
 
         with tempfile.TemporaryDirectory() as td:
             mock_server = unittest.mock.Mock()
+            mock_server.server_address = ("127.0.0.1", GATE_PORT)
             mock_server.serve_forever.side_effect = SystemExit(0)
 
             with (
@@ -449,19 +450,33 @@ class TestDetach:
             mock_signal.assert_called_once()
             mock_server.serve_forever.assert_called_once()
 
-    @unittest.mock.patch("terok_sandbox.gate.server._ThreadingHTTPServer")
     @unittest.mock.patch("terok_sandbox.gate.server.os.fork", return_value=42)
     def test_parent_writes_pid_file(
         self,
         _mock_fork: unittest.mock.Mock,
-        _mock_server_class: unittest.mock.Mock,
     ) -> None:
         """Parent process (fork returns child PID) should write PID file and exit."""
         from terok_sandbox.gate.server import _serve_daemon
 
         with tempfile.TemporaryDirectory() as td:
             pid_file = Path(td) / "gate.pid"
+            port_file = Path(td) / "gate.port"
             store = TokenStore(Path(td) / "tokens.json")
-            with pytest.raises(SystemExit):
-                _serve_daemon(Path(td), store, GATE_PORT, pid_file)
+            mock_server = unittest.mock.Mock()
+            mock_server.server_address = ("127.0.0.1", GATE_PORT)
+            with (
+                unittest.mock.patch(
+                    "terok_sandbox.gate.server._ThreadingHTTPServer",
+                    return_value=mock_server,
+                ),
+                pytest.raises(SystemExit),
+            ):
+                _serve_daemon(
+                    Path(td),
+                    store,
+                    GATE_PORT,
+                    pid_file,
+                    port_file=port_file,
+                )
             assert pid_file.read_text() == "42"
+            assert port_file.read_text() == str(GATE_PORT)
