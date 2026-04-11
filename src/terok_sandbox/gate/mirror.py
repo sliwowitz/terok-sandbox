@@ -49,6 +49,7 @@ class GateSyncResult(TypedDict):
     success: bool
     updated_branches: list[str]
     errors: list[str]
+    cache_refreshed: bool
 
 
 class BranchSyncResult(TypedDict):
@@ -106,6 +107,7 @@ class GitGate:
         ssh_key_name: str | None = None,
         allow_host_keys: bool = False,
         validate_gate_fn: Callable[[str], None] | None = None,
+        clone_cache_base: Path | str | None = None,
     ) -> None:
         """Initialise with plain parameters.
 
@@ -133,6 +135,12 @@ class GitGate:
             Optional callback ``(scope) -> None`` that validates no other
             scope uses the same gate with a different upstream.  Injected by
             the orchestration layer; omitted for standalone use.
+        clone_cache_base:
+            Base directory for non-bare clone caches.  When set,
+            :meth:`sync` refreshes a working-tree cache at
+            ``clone_cache_base / scope`` after updating the bare mirror.
+            The cache accelerates task startup by enabling a host-side
+            file copy instead of a full ``git clone``.
         """
         self._scope = scope
         self._gate_path = Path(gate_path)
@@ -142,6 +150,12 @@ class GitGate:
         self._ssh_key_name = ssh_key_name
         self._allow_host_keys = allow_host_keys
         self._validate_gate_fn = validate_gate_fn
+        self._clone_cache_base = Path(clone_cache_base) if clone_cache_base else None
+
+    @property
+    def cache_path(self) -> Path | None:
+        """Clone cache directory for this scope, or ``None`` if caching is disabled."""
+        return (self._clone_cache_base / self._scope) if self._clone_cache_base else None
 
     def _ssh_env(self) -> dict:
         """Return a subprocess env dict with SSH configuration."""
@@ -196,6 +210,12 @@ class GitGate:
             created = True
 
         sync_result = self.sync_branches(branches)
+
+        # Refresh the non-bare clone cache from the bare mirror (best-effort).
+        cache_refreshed = False
+        if sync_result["success"] and self._clone_cache_base:
+            cache_refreshed = self._refresh_clone_cache()
+
         return {
             "path": str(gate_dir),
             "upstream_url": self._upstream_url,
@@ -203,7 +223,66 @@ class GitGate:
             "success": sync_result["success"],
             "updated_branches": sync_result["updated_branches"],
             "errors": sync_result["errors"],
+            "cache_refreshed": cache_refreshed,
         }
+
+    def _refresh_clone_cache(self) -> bool:
+        """Refresh the non-bare clone cache from the local bare mirror.
+
+        Creates the cache via ``git clone`` if it doesn't exist, or
+        fetches updates if it does.  Returns ``True`` on success.
+        Failures are logged and swallowed — the cache is purely an
+        optimization for faster task startup.
+        """
+        cache_dir = self.cache_path
+        if cache_dir is None:
+            return False
+
+        gate_file_url = self._gate_path.resolve().as_uri()
+        try:
+            cache_dir.parent.mkdir(parents=True, exist_ok=True)
+
+            if not cache_dir.exists():
+                logger.info("Creating clone cache at %s", cache_dir)
+                subprocess.run(
+                    ["git", "clone", gate_file_url, str(cache_dir)],
+                    check=True,
+                    capture_output=True,
+                    timeout=300,
+                )
+            else:
+                # Ensure origin points to current bare mirror
+                subprocess.run(
+                    ["git", "-C", str(cache_dir), "remote", "set-url", "origin", gate_file_url],
+                    check=True,
+                    capture_output=True,
+                    timeout=10,
+                )
+                subprocess.run(
+                    ["git", "-C", str(cache_dir), "fetch", "--all", "--prune"],
+                    check=True,
+                    capture_output=True,
+                    timeout=120,
+                )
+                # Update working tree to match fetched HEAD — the cache is
+                # copied as-is into task workspaces, so stale files matter.
+                subprocess.run(
+                    ["git", "-C", str(cache_dir), "reset", "--hard", "origin/HEAD"],
+                    check=True,
+                    capture_output=True,
+                    timeout=30,
+                )
+                # Remove untracked/ignored files so the cache stays pristine.
+                subprocess.run(
+                    ["git", "-C", str(cache_dir), "clean", "-ffdx"],
+                    check=True,
+                    capture_output=True,
+                    timeout=30,
+                )
+            return True
+        except (subprocess.CalledProcessError, subprocess.TimeoutExpired, OSError) as exc:
+            logger.warning("Clone cache refresh failed (non-fatal): %s", exc)
+            return False
 
     def sync_branches(self, branches: list[str] | None = None) -> BranchSyncResult:
         """Sync specific branches in the gate from upstream.
