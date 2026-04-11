@@ -12,7 +12,14 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from terok_sandbox.runtime import GpuConfigError, check_gpu_error, redact_env_args
-from terok_sandbox.sandbox import READY_MARKER, LifecycleHooks, RunSpec, Sandbox, VolumeSpec
+from terok_sandbox.sandbox import (
+    READY_MARKER,
+    LifecycleHooks,
+    RunSpec,
+    Sandbox,
+    Sharing,
+    VolumeSpec,
+)
 from tests.constants import MOCK_BASE, MOCK_TASK_DIR
 
 MOCK_HOST_DIR = MOCK_BASE / "host-dir"
@@ -256,12 +263,14 @@ class TestSandbox:
 class TestVolumeSpec:
     """Verify VolumeSpec dataclass."""
 
-    def test_to_mount_arg_default_relabel(self) -> None:
+    def test_to_mount_arg_shared_default(self) -> None:
         vol = VolumeSpec(Path("/host/data"), "/container/data")
         assert vol.to_mount_arg() == "/host/data:/container/data:z"
 
-    def test_to_mount_arg_private_relabel(self) -> None:
-        vol = VolumeSpec(Path("/host/ws"), "/workspace", relabel="Z")
+    def test_to_mount_arg_private(self) -> None:
+        from terok_sandbox.sandbox import Sharing
+
+        vol = VolumeSpec(Path("/host/ws"), "/workspace", sharing=Sharing.PRIVATE)
         assert vol.to_mount_arg() == "/host/ws:/workspace:Z"
 
     def test_frozen(self) -> None:
@@ -282,7 +291,7 @@ class TestSandboxSealed:
 
         spec = _make_spec(
             sealed=True,
-            volumes=(VolumeSpec(host_dir, "/home/dev/.terok", relabel="Z"),),
+            volumes=(VolumeSpec(host_dir, "/home/dev/.terok", sharing=Sharing.PRIVATE),),
         )
 
         with (

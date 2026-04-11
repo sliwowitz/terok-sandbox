@@ -56,6 +56,28 @@ class LifecycleHooks:
     """Fired after the container exits (caller responsibility)."""
 
 
+class Sharing:
+    """Directory sharing semantics — expresses intent, not backend details.
+
+    The sandbox translates these into backend-specific flags (e.g. SELinux
+    relabel ``:z`` / ``:Z`` for Podman) and uses them to drive sealed-mode
+    decisions (private dirs are injected, shared dirs may be skipped).
+    """
+
+    PRIVATE = "private"
+    """Exclusive to one container — no other container accesses this directory."""
+
+    SHARED = "shared"
+    """Shared across multiple containers (e.g. agent auth/config directories)."""
+
+
+# SELinux relabel mapping — Podman-specific, kept in the sandbox layer.
+_SHARING_TO_RELABEL: dict[str, str] = {
+    Sharing.SHARED: "z",
+    Sharing.PRIVATE: "Z",
+}
+
+
 @dataclass(frozen=True)
 class VolumeSpec:
     """Typed description of a host↔container directory binding.
@@ -63,6 +85,12 @@ class VolumeSpec:
     Replaces raw volume strings (``"host:container:z"``) with structured data
     so the sandbox can decide *how* to materialise each binding — as a bind
     mount (shared mode) or a ``podman cp`` injection (sealed mode).
+
+    *sharing* expresses the caller's intent (private vs shared); the sandbox
+    translates that into backend-specific flags (e.g. SELinux relabeling for
+    Podman).  In sealed mode, sharing semantics can also drive whether a
+    directory is injected (private) or skipped (shared config that the
+    credential proxy replaces).
     """
 
     host_path: Path
@@ -71,12 +99,13 @@ class VolumeSpec:
     container_path: str
     """Absolute path inside the container (e.g. ``"/workspace"``)."""
 
-    relabel: str = "z"
-    """SELinux relabel flag: ``"z"`` (shared) or ``"Z"`` (private unshared)."""
+    sharing: str = Sharing.SHARED
+    """Sharing semantics: :attr:`Sharing.PRIVATE` or :attr:`Sharing.SHARED`."""
 
     def to_mount_arg(self) -> str:
         """Format as a ``-v`` flag value for ``podman run``."""
-        return f"{self.host_path}:{self.container_path}:{self.relabel}"
+        relabel = _SHARING_TO_RELABEL.get(self.sharing, "z")
+        return f"{self.host_path}:{self.container_path}:{relabel}"
 
 
 @dataclass(frozen=True)
