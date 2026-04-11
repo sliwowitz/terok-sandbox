@@ -109,6 +109,11 @@ class SandboxConfig:
         return self.credentials_dir / "routes.json"
 
     @property
+    def clone_cache_base_path(self) -> Path:
+        """Return the base directory for per-scope non-bare clone caches."""
+        return self.state_dir / "clone-cache"
+
+    @property
     def ssh_keys_dir(self) -> Path:
         """Return the base directory for per-scope SSH keys."""
         return self.state_dir / "ssh-keys"
