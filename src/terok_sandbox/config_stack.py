@@ -61,13 +61,16 @@ class ConfigStack:
         return result
 
     def resolve_section(self, key: str) -> dict:
-        """Resolve only a single top-level section across all scopes."""
-        result: dict = {}
+        """Resolve only a single top-level section across all scopes.
+
+        Respects the same semantics as :meth:`resolve` — in particular,
+        ``None`` values trigger deletion via :func:`deep_merge`.
+        """
+        wrapper: dict = {}
         for scope in self._scopes:
-            section = scope.data.get(key)
-            if isinstance(section, dict):
-                result = deep_merge(result, section)
-        return result
+            if key in scope.data:
+                wrapper = deep_merge(wrapper, {key: scope.data[key]})
+        return wrapper.get(key, {})
 
     @property
     def scopes(self) -> list[ConfigScope]:
@@ -81,22 +84,52 @@ class ConfigStack:
 
 
 def load_yaml_scope(level: str, path: Path) -> ConfigScope:
-    """Load a YAML file into a ConfigScope.  Returns empty data if missing."""
+    """Load a YAML file into a :class:`ConfigScope`.
+
+    Returns an empty-data scope when the file is missing or empty.
+
+    Raises
+    ------
+    ValueError
+        If the parsed YAML is not a mapping.  :class:`ConfigScope` ``data``
+        must be a ``dict`` because :meth:`ConfigStack.resolve` and
+        :func:`deep_merge` operate on mappings.
+    """
     if path.is_file():
         from yaml import safe_load  # lazy: PyYAML is a transitive dep
 
         data = safe_load(path.read_text(encoding="utf-8")) or {}
     else:
         data = {}
+    if data and not isinstance(data, dict):
+        raise ValueError(
+            f"{path}: top-level value must be a mapping, got {type(data).__name__}; "
+            f"ConfigScope.data fed to ConfigStack.resolve / deep_merge requires a dict"
+        )
     return ConfigScope(level=level, source=path, data=data)
 
 
 def load_json_scope(level: str, path: Path) -> ConfigScope:
-    """Load a JSON file into a ConfigScope.  Returns empty data if missing."""
+    """Load a JSON file into a :class:`ConfigScope`.
+
+    Returns an empty-data scope when the file is missing or empty.
+
+    Raises
+    ------
+    ValueError
+        If the parsed JSON is not a mapping.  :class:`ConfigScope` ``data``
+        must be a ``dict`` because :meth:`ConfigStack.resolve` and
+        :func:`deep_merge` operate on mappings.
+    """
     if path.is_file():
         data = json.loads(path.read_text(encoding="utf-8")) or {}
     else:
         data = {}
+    if data and not isinstance(data, dict):
+        raise ValueError(
+            f"{path}: top-level value must be a mapping, got {type(data).__name__}; "
+            f"ConfigScope.data fed to ConfigStack.resolve / deep_merge requires a dict"
+        )
     return ConfigScope(level=level, source=path, data=data)
 
 
@@ -140,6 +173,9 @@ def deep_merge(base: dict, override: dict) -> dict:
                 merged[key] = _merge_dicts(bv, ov)
             elif isinstance(ov, list) and isinstance(bv, list):
                 merged[key] = _merge_lists(bv, ov)
+            elif isinstance(ov, dict) and ov.get(_INHERIT) is True:
+                # _inherit with no dict parent — strip sentinel, use rest
+                merged[key] = {k: v for k, v in ov.items() if k != _INHERIT}
             else:
                 merged[key] = ov
         else:

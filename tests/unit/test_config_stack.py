@@ -47,6 +47,9 @@ NONEXISTENT_CONFIG_JSON = NONEXISTENT_DIR / "config.json"
         ({}, {"a": 1}, {"a": 1}),
         ({"a": 1}, {}, {"a": 1}),
         ({}, {}, {}),
+        # _inherit on missing/non-dict base: sentinel must not leak into result
+        ({}, {"x": {"_inherit": True, "a": 1}}, {"x": {"a": 1}}),
+        ({"x": "scalar"}, {"x": {"_inherit": True, "a": 1}}, {"x": {"a": 1}}),
     ],
     ids=[
         "simple-override",
@@ -59,6 +62,8 @@ NONEXISTENT_CONFIG_JSON = NONEXISTENT_DIR / "config.json"
         "empty-base",
         "empty-override",
         "both-empty",
+        "inherit-missing-base",
+        "inherit-non-dict-base",
     ],
 )
 def test_deep_merge(base: dict, override: dict, expected: dict) -> None:
@@ -93,6 +98,13 @@ class TestConfigStack:
         stack.push(ConfigScope("global", None, {"agent": {"model": "haiku"}, "other": 1}))
         stack.push(ConfigScope("project", None, {"agent": {"model": "sonnet", "turns": 5}}))
         assert stack.resolve_section("agent") == {"model": "sonnet", "turns": 5}
+
+    def test_section_deletion_via_none(self) -> None:
+        """A higher-priority scope setting a section to None deletes it."""
+        stack = ConfigStack()
+        stack.push(ConfigScope("global", None, {"agent": {"model": "haiku"}}))
+        stack.push(ConfigScope("project", None, {"agent": None}))
+        assert stack.resolve_section("agent") == {}
 
     def test_empty_stack(self) -> None:
         """Empty stack resolves to empty dict."""
@@ -141,6 +153,27 @@ def test_scope_loaders(
     assert scope.level == "test"
     assert scope.source == path
     assert scope.data == expected
+
+
+@pytest.mark.parametrize(
+    ("loader", "suffix", "content"),
+    [
+        (load_yaml_scope, ".yml", "- item1\n- item2\n"),
+        (load_json_scope, ".json", "[1, 2, 3]"),
+    ],
+    ids=["yaml-list", "json-list"],
+)
+def test_scope_loaders_reject_non_mapping(
+    loader: Callable[[str, Path], ConfigScope],
+    suffix: str,
+    content: str,
+) -> None:
+    """Loaders raise ValueError when the top-level value is not a mapping."""
+    with tempfile.TemporaryDirectory() as td:
+        path = Path(td) / f"test{suffix}"
+        path.write_text(content, encoding="utf-8")
+        with pytest.raises(ValueError, match="top-level value must be a mapping"):
+            loader("test", path)
 
 
 @pytest.mark.parametrize(
