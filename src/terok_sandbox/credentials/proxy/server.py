@@ -198,7 +198,9 @@ async def _handle_request(request: web.Request) -> web.StreamResponse:
     provider = token_info["provider"]
     route = routes.get(provider)
     if route is None:
-        _logger.warning("%s %s -> 404 No route for provider: %s", request.method, request.path, provider)
+        _logger.warning(
+            "%s %s -> 404 No route for provider: %s", request.method, request.path, provider
+        )
         return web.Response(status=404, text=f"No route for provider: {provider}")
     rest = request.path
 
