@@ -571,6 +571,13 @@ class TestScopeHasKeys:
         f.write_text('{"proj": []}')
         assert _scope_has_keys(f, "proj") is False
 
+    @pytest.mark.parametrize("value", ["{}", '"x"', "null"])
+    def test_scope_non_list_value(self, tmp_path: Path, value: str) -> None:
+        """Scope whose value is not a list (dict, string, null) returns False."""
+        f = tmp_path / "ssh-keys.json"
+        f.write_text(f'{{"proj": {value}}}')
+        assert _scope_has_keys(f, "proj") is False
+
     def test_scope_with_keys(self, tmp_path: Path) -> None:
         """Scope with at least one entry returns True."""
         f = tmp_path / "ssh-keys.json"
