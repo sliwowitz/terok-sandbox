@@ -574,8 +574,10 @@ def _scope_has_keys(keys_json_path: Path, scope: str) -> bool:
         mapping = json.loads(keys_json_path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
         return False
+    if not isinstance(mapping, dict):
+        return False
     entries = mapping.get(scope)
-    return bool(entries) and isinstance(entries, list) and len(entries) > 0
+    return isinstance(entries, list) and len(entries) > 0
 
 
 def _validate_scope_exists(scope: str, create_scope: bool, cfg: SandboxConfig) -> None:

@@ -23,6 +23,7 @@ from terok_sandbox.commands import (
     _handle_ssh_import,
     _handle_ssh_list,
     _handle_ssh_remove_key,
+    _scope_has_keys,
 )
 from terok_sandbox.credentials.ssh import _next_key_number, generate_keypair
 
@@ -532,6 +533,49 @@ class TestHandleSshAddKey:
             _handle_ssh_add_key(scope="proj", name="standalone", create_scope=True)
 
         assert (cfg.ssh_keys_dir / "proj" / "id_ed25519_standalone").is_file()
+
+
+# ---------------------------------------------------------------------------
+# _scope_has_keys
+# ---------------------------------------------------------------------------
+
+
+class TestScopeHasKeys:
+    """Unit tests for _scope_has_keys."""
+
+    def test_no_json_file(self, tmp_path: Path) -> None:
+        """Missing ssh-keys.json returns False."""
+        assert _scope_has_keys(tmp_path / "missing.json", "proj") is False
+
+    def test_corrupt_json(self, tmp_path: Path) -> None:
+        """Malformed JSON returns False."""
+        bad = tmp_path / "ssh-keys.json"
+        bad.write_text("{not valid json", encoding="utf-8")
+        assert _scope_has_keys(bad, "proj") is False
+
+    def test_non_dict_json(self, tmp_path: Path) -> None:
+        """Top-level JSON array returns False."""
+        arr = tmp_path / "ssh-keys.json"
+        arr.write_text('[{"private_key": "/a"}]', encoding="utf-8")
+        assert _scope_has_keys(arr, "proj") is False
+
+    def test_scope_missing(self, tmp_path: Path) -> None:
+        """Scope not present in mapping returns False."""
+        f = tmp_path / "ssh-keys.json"
+        f.write_text('{"other": [{"private_key": "/a", "public_key": "/a.pub"}]}')
+        assert _scope_has_keys(f, "proj") is False
+
+    def test_scope_empty_list(self, tmp_path: Path) -> None:
+        """Scope present but with empty list returns False."""
+        f = tmp_path / "ssh-keys.json"
+        f.write_text('{"proj": []}')
+        assert _scope_has_keys(f, "proj") is False
+
+    def test_scope_with_keys(self, tmp_path: Path) -> None:
+        """Scope with at least one entry returns True."""
+        f = tmp_path / "ssh-keys.json"
+        f.write_text('{"proj": [{"private_key": "/a", "public_key": "/a.pub"}]}')
+        assert _scope_has_keys(f, "proj") is True
 
 
 # ---------------------------------------------------------------------------
