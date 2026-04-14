@@ -327,6 +327,91 @@ def stop_task_containers(container_names: list[str]) -> list[ContainerRemoveResu
     return results
 
 
+# ---------- Container exec / start / stop ----------
+
+_DEFAULT_LOGIN_COMMAND: tuple[str, ...] = ("tmux", "new-session", "-A", "-s", "main")
+
+
+def sandbox_exec(
+    cname: str,
+    cmd: list[str],
+    *,
+    timeout: int = 30,
+) -> subprocess.CompletedProcess[str]:
+    """Run *cmd* inside container *cname* via ``podman exec``.
+
+    Returns the completed process so the caller can inspect
+    *returncode*, *stdout*, and *stderr*.  Lets ``FileNotFoundError``
+    (podman missing) and ``subprocess.TimeoutExpired`` propagate.
+    """
+    log_debug(f"sandbox_exec({cname}, cmd[0]={cmd[0]!r}, argc={len(cmd)}, timeout={timeout})")
+    return subprocess.run(
+        ["podman", "exec", cname, *cmd],
+        capture_output=True,
+        text=True,
+        timeout=timeout,
+        check=False,
+    )
+
+
+def login_command(
+    cname: str,
+    *,
+    command: tuple[str, ...] = _DEFAULT_LOGIN_COMMAND,
+) -> list[str]:
+    """Return the full command to interactively enter *cname*.
+
+    The returned list is suitable for :func:`os.execvp` or
+    :func:`shlex.join` (display).  No subprocess is spawned.
+    """
+    return ["podman", "exec", "-it", cname, *command]
+
+
+_START_TIMEOUT = 30
+"""Subprocess timeout (seconds) for ``podman start``."""
+
+
+def container_start(cname: str) -> subprocess.CompletedProcess[str]:
+    """Start a stopped container, returning the process result.
+
+    Captures *stderr* for error reporting; *stdout* is discarded.
+    Lets ``FileNotFoundError`` and ``TimeoutExpired`` propagate.
+    """
+    log_debug(f"container_start({cname})")
+    return subprocess.run(
+        ["podman", "start", cname],
+        check=False,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.PIPE,
+        text=True,
+        timeout=_START_TIMEOUT,
+    )
+
+
+_STOP_TIMEOUT_BUFFER = 5
+"""Extra seconds beyond the podman ``--time`` grace period."""
+
+
+def container_stop(cname: str, *, timeout: int = 10) -> subprocess.CompletedProcess[str]:
+    """Stop a running container, returning the process result.
+
+    Sends ``podman stop --time <timeout>`` which gives the container
+    *timeout* seconds to exit before SIGKILL.  The subprocess timeout
+    adds a buffer on top so the CLI itself can finish.  Captures
+    *stderr* for error reporting; *stdout* is discarded.
+    Lets ``FileNotFoundError`` and ``TimeoutExpired`` propagate.
+    """
+    log_debug(f"container_stop({cname}, timeout={timeout})")
+    return subprocess.run(
+        ["podman", "stop", "--time", str(timeout), cname],
+        check=False,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.PIPE,
+        text=True,
+        timeout=timeout + _STOP_TIMEOUT_BUFFER,
+    )
+
+
 def gpu_run_args(*, enabled: bool = False) -> list[str]:
     """Return additional ``podman run`` args to enable NVIDIA GPU passthrough.
 
