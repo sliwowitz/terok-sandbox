@@ -98,8 +98,9 @@ class TestRevokeToken:
         assert len(data) == 1
 
     def test_revoke_on_missing_file_is_noop(self) -> None:
-        with patched_token_file(MISSING_TOKENS_PATH) as (_path, store):
+        with patched_token_file(MISSING_TOKENS_PATH) as (path, store):
             store.revoke_for_task("proj-a", "1")
+        assert not path.exists()
 
 
 class TestAtomicWrite:
