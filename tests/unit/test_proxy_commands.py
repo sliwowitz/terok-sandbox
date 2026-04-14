@@ -11,9 +11,7 @@ from unittest.mock import patch
 import pytest
 
 from terok_sandbox.commands import _handle_proxy_start, _handle_proxy_status, _handle_proxy_stop
-from terok_sandbox.credentials.lifecycle import CredentialProxyStatus
-
-_LIFECYCLE = "terok_sandbox.credentials.lifecycle"
+from terok_sandbox.credentials.lifecycle import CredentialProxyManager, CredentialProxyStatus
 
 
 class TestProxyStart:
@@ -31,7 +29,7 @@ class TestProxyStart:
             routes_configured=0,
             credentials_stored=(),
         )
-        with patch(f"{_LIFECYCLE}.get_proxy_status", return_value=status):
+        with patch.object(CredentialProxyManager, "get_status", return_value=status):
             _handle_proxy_start()
 
         assert "already running" in capsys.readouterr().out
@@ -49,8 +47,8 @@ class TestProxyStart:
             credentials_stored=(),
         )
         with (
-            patch(f"{_LIFECYCLE}.get_proxy_status", return_value=status),
-            patch(f"{_LIFECYCLE}.start_daemon") as mock_start,
+            patch.object(CredentialProxyManager, "get_status", return_value=status),
+            patch.object(CredentialProxyManager, "start_daemon") as mock_start,
         ):
             _handle_proxy_start()
 
@@ -63,7 +61,7 @@ class TestProxyStop:
 
     def test_not_running(self, capsys: pytest.CaptureFixture[str]) -> None:
         """Prints message when proxy is not running."""
-        with patch(f"{_LIFECYCLE}.is_daemon_running", return_value=False):
+        with patch.object(CredentialProxyManager, "is_daemon_running", return_value=False):
             _handle_proxy_stop()
 
         assert "not running" in capsys.readouterr().out
@@ -71,8 +69,8 @@ class TestProxyStop:
     def test_stops_daemon(self, capsys: pytest.CaptureFixture[str]) -> None:
         """Calls stop_daemon and prints confirmation."""
         with (
-            patch(f"{_LIFECYCLE}.is_daemon_running", return_value=True),
-            patch(f"{_LIFECYCLE}.stop_daemon") as mock_stop,
+            patch.object(CredentialProxyManager, "is_daemon_running", return_value=True),
+            patch.object(CredentialProxyManager, "stop_daemon") as mock_stop,
         ):
             _handle_proxy_stop()
 
@@ -95,7 +93,7 @@ class TestProxyStatus:
             routes_configured=0,
             credentials_stored=(),
         )
-        with patch(f"{_LIFECYCLE}.get_proxy_status", return_value=status):
+        with patch.object(CredentialProxyManager, "get_status", return_value=status):
             _handle_proxy_status()
 
         out = capsys.readouterr().out
@@ -115,7 +113,7 @@ class TestProxyStatus:
             routes_configured=0,
             credentials_stored=(),
         )
-        with patch(f"{_LIFECYCLE}.get_proxy_status", return_value=status):
+        with patch.object(CredentialProxyManager, "get_status", return_value=status):
             _handle_proxy_status()
 
         assert "stopped" in capsys.readouterr().out

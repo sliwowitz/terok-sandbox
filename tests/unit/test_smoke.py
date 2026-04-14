@@ -75,18 +75,20 @@ def test_import_runtime():
 
 def test_import_gate_lifecycle():
     """Gate lifecycle module is importable."""
-    from terok_sandbox.gate import lifecycle
+    from terok_sandbox.gate.lifecycle import GateServerManager
 
-    assert callable(lifecycle.get_server_status)
-    assert callable(lifecycle.is_systemd_available)
+    mgr = GateServerManager()
+    assert callable(mgr.get_status)
+    assert callable(mgr.is_systemd_available)
 
 
 def test_import_gate_tokens():
     """Gate tokens module is importable."""
-    from terok_sandbox.gate import tokens
+    from terok_sandbox.gate.tokens import TokenStore
 
-    assert callable(tokens.create_token)
-    assert callable(tokens.revoke_token_for_task)
+    store = TokenStore()
+    assert callable(store.create)
+    assert callable(store.revoke_for_task)
 
 
 def test_import_ssh():

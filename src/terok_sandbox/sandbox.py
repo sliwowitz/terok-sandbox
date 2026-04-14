@@ -180,15 +180,15 @@ class Sandbox:
 
     def ensure_gate(self) -> None:
         """Verify the gate server is running; raise ``SystemExit`` if not."""
-        from .gate.lifecycle import ensure_server_reachable
+        from .gate.lifecycle import GateServerManager
 
-        ensure_server_reachable(self._cfg)
+        GateServerManager(self._cfg).ensure_reachable()
 
     def create_token(self, scope: str, task_id: str) -> str:
         """Create a task-scoped gate access token."""
-        from .gate.tokens import create_token
+        from .gate.tokens import TokenStore
 
-        return create_token(scope, task_id, self._cfg)
+        return TokenStore(self._cfg).create(scope, task_id)
 
     def gate_url(self, repo_path: Path, token: str) -> str:
         """Build an HTTP URL for gate access to *repo_path*."""
@@ -199,9 +199,9 @@ class Sandbox:
 
     def gate_status(self) -> GateServerStatus:
         """Return the current gate server status."""
-        from .gate.lifecycle import get_server_status
+        from .gate.lifecycle import GateServerManager
 
-        return get_server_status(self._cfg)
+        return GateServerManager(self._cfg).get_status()
 
     # -- Shield -------------------------------------------------------------
 

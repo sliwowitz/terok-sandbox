@@ -373,7 +373,7 @@ class TestCredentialProxyStatusDbFailure:
     def test_db_exception_logs_warning(self, tmp_path: Path) -> None:
         """Corrupted DB triggers log_warning and returns empty credentials."""
         from terok_sandbox import SandboxConfig
-        from terok_sandbox.credentials.lifecycle import get_proxy_status
+        from terok_sandbox.credentials.lifecycle import CredentialProxyManager
 
         cfg = SandboxConfig(state_dir=tmp_path)
         # Create a corrupt DB file
@@ -381,7 +381,7 @@ class TestCredentialProxyStatusDbFailure:
         cfg.proxy_db_path.write_text("not a sqlite db")
 
         with unittest.mock.patch("terok_sandbox.credentials.lifecycle.log_warning") as mock_warn:
-            get_proxy_status(cfg)
+            CredentialProxyManager(cfg).get_status()
         mock_warn.assert_called_once()
         assert "credential db" in mock_warn.call_args[0][0].lower()
 
