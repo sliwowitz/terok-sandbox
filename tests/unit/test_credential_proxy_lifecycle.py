@@ -87,8 +87,8 @@ class TestIsManagedProxy:
 class TestStartDaemon:
     """Verify start_daemon behaviour."""
 
-    def test_missing_routes_file_creates_empty(self, tmp_path: Path) -> None:
-        """start_daemon creates an empty routes file when missing."""
+    def test_missing_routes_file_creates_empty_with_restricted_perms(self, tmp_path: Path) -> None:
+        """start_daemon creates an empty routes file with 0o600 permissions."""
         cfg = _make_cfg(tmp_path)
         mgr = CredentialProxyManager(cfg)
 
@@ -103,6 +103,7 @@ class TestStartDaemon:
 
         assert cfg.proxy_routes_path.is_file()
         assert cfg.proxy_routes_path.read_text() == "{}\n"
+        assert oct(cfg.proxy_routes_path.stat().st_mode & 0o777) == oct(0o600)
 
     def test_start_launches_subprocess(self, tmp_path: Path) -> None:
         """start_daemon calls Popen with the correct command."""
@@ -128,6 +129,7 @@ class TestStartDaemon:
         assert cmd[1:3] == ["-m", "terok_sandbox.credentials.proxy"]
         assert any("--socket-path=" in a for a in cmd)
         assert any("--pid-file=" in a for a in cmd)
+        assert "--log-level=INFO" in cmd
 
     def test_immediate_exit_raises(self, tmp_path: Path) -> None:
         """start_daemon raises SystemExit if the process dies during readiness wait."""
@@ -147,6 +149,27 @@ class TestStartDaemon:
             pytest.raises(SystemExit, match="failed to start"),
         ):
             mgr.start_daemon()
+
+    def test_debug_log_level_via_env(self, tmp_path: Path) -> None:
+        """TEROK_PROXY_LOG_LEVEL env var overrides the default INFO log level."""
+        cfg = _make_cfg(tmp_path)
+        mgr = CredentialProxyManager(cfg)
+        routes = cfg.proxy_routes_path
+        routes.parent.mkdir(parents=True, exist_ok=True)
+        routes.write_text("{}")
+
+        mock_proc = MagicMock()
+        mock_proc.poll.return_value = None
+
+        with (
+            patch("subprocess.Popen", return_value=mock_proc) as mock_popen,
+            patch.object(CredentialProxyManager, "_wait_for_ready", return_value=True),
+            patch.dict(os.environ, {"TEROK_PROXY_LOG_LEVEL": "DEBUG"}),
+        ):
+            mgr.start_daemon()
+
+        cmd = mock_popen.call_args[0][0]
+        assert "--log-level=DEBUG" in cmd
 
     def test_timeout_without_crash_raises(self, tmp_path: Path) -> None:
         """start_daemon raises SystemExit when proxy stays alive but never becomes ready."""
@@ -424,15 +447,41 @@ class TestSystemdHelpers:
     def test_systemd_unit_dir_default(self) -> None:
         """Unit dir falls back to ~/.config/systemd/user when XDG_CONFIG_HOME is unset."""
         env = {k: v for k, v in os.environ.items() if k != "XDG_CONFIG_HOME"}
-        with patch.dict(os.environ, env, clear=True):
+        with (
+            patch.dict(os.environ, env, clear=True),
+            patch("os.geteuid", return_value=1000),
+        ):
             d = CredentialProxyManager._systemd_unit_dir()
         assert d == Path.home() / ".config" / "systemd" / "user"
 
     def test_systemd_unit_dir_xdg(self, tmp_path: Path) -> None:
-        """Unit dir respects XDG_CONFIG_HOME."""
-        with patch.dict(os.environ, {"XDG_CONFIG_HOME": str(tmp_path)}):
+        """Unit dir respects XDG_CONFIG_HOME when under home."""
+        xdg = tmp_path / "custom-config"
+        xdg.mkdir()
+        with (
+            patch.dict(os.environ, {"XDG_CONFIG_HOME": str(xdg)}),
+            patch("os.geteuid", return_value=1000),
+            patch("pathlib.Path.home", return_value=tmp_path),
+        ):
             d = CredentialProxyManager._systemd_unit_dir()
-        assert d == tmp_path / "systemd" / "user"
+        assert d == xdg / "systemd" / "user"
+
+    def test_systemd_unit_dir_refuses_root(self) -> None:
+        """Unit dir refuses to run as root."""
+        with (
+            patch("os.geteuid", return_value=0),
+            pytest.raises(SystemExit, match="root"),
+        ):
+            CredentialProxyManager._systemd_unit_dir()
+
+    def test_systemd_unit_dir_rejects_outside_home(self, tmp_path: Path) -> None:
+        """Unit dir rejects XDG_CONFIG_HOME that resolves outside $HOME."""
+        with (
+            patch.dict(os.environ, {"XDG_CONFIG_HOME": "/etc/evil"}),
+            patch("os.geteuid", return_value=1000),
+            pytest.raises(SystemExit, match="outside the home directory"),
+        ):
+            CredentialProxyManager._systemd_unit_dir()
 
     def test_is_systemd_available_true(self) -> None:
         """Returns True when systemctl is-system-running exits 0."""

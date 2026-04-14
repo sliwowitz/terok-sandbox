@@ -659,7 +659,7 @@ class TestDaemonEnvVars:
     """Tests for start_daemon env var forwarding."""
 
     @unittest.mock.patch("subprocess.run")
-    def test_admin_token_forwarded(self, mock_run: unittest.mock.Mock) -> None:
+    def test_admin_token_passed_via_env_not_argv(self, mock_run: unittest.mock.Mock) -> None:
         mock_run.return_value = make_run_result(returncode=0)
         with tempfile.TemporaryDirectory() as td:
             with patched_daemon_paths(Path(td)):
@@ -667,7 +667,9 @@ class TestDaemonEnvVars:
                     GateServerManager().start_daemon(port=GATE_PORT)
 
         cmd = mock_run.call_args[0][0]
-        assert "--admin-token=secret42" in cmd
+        assert not any("admin-token" in arg for arg in cmd), "token must not leak into argv"
+        env = mock_run.call_args[1].get("env", {})
+        assert env.get("TEROK_GATE_ADMIN_TOKEN") == "secret42"
 
     @unittest.mock.patch("subprocess.run")
     def test_bind_addr_forwarded(self, mock_run: unittest.mock.Mock) -> None:

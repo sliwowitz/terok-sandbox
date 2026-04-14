@@ -282,14 +282,18 @@ class GateServerManager:
             "--detach",
             f"--pid-file={pidfile}",
         ]
-        admin_token = os.environ.get("TEROK_GATE_ADMIN_TOKEN")
-        if admin_token:
-            cmd.append(f"--admin-token={admin_token}")
         bind_addr = os.environ.get("TEROK_GATE_BIND")
         if bind_addr:
             cmd.append(f"--bind={bind_addr}")
 
-        subprocess.run(cmd, check=True, timeout=10)
+        # Pass the admin token via the subprocess environment only — never on
+        # the command line where it would be visible in /proc/<pid>/cmdline.
+        env = os.environ.copy()
+        admin_token = env.get("TEROK_GATE_ADMIN_TOKEN")
+        if admin_token:
+            env["TEROK_GATE_ADMIN_TOKEN"] = admin_token
+
+        subprocess.run(cmd, check=True, timeout=10, env=env)
 
     def stop_daemon(self) -> None:
         """Stop the managed daemon by reading the PID file and sending SIGTERM."""
@@ -324,9 +328,10 @@ class GateServerManager:
 
     @staticmethod
     def _systemd_unit_dir() -> Path:
-        """Return the systemd user unit directory."""
-        xdg = os.environ.get("XDG_CONFIG_HOME")
-        return (Path(xdg) if xdg else Path.home() / ".config") / "systemd" / "user"
+        """Return the validated systemd user unit directory."""
+        from .._util import systemd_user_unit_dir
+
+        return systemd_user_unit_dir()
 
     def _installed_unit_version(self) -> int | None:
         """Return the version stamp from the installed socket unit, or ``None``."""
