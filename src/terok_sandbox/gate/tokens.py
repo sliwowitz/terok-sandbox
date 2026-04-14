@@ -20,6 +20,7 @@ from __future__ import annotations
 import contextlib
 import fcntl
 import json
+import logging
 import os
 import secrets
 import tempfile
@@ -27,6 +28,11 @@ from collections.abc import Iterator
 from pathlib import Path
 
 from ..config import SandboxConfig
+
+_log = logging.getLogger(__name__)
+
+_DIR_MODE = 0o700
+_FILE_MODE = 0o600
 
 
 class TokenStore:
@@ -76,15 +82,23 @@ class TokenStore:
     def _read(self) -> dict[str, dict[str, str]]:
         """Load tokens.json.  Returns ``{}`` when the file does not exist.
 
-        Raises on I/O or parse errors to prevent silent data loss — a
-        subsequent ``_write()`` would overwrite all existing tokens with
-        whatever the caller accumulated in memory.
+        On corruption (invalid JSON, wrong top-level type) the broken file
+        is moved aside as ``*.corrupt`` and an empty map is returned so that
+        the system can self-heal without permanently wedging task creation.
+        I/O errors still propagate — they usually indicate a permission or
+        filesystem problem that cannot be fixed by discarding data.
         """
         if not self._path.is_file():
             return {}
-        data = json.loads(self._path.read_text(encoding="utf-8"))
+        raw = self._path.read_text(encoding="utf-8")
+        try:
+            data = json.loads(raw)
+        except json.JSONDecodeError:
+            self._quarantine("corrupt JSON")
+            return {}
         if not isinstance(data, dict):
-            raise ValueError(f"Token file is not a JSON object: {self._path}")
+            self._quarantine("not a JSON object")
+            return {}
         return {
             tok: info
             for tok, info in data.items()
@@ -94,15 +108,31 @@ class TokenStore:
             and isinstance(info.get("task"), str)
         }
 
+    def _quarantine(self, reason: str) -> None:
+        """Move a corrupt token file aside so the next write starts fresh."""
+        backup = self._path.with_suffix(self._path.suffix + ".corrupt")
+        try:
+            self._path.replace(backup)
+            _log.warning("Quarantined %s → %s (%s)", self._path, backup, reason)
+        except OSError as exc:
+            _log.warning("Cannot quarantine %s: %s", self._path, exc)
+
     def _write(self, tokens: dict[str, dict[str, str]]) -> None:
-        """Atomic write: write to a temp file, then ``os.replace()`` over the original."""
+        """Atomic write with restrictive permissions (0o600).
+
+        Creates the parent directory as 0o700 if missing.  Uses
+        ``tempfile.mkstemp`` + ``os.replace`` for crash safety.
+        """
         self._path.parent.mkdir(parents=True, exist_ok=True)
+        os.chmod(self._path.parent, _DIR_MODE)
         fd, tmp = tempfile.mkstemp(dir=self._path.parent, suffix=".tmp")
         try:
+            os.fchmod(fd, _FILE_MODE)
             with os.fdopen(fd, "w", encoding="utf-8") as f:
                 json.dump(tokens, f, indent=2)
                 f.write("\n")
             os.replace(tmp, self._path)
+            os.chmod(self._path, _FILE_MODE)
         except BaseException:
             with contextlib.suppress(OSError):
                 os.unlink(tmp)
@@ -113,9 +143,12 @@ class TokenStore:
         """Advisory file lock serializing token read-modify-write cycles."""
         lock_path = self._path.with_suffix(self._path.suffix + ".lock")
         lock_path.parent.mkdir(parents=True, exist_ok=True)
-        with lock_path.open("a+", encoding="utf-8") as lockf:
-            fcntl.flock(lockf.fileno(), fcntl.LOCK_EX)
+        lock_fd = os.open(str(lock_path), os.O_CREAT | os.O_RDWR, _FILE_MODE)
+        try:
+            fcntl.flock(lock_fd, fcntl.LOCK_EX)
             try:
                 yield
             finally:
-                fcntl.flock(lockf.fileno(), fcntl.LOCK_UN)
+                fcntl.flock(lock_fd, fcntl.LOCK_UN)
+        finally:
+            os.close(lock_fd)

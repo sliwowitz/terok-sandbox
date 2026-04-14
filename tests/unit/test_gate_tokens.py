@@ -11,8 +11,6 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
 
-import pytest
-
 from terok_sandbox.gate.tokens import TokenStore
 from tests.constants import (
     FAKE_TEROK_STATE_DIR,
@@ -121,25 +119,27 @@ class TestAtomicWrite:
             store._path = Path(td) / NONEXISTENT_TOKENS_PATH.name
             assert store._read() == {}
 
-    def test_read_corrupt_json_raises(self) -> None:
-        """Corrupt JSON raises to prevent silent data loss on next write."""
+    def test_read_corrupt_json_quarantines_and_returns_empty(self) -> None:
+        """Corrupt JSON is quarantined so the system can self-heal."""
         with tempfile.TemporaryDirectory() as td:
             token_path = Path(td) / "tokens.json"
             token_path.write_text("not json{{{")
             store = TokenStore.__new__(TokenStore)
             store._path = token_path
-            with pytest.raises(json.JSONDecodeError):
-                store._read()
+            assert store._read() == {}
+            assert not token_path.exists()
+            assert (token_path.with_suffix(".json.corrupt")).exists()
 
-    def test_read_non_dict_json_raises(self) -> None:
-        """Non-dict JSON raises to prevent silent data loss on next write."""
+    def test_read_non_dict_json_quarantines_and_returns_empty(self) -> None:
+        """Non-dict JSON is quarantined so the system can self-heal."""
         with tempfile.TemporaryDirectory() as td:
             token_path = Path(td) / "tokens.json"
             token_path.write_text(json.dumps(["not", "a", "dict"]))
             store = TokenStore.__new__(TokenStore)
             store._path = token_path
-            with pytest.raises(ValueError, match="not a JSON object"):
-                store._read()
+            assert store._read() == {}
+            assert not token_path.exists()
+            assert (token_path.with_suffix(".json.corrupt")).exists()
 
     def test_read_filters_malformed_entries(self) -> None:
         """Malformed entries are silently filtered; valid ones survive."""
@@ -170,3 +170,17 @@ class TestAtomicWrite:
             data = read_token_json(token_path)
             assert data == {"t2": {"scope": "p", "task": "2"}}
             assert list(Path(td).glob("*.tmp")) == []
+
+    def test_write_enforces_restrictive_permissions(self) -> None:
+        """Token file and parent directory are created with 0o700/0o600."""
+        import stat
+
+        with tempfile.TemporaryDirectory() as td:
+            token_path = Path(td) / "gate" / "tokens.json"
+            store = TokenStore.__new__(TokenStore)
+            store._path = token_path
+            store._write({"t": {"scope": "p", "task": "1"}})
+            dir_mode = stat.S_IMODE(token_path.parent.stat().st_mode)
+            file_mode = stat.S_IMODE(token_path.stat().st_mode)
+            assert dir_mode == 0o700
+            assert file_mode == 0o600
