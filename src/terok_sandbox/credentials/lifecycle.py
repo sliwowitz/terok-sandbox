@@ -355,30 +355,24 @@ class CredentialProxyManager:
         sock_path.parent.mkdir(parents=True, exist_ok=True)
         pidfile.parent.mkdir(parents=True, exist_ok=True)
 
-        routes_path.parent.mkdir(parents=True, exist_ok=True)
-        try:
-            with routes_path.open("x", encoding="utf-8") as f:
-                f.write("{}\n")
+        from .._util import write_sensitive_file
+
+        if write_sensitive_file(routes_path, "{}\n"):
             import logging
 
             logging.getLogger(__name__).info(
                 "Created empty routes file: %s — populate with: terok auth <provider> <project>",
                 routes_path,
             )
-        except FileExistsError:
-            pass
 
         ssh_keys_path = self._cfg.ssh_keys_json_path
-        ssh_keys_path.parent.mkdir(parents=True, exist_ok=True)
-        try:
-            with ssh_keys_path.open("x", encoding="utf-8") as f:
-                f.write("{}\n")
-        except FileExistsError:
-            pass
+        write_sensitive_file(ssh_keys_path, "{}\n")
 
         log_file = self._cfg.state_dir / "proxy" / "credential-proxy.log"
         log_file.parent.mkdir(parents=True, exist_ok=True)
+        os.chmod(log_file.parent, 0o700)
 
+        log_level = os.environ.get("TEROK_PROXY_LOG_LEVEL", "INFO")
         cmd = [
             *self._proxy_exec_prefix(),
             f"--socket-path={sock_path}",
@@ -389,7 +383,7 @@ class CredentialProxyManager:
             f"--ssh-agent-port={self._cfg.ssh_agent_port}",
             f"--ssh-keys-file={ssh_keys_path}",
             f"--log-file={log_file}",
-            "--log-level=DEBUG",
+            f"--log-level={log_level}",
         ]
 
         # Fork into background so the proxy survives shell exit.
@@ -467,9 +461,10 @@ class CredentialProxyManager:
 
     @staticmethod
     def _systemd_unit_dir() -> Path:
-        """Return the systemd user unit directory."""
-        xdg = os.environ.get("XDG_CONFIG_HOME")
-        return (Path(xdg) if xdg else Path.home() / ".config") / "systemd" / "user"
+        """Return the validated systemd user unit directory."""
+        from .._util import systemd_user_unit_dir
+
+        return systemd_user_unit_dir()
 
     @staticmethod
     def _proxy_exec_prefix() -> list[str]:
