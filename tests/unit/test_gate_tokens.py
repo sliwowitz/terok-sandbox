@@ -7,20 +7,13 @@ from __future__ import annotations
 
 import json
 import tempfile
-import unittest.mock
 from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
 
 import pytest
 
-from terok_sandbox.gate.tokens import (
-    _read_tokens,
-    _write_tokens,
-    create_token,
-    revoke_token_for_task,
-    token_file_path,
-)
+from terok_sandbox.gate.tokens import TokenStore
 from tests.constants import (
     FAKE_TEROK_STATE_DIR,
     MISSING_TOKENS_PATH,
@@ -29,22 +22,19 @@ from tests.constants import (
 
 
 @contextmanager
-def patched_token_file(path: Path | None = None) -> Iterator[Path]:
-    """Patch ``token_file_path()`` to point at a temporary JSON file."""
+def patched_token_file(path: Path | None = None) -> Iterator[tuple[Path, TokenStore]]:
+    """Create a TokenStore with a temporary JSON file and yield (path, store)."""
     if path is not None:
-        token_path = path
-        with unittest.mock.patch(
-            "terok_sandbox.gate.tokens.token_file_path", return_value=token_path
-        ):
-            yield token_path
+        store = TokenStore.__new__(TokenStore)
+        store._path = path
+        yield path, store
         return
 
     with tempfile.TemporaryDirectory() as td:
         token_path = Path(td) / "tokens.json"
-        with unittest.mock.patch(
-            "terok_sandbox.gate.tokens.token_file_path", return_value=token_path
-        ):
-            yield token_path
+        store = TokenStore.__new__(TokenStore)
+        store._path = token_path
+        yield token_path, store
 
 
 def read_token_json(path: Path) -> dict[str, dict[str, str]]:
@@ -53,37 +43,37 @@ def read_token_json(path: Path) -> dict[str, dict[str, str]]:
 
 
 class TestTokenFilePath:
-    """Tests for token_file_path."""
+    """Tests for TokenStore.file_path."""
 
     def test_returns_path_under_state_root(self) -> None:
         from terok_sandbox.config import SandboxConfig
 
         cfg = SandboxConfig(state_dir=FAKE_TEROK_STATE_DIR)
-        path = token_file_path(cfg=cfg)
-        assert path == FAKE_TEROK_STATE_DIR / "gate" / "tokens.json"
+        store = TokenStore(cfg)
+        assert store.file_path == FAKE_TEROK_STATE_DIR / "gate" / "tokens.json"
 
 
 class TestCreateToken:
-    """Tests for create_token."""
+    """Tests for TokenStore.create."""
 
     def test_returns_prefixed_hex(self) -> None:
-        with patched_token_file() as token_path:
-            token = create_token("proj-a", "1")
+        with patched_token_file() as (token_path, store):
+            token = store.create("proj-a", "1")
             assert token_path.exists()
         assert token.startswith("terok-g-")
         assert len(token) == 8 + 32  # prefix + 32 hex chars
         int(token.removeprefix("terok-g-"), 16)
 
     def test_persists_to_file(self) -> None:
-        with patched_token_file() as token_path:
-            token = create_token("proj-a", "1")
+        with patched_token_file() as (token_path, store):
+            token = store.create("proj-a", "1")
             data = read_token_json(token_path)
         assert data[token] == {"scope": "proj-a", "task": "1"}
 
     def test_multiple_tokens_coexist(self) -> None:
-        with patched_token_file() as token_path:
-            first = create_token("proj-a", "1")
-            second = create_token("proj-b", "2")
+        with patched_token_file() as (token_path, store):
+            first = store.create("proj-a", "1")
+            second = store.create("proj-b", "2")
             data = read_token_json(token_path)
         assert first != second
         assert first in data
@@ -91,34 +81,36 @@ class TestCreateToken:
 
 
 class TestRevokeToken:
-    """Tests for revoke_token_for_task."""
+    """Tests for TokenStore.revoke_for_task."""
 
     def test_revoke_removes_entry(self) -> None:
-        with patched_token_file() as token_path:
-            token = create_token("proj-a", "1")
-            revoke_token_for_task("proj-a", "1")
+        with patched_token_file() as (token_path, store):
+            token = store.create("proj-a", "1")
+            store.revoke_for_task("proj-a", "1")
             data = read_token_json(token_path)
         assert token not in data
 
     def test_revoke_nonexistent_is_noop(self) -> None:
-        with patched_token_file() as token_path:
-            create_token("proj-a", "1")
-            revoke_token_for_task("proj-a", "99")
+        with patched_token_file() as (token_path, store):
+            store.create("proj-a", "1")
+            store.revoke_for_task("proj-a", "99")
             data = read_token_json(token_path)
         assert len(data) == 1
 
     def test_revoke_on_missing_file_is_noop(self) -> None:
-        with patched_token_file(MISSING_TOKENS_PATH):
-            revoke_token_for_task("proj-a", "1")
+        with patched_token_file(MISSING_TOKENS_PATH) as (_path, store):
+            store.revoke_for_task("proj-a", "1")
 
 
 class TestAtomicWrite:
-    """Tests for atomic write via _write_tokens."""
+    """Tests for atomic write via TokenStore._write."""
 
     def test_write_creates_parent_dirs(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             token_path = Path(td) / "sub" / "dir" / "tokens.json"
-            _write_tokens(token_path, {"abc": {"scope": "p", "task": "1"}})
+            store = TokenStore.__new__(TokenStore)
+            store._path = token_path
+            store._write({"abc": {"scope": "p", "task": "1"}})
             assert read_token_json(token_path) == {"abc": {"scope": "p", "task": "1"}}
 
     @pytest.mark.parametrize(
@@ -153,15 +145,19 @@ class TestAtomicWrite:
             token_path = Path(td) / path
             if content is not None:
                 token_path.write_text(content)
-            result = _read_tokens(token_path)
+            store = TokenStore.__new__(TokenStore)
+            store._path = token_path
+            result = store._read()
         assert result == expected
 
     def test_atomic_write_uses_replace(self) -> None:
-        """Verify that _write_tokens uses atomic replacement semantics."""
+        """Verify that TokenStore._write uses atomic replacement semantics."""
         with tempfile.TemporaryDirectory() as td:
             token_path = Path(td) / "tokens.json"
-            _write_tokens(token_path, {"t1": {"scope": "p", "task": "1"}})
-            _write_tokens(token_path, {"t2": {"scope": "p", "task": "2"}})
+            store = TokenStore.__new__(TokenStore)
+            store._path = token_path
+            store._write({"t1": {"scope": "p", "task": "1"}})
+            store._write({"t2": {"scope": "p", "task": "2"}})
             data = read_token_json(token_path)
             assert data == {"t2": {"scope": "p", "task": "2"}}
             assert list(Path(td).glob("*.tmp")) == []

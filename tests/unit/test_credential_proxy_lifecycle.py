@@ -14,24 +14,9 @@ import pytest
 
 from terok_sandbox.config import SandboxConfig
 from terok_sandbox.credentials.lifecycle import (
+    CredentialProxyManager,
     CredentialProxyStatus,
     ProxyUnreachableError,
-    _is_managed_proxy,
-    _pid_file,
-    _probe_proxy,
-    _systemd_unit_dir,
-    _wait_for_ready,
-    ensure_proxy_reachable,
-    get_proxy_status,
-    install_systemd_units,
-    is_daemon_running,
-    is_service_active,
-    is_socket_active,
-    is_socket_installed,
-    is_systemd_available,
-    start_daemon,
-    stop_daemon,
-    uninstall_systemd_units,
 )
 
 
@@ -44,18 +29,24 @@ def _make_cfg(tmp_path: Path) -> SandboxConfig:
     )
 
 
+def _make_mgr(tmp_path: Path) -> CredentialProxyManager:
+    """Create a CredentialProxyManager with a test config."""
+    return CredentialProxyManager(_make_cfg(tmp_path))
+
+
 class TestPidFile:
     """Verify PID file path resolution."""
 
     def test_pid_file_uses_config(self, tmp_path: Path) -> None:
         """PID file path comes from config's proxy_pid_file_path."""
         cfg = _make_cfg(tmp_path)
-        assert _pid_file(cfg) == cfg.proxy_pid_file_path
+        mgr = CredentialProxyManager(cfg)
+        assert mgr._cfg.proxy_pid_file_path == cfg.proxy_pid_file_path
 
     def test_pid_file_default_config(self) -> None:
         """PID file resolves without explicit config."""
-        path = _pid_file()
-        assert "credential-proxy.pid" in str(path)
+        mgr = CredentialProxyManager()
+        assert "credential-proxy.pid" in str(mgr._cfg.proxy_pid_file_path)
 
 
 class TestIsManagedProxy:
@@ -63,34 +54,34 @@ class TestIsManagedProxy:
 
     def test_no_proc_entry(self, tmp_path: Path) -> None:
         """Non-existent PID returns False."""
-        assert _is_managed_proxy(999999999, _make_cfg(tmp_path)) is False
+        assert _make_mgr(tmp_path)._is_managed_proxy(999999999) is False
 
     def test_current_process_is_not_proxy(self, tmp_path: Path) -> None:
         """Current process (pytest) is not the proxy."""
-        assert _is_managed_proxy(os.getpid(), _make_cfg(tmp_path)) is False
+        assert _make_mgr(tmp_path)._is_managed_proxy(os.getpid()) is False
 
     def test_matches_when_flag_present(self, tmp_path: Path) -> None:
         """Returns True when /proc/PID/cmdline contains --pid-file=<expected>."""
-        cfg = _make_cfg(tmp_path)
-        expected_flag = f"--pid-file={_pid_file(cfg)}"
+        mgr = _make_mgr(tmp_path)
+        expected_flag = f"--pid-file={mgr._cfg.proxy_pid_file_path}"
         fake_cmdline = f"terok-credential-proxy\x00{expected_flag}\x00".encode()
 
         with (
             patch("pathlib.Path.is_file", return_value=True),
             patch("pathlib.Path.read_bytes", return_value=fake_cmdline),
         ):
-            assert _is_managed_proxy(12345, cfg) is True
+            assert mgr._is_managed_proxy(12345) is True
 
     def test_rejects_different_pid_file(self, tmp_path: Path) -> None:
         """Returns False when --pid-file points to a different path."""
-        cfg = _make_cfg(tmp_path)
+        mgr = _make_mgr(tmp_path)
         fake_cmdline = b"terok-credential-proxy\x00--pid-file=/other/path.pid\x00"
 
         with (
             patch("pathlib.Path.is_file", return_value=True),
             patch("pathlib.Path.read_bytes", return_value=fake_cmdline),
         ):
-            assert _is_managed_proxy(12345, cfg) is False
+            assert mgr._is_managed_proxy(12345) is False
 
 
 class TestStartDaemon:
@@ -99,15 +90,16 @@ class TestStartDaemon:
     def test_missing_routes_file_creates_empty(self, tmp_path: Path) -> None:
         """start_daemon creates an empty routes file when missing."""
         cfg = _make_cfg(tmp_path)
+        mgr = CredentialProxyManager(cfg)
 
         mock_proc = MagicMock()
         mock_proc.poll.return_value = None
 
         with (
             patch("subprocess.Popen", return_value=mock_proc),
-            patch(f"{_LIFECYCLE}._wait_for_ready", return_value=True),
+            patch.object(CredentialProxyManager, "_wait_for_ready", return_value=True),
         ):
-            start_daemon(cfg)
+            mgr.start_daemon()
 
         assert cfg.proxy_routes_path.is_file()
         assert cfg.proxy_routes_path.read_text() == "{}\n"
@@ -115,6 +107,7 @@ class TestStartDaemon:
     def test_start_launches_subprocess(self, tmp_path: Path) -> None:
         """start_daemon calls Popen with the correct command."""
         cfg = _make_cfg(tmp_path)
+        mgr = CredentialProxyManager(cfg)
         routes = cfg.proxy_routes_path
         routes.parent.mkdir(parents=True, exist_ok=True)
         routes.write_text("{}")
@@ -124,9 +117,9 @@ class TestStartDaemon:
 
         with (
             patch("subprocess.Popen", return_value=mock_proc) as mock_popen,
-            patch(f"{_LIFECYCLE}._wait_for_ready", return_value=True),
+            patch.object(CredentialProxyManager, "_wait_for_ready", return_value=True),
         ):
-            start_daemon(cfg)
+            mgr.start_daemon()
 
         import sys
 
@@ -139,6 +132,7 @@ class TestStartDaemon:
     def test_immediate_exit_raises(self, tmp_path: Path) -> None:
         """start_daemon raises SystemExit if the process dies during readiness wait."""
         cfg = _make_cfg(tmp_path)
+        mgr = CredentialProxyManager(cfg)
         routes = cfg.proxy_routes_path
         routes.parent.mkdir(parents=True, exist_ok=True)
         routes.write_text("{}")
@@ -149,14 +143,15 @@ class TestStartDaemon:
 
         with (
             patch("subprocess.Popen", return_value=mock_proc),
-            patch(f"{_LIFECYCLE}._wait_for_ready", return_value=False),
+            patch.object(CredentialProxyManager, "_wait_for_ready", return_value=False),
             pytest.raises(SystemExit, match="failed to start"),
         ):
-            start_daemon(cfg)
+            mgr.start_daemon()
 
     def test_timeout_without_crash_raises(self, tmp_path: Path) -> None:
         """start_daemon raises SystemExit when proxy stays alive but never becomes ready."""
         cfg = _make_cfg(tmp_path)
+        mgr = CredentialProxyManager(cfg)
         routes = cfg.proxy_routes_path
         routes.parent.mkdir(parents=True, exist_ok=True)
         routes.write_text("{}")
@@ -166,10 +161,10 @@ class TestStartDaemon:
 
         with (
             patch("subprocess.Popen", return_value=mock_proc),
-            patch(f"{_LIFECYCLE}._wait_for_ready", return_value=False),
+            patch.object(CredentialProxyManager, "_wait_for_ready", return_value=False),
             pytest.raises(SystemExit, match="did not become ready"),
         ):
-            start_daemon(cfg)
+            mgr.start_daemon()
 
 
 class TestStopDaemon:
@@ -177,37 +172,36 @@ class TestStopDaemon:
 
     def test_no_pidfile_is_noop(self, tmp_path: Path) -> None:
         """stop_daemon does nothing when PID file doesn't exist."""
-        cfg = _make_cfg(tmp_path)
-        stop_daemon(cfg)  # should not raise
+        _make_mgr(tmp_path).stop_daemon()  # should not raise
 
     def test_sends_sigterm_to_managed_process(self, tmp_path: Path) -> None:
         """stop_daemon sends SIGTERM when the PID is a managed proxy."""
-        cfg = _make_cfg(tmp_path)
-        pidfile = _pid_file(cfg)
+        mgr = _make_mgr(tmp_path)
+        pidfile = mgr._cfg.proxy_pid_file_path
         pidfile.parent.mkdir(parents=True, exist_ok=True)
         pidfile.write_text("42")
 
         with (
-            patch("terok_sandbox.credentials.lifecycle._is_managed_proxy", return_value=True),
+            patch.object(CredentialProxyManager, "_is_managed_proxy", return_value=True),
             patch("os.kill") as mock_kill,
         ):
-            stop_daemon(cfg)
+            mgr.stop_daemon()
 
         mock_kill.assert_called_once_with(42, 15)  # SIGTERM = 15
         assert not pidfile.exists()
 
     def test_stale_pid_cleans_up(self, tmp_path: Path) -> None:
         """stop_daemon cleans PID file even when process is gone."""
-        cfg = _make_cfg(tmp_path)
-        pidfile = _pid_file(cfg)
+        mgr = _make_mgr(tmp_path)
+        pidfile = mgr._cfg.proxy_pid_file_path
         pidfile.parent.mkdir(parents=True, exist_ok=True)
         pidfile.write_text("99999999")
 
         with (
-            patch("terok_sandbox.credentials.lifecycle._is_managed_proxy", return_value=True),
+            patch.object(CredentialProxyManager, "_is_managed_proxy", return_value=True),
             patch("os.kill", side_effect=ProcessLookupError),
         ):
-            stop_daemon(cfg)
+            mgr.stop_daemon()
 
         assert not pidfile.exists()
 
@@ -217,43 +211,43 @@ class TestIsDaemonRunning:
 
     def test_no_pidfile(self, tmp_path: Path) -> None:
         """Returns False when PID file doesn't exist."""
-        assert is_daemon_running(_make_cfg(tmp_path)) is False
+        assert _make_mgr(tmp_path).is_daemon_running() is False
 
     def test_valid_managed_pid(self, tmp_path: Path) -> None:
         """Returns True for a valid managed PID."""
-        cfg = _make_cfg(tmp_path)
-        pidfile = _pid_file(cfg)
+        mgr = _make_mgr(tmp_path)
+        pidfile = mgr._cfg.proxy_pid_file_path
         pidfile.parent.mkdir(parents=True, exist_ok=True)
         pidfile.write_text("42")
 
         with (
-            patch("terok_sandbox.credentials.lifecycle._is_managed_proxy", return_value=True),
+            patch.object(CredentialProxyManager, "_is_managed_proxy", return_value=True),
             patch("os.kill"),
         ):  # signal 0 succeeds
-            assert is_daemon_running(cfg) is True
+            assert mgr.is_daemon_running() is True
 
     def test_not_our_daemon(self, tmp_path: Path) -> None:
         """Returns False when PID doesn't match our cmdline."""
-        cfg = _make_cfg(tmp_path)
-        pidfile = _pid_file(cfg)
+        mgr = _make_mgr(tmp_path)
+        pidfile = mgr._cfg.proxy_pid_file_path
         pidfile.parent.mkdir(parents=True, exist_ok=True)
         pidfile.write_text("42")
 
-        with patch("terok_sandbox.credentials.lifecycle._is_managed_proxy", return_value=False):
-            assert is_daemon_running(cfg) is False
+        with patch.object(CredentialProxyManager, "_is_managed_proxy", return_value=False):
+            assert mgr.is_daemon_running() is False
 
     def test_stale_pid(self, tmp_path: Path) -> None:
         """Returns False when PID is gone."""
-        cfg = _make_cfg(tmp_path)
-        pidfile = _pid_file(cfg)
+        mgr = _make_mgr(tmp_path)
+        pidfile = mgr._cfg.proxy_pid_file_path
         pidfile.parent.mkdir(parents=True, exist_ok=True)
         pidfile.write_text("99999999")
 
         with (
-            patch("terok_sandbox.credentials.lifecycle._is_managed_proxy", return_value=True),
+            patch.object(CredentialProxyManager, "_is_managed_proxy", return_value=True),
             patch("os.kill", side_effect=ProcessLookupError),
         ):
-            assert is_daemon_running(cfg) is False
+            assert mgr.is_daemon_running() is False
 
 
 _LIFECYCLE = "terok_sandbox.credentials.lifecycle"
@@ -261,7 +255,7 @@ _LIFECYCLE = "terok_sandbox.credentials.lifecycle"
 
 def _no_systemd():
     """Context manager that patches out systemd detection."""
-    return patch(f"{_LIFECYCLE}.is_socket_installed", return_value=False)
+    return patch.object(CredentialProxyManager, "is_socket_installed", return_value=False)
 
 
 class TestGetProxyStatus:
@@ -270,11 +264,12 @@ class TestGetProxyStatus:
     def test_returns_status_dataclass(self, tmp_path: Path) -> None:
         """Returns a CredentialProxyStatus with correct fields."""
         cfg = _make_cfg(tmp_path)
+        mgr = CredentialProxyManager(cfg)
         with (
             _no_systemd(),
-            patch(f"{_LIFECYCLE}.is_daemon_running", return_value=False),
+            patch.object(CredentialProxyManager, "is_daemon_running", return_value=False),
         ):
-            status = get_proxy_status(cfg)
+            status = mgr.get_status()
 
         assert isinstance(status, CredentialProxyStatus)
         assert status.mode == "none"
@@ -293,11 +288,12 @@ class TestGetProxyStatus:
         routes.parent.mkdir(parents=True, exist_ok=True)
         routes.write_text('{"github": {}, "gitlab": {}}')
 
+        mgr = CredentialProxyManager(cfg)
         with (
             _no_systemd(),
-            patch(f"{_LIFECYCLE}.is_daemon_running", return_value=False),
+            patch.object(CredentialProxyManager, "is_daemon_running", return_value=False),
         ):
-            status = get_proxy_status(cfg)
+            status = mgr.get_status()
 
         assert status.routes_configured == 2
 
@@ -308,11 +304,12 @@ class TestGetProxyStatus:
         routes.parent.mkdir(parents=True, exist_ok=True)
         routes.write_text("not valid json{{{")
 
+        mgr = CredentialProxyManager(cfg)
         with (
             _no_systemd(),
-            patch(f"{_LIFECYCLE}.is_daemon_running", return_value=False),
+            patch.object(CredentialProxyManager, "is_daemon_running", return_value=False),
         ):
-            status = get_proxy_status(cfg)
+            status = mgr.get_status()
 
         assert status.routes_configured == 0
 
@@ -326,11 +323,12 @@ class TestGetProxyStatus:
         db.store_credential("default", "anthropic", {"key": "xyz"})
         db.close()
 
+        mgr = CredentialProxyManager(cfg)
         with (
             _no_systemd(),
-            patch(f"{_LIFECYCLE}.is_daemon_running", return_value=False),
+            patch.object(CredentialProxyManager, "is_daemon_running", return_value=False),
         ):
-            status = get_proxy_status(cfg)
+            status = mgr.get_status()
 
         assert set(status.credentials_stored) == {"github", "anthropic"}
 
@@ -339,11 +337,12 @@ class TestGetProxyStatus:
         cfg = _make_cfg(tmp_path)
         assert not cfg.proxy_db_path.is_file()
 
+        mgr = CredentialProxyManager(cfg)
         with (
             _no_systemd(),
-            patch(f"{_LIFECYCLE}.is_daemon_running", return_value=False),
+            patch.object(CredentialProxyManager, "is_daemon_running", return_value=False),
         ):
-            status = get_proxy_status(cfg)
+            status = mgr.get_status()
 
         assert status.credentials_stored == ()
 
@@ -353,70 +352,70 @@ class TestEnsureProxyReachable:
 
     def test_passes_when_daemon_healthy(self, tmp_path: Path) -> None:
         """No exception when daemon is running and health probe succeeds."""
-        cfg = _make_cfg(tmp_path)
+        mgr = _make_mgr(tmp_path)
         with (
-            patch(f"{_LIFECYCLE}.is_socket_active", return_value=False),
-            patch(f"{_LIFECYCLE}.is_daemon_running", return_value=True),
-            patch(f"{_LIFECYCLE}._wait_for_ready", return_value=True),
-            patch(f"{_LIFECYCLE}._wait_for_tcp_port", return_value=True),
+            patch.object(CredentialProxyManager, "is_socket_active", return_value=False),
+            patch.object(CredentialProxyManager, "is_daemon_running", return_value=True),
+            patch.object(CredentialProxyManager, "_wait_for_ready", return_value=True),
+            patch.object(CredentialProxyManager, "_wait_for_tcp_port", return_value=True),
         ):
-            ensure_proxy_reachable(cfg)  # should not raise
+            mgr.ensure_reachable()  # should not raise
 
     def test_raises_when_daemon_running_but_unhealthy(self, tmp_path: Path) -> None:
         """Raises SystemExit when daemon is alive but health probe fails."""
-        cfg = _make_cfg(tmp_path)
+        mgr = _make_mgr(tmp_path)
         with (
-            patch(f"{_LIFECYCLE}.is_socket_active", return_value=False),
-            patch(f"{_LIFECYCLE}.is_daemon_running", return_value=True),
-            patch(f"{_LIFECYCLE}._wait_for_ready", return_value=False),
+            patch.object(CredentialProxyManager, "is_socket_active", return_value=False),
+            patch.object(CredentialProxyManager, "is_daemon_running", return_value=True),
+            patch.object(CredentialProxyManager, "_wait_for_ready", return_value=False),
             pytest.raises(SystemExit, match="not reachable"),
         ):
-            ensure_proxy_reachable(cfg)
+            mgr.ensure_reachable()
 
     def test_raises_when_stopped(self, tmp_path: Path) -> None:
         """Raises ProxyUnreachableError when daemon is down."""
-        cfg = _make_cfg(tmp_path)
+        mgr = _make_mgr(tmp_path)
         with (
-            patch(f"{_LIFECYCLE}.is_socket_active", return_value=False),
-            patch(f"{_LIFECYCLE}.is_daemon_running", return_value=False),
+            patch.object(CredentialProxyManager, "is_socket_active", return_value=False),
+            patch.object(CredentialProxyManager, "is_daemon_running", return_value=False),
             pytest.raises(ProxyUnreachableError, match="not reachable"),
         ):
-            ensure_proxy_reachable(cfg)
+            mgr.ensure_reachable()
 
     def test_passes_when_socket_active(self, tmp_path: Path) -> None:
         """Socket active → starts service, waits for health + SSH agent port."""
-        cfg = _make_cfg(tmp_path)
+        mgr = _make_mgr(tmp_path)
         with (
-            patch(f"{_LIFECYCLE}.is_socket_active", return_value=True),
+            patch.object(CredentialProxyManager, "is_socket_active", return_value=True),
             patch(f"{_LIFECYCLE}.subprocess") as mock_sub,
-            patch(f"{_LIFECYCLE}._wait_for_ready", return_value=True),
-            patch(f"{_LIFECYCLE}._wait_for_tcp_port", return_value=True),
+            patch.object(CredentialProxyManager, "_wait_for_ready", return_value=True),
+            patch.object(CredentialProxyManager, "_wait_for_tcp_port", return_value=True),
         ):
-            ensure_proxy_reachable(cfg)  # should not raise
+            mgr.ensure_reachable()  # should not raise
             mock_sub.run.assert_called_once()  # systemctl --user start
 
     def test_raises_when_health_unreachable(self, tmp_path: Path) -> None:
         """Service started but health endpoint never responds → SystemExit."""
-        cfg = _make_cfg(tmp_path)
+        mgr = _make_mgr(tmp_path)
         with (
-            patch(f"{_LIFECYCLE}.is_socket_active", return_value=True),
+            patch.object(CredentialProxyManager, "is_socket_active", return_value=True),
             patch(f"{_LIFECYCLE}.subprocess"),
-            patch(f"{_LIFECYCLE}._wait_for_ready", return_value=False),
+            patch.object(CredentialProxyManager, "_wait_for_ready", return_value=False),
             pytest.raises(SystemExit, match="not reachable"),
         ):
-            ensure_proxy_reachable(cfg)
+            mgr.ensure_reachable()
 
     def test_raises_when_ssh_agent_port_unreachable(self, tmp_path: Path) -> None:
         """Service started but SSH agent port never comes up → SystemExit."""
-        cfg = _make_cfg(tmp_path)
+        mgr = _make_mgr(tmp_path)
         with (
-            patch(f"{_LIFECYCLE}.is_socket_active", return_value=True),
+            patch.object(CredentialProxyManager, "is_socket_active", return_value=True),
             patch(f"{_LIFECYCLE}.subprocess"),
-            patch(f"{_LIFECYCLE}._wait_for_ready", return_value=True),
-            patch(f"{_LIFECYCLE}._wait_for_tcp_port", return_value=False),
+            patch.object(CredentialProxyManager, "_wait_for_ready", return_value=True),
+            patch.object(CredentialProxyManager, "_wait_for_tcp_port", return_value=False),
             pytest.raises(SystemExit, match="not reachable"),
         ):
-            ensure_proxy_reachable(cfg)
+            mgr.ensure_reachable()
 
 
 class TestSystemdHelpers:
@@ -426,81 +425,81 @@ class TestSystemdHelpers:
         """Unit dir falls back to ~/.config/systemd/user when XDG_CONFIG_HOME is unset."""
         env = {k: v for k, v in os.environ.items() if k != "XDG_CONFIG_HOME"}
         with patch.dict(os.environ, env, clear=True):
-            d = _systemd_unit_dir()
+            d = CredentialProxyManager._systemd_unit_dir()
         assert d == Path.home() / ".config" / "systemd" / "user"
 
     def test_systemd_unit_dir_xdg(self, tmp_path: Path) -> None:
         """Unit dir respects XDG_CONFIG_HOME."""
         with patch.dict(os.environ, {"XDG_CONFIG_HOME": str(tmp_path)}):
-            d = _systemd_unit_dir()
+            d = CredentialProxyManager._systemd_unit_dir()
         assert d == tmp_path / "systemd" / "user"
 
     def test_is_systemd_available_true(self) -> None:
         """Returns True when systemctl is-system-running exits 0."""
         result = MagicMock(returncode=0)
         with patch("subprocess.run", return_value=result):
-            assert is_systemd_available() is True
+            assert CredentialProxyManager().is_systemd_available() is True
 
     def test_is_systemd_available_degraded(self) -> None:
         """Returns True for degraded state (exit code 1)."""
         result = MagicMock(returncode=1)
         with patch("subprocess.run", return_value=result):
-            assert is_systemd_available() is True
+            assert CredentialProxyManager().is_systemd_available() is True
 
     def test_is_systemd_available_missing(self) -> None:
         """Returns False when systemctl is not found."""
         with patch("subprocess.run", side_effect=FileNotFoundError):
-            assert is_systemd_available() is False
+            assert CredentialProxyManager().is_systemd_available() is False
 
     def test_is_socket_installed_true(self, tmp_path: Path) -> None:
         """Returns True when socket unit file exists."""
-        with patch(f"{_LIFECYCLE}._systemd_unit_dir", return_value=tmp_path):
+        with patch.object(CredentialProxyManager, "_systemd_unit_dir", return_value=tmp_path):
             (tmp_path / "terok-credential-proxy.socket").write_text("[Socket]")
-            assert is_socket_installed() is True
+            assert CredentialProxyManager().is_socket_installed() is True
 
     def test_is_socket_installed_false(self, tmp_path: Path) -> None:
         """Returns False when socket unit file is absent."""
-        with patch(f"{_LIFECYCLE}._systemd_unit_dir", return_value=tmp_path):
-            assert is_socket_installed() is False
+        with patch.object(CredentialProxyManager, "_systemd_unit_dir", return_value=tmp_path):
+            assert CredentialProxyManager().is_socket_installed() is False
 
     def test_is_socket_active_true(self) -> None:
         """Returns True when systemctl reports active."""
         result = MagicMock(stdout="active\n")
         with patch("subprocess.run", return_value=result):
-            assert is_socket_active() is True
+            assert CredentialProxyManager().is_socket_active() is True
 
     def test_is_socket_active_false(self) -> None:
         """Returns False when systemctl reports inactive."""
         result = MagicMock(stdout="inactive\n")
         with patch("subprocess.run", return_value=result):
-            assert is_socket_active() is False
+            assert CredentialProxyManager().is_socket_active() is False
 
     def test_is_socket_active_no_systemctl(self) -> None:
         """Returns False when systemctl is not found."""
         with patch("subprocess.run", side_effect=FileNotFoundError):
-            assert is_socket_active() is False
+            assert CredentialProxyManager().is_socket_active() is False
 
     def test_is_service_active_true(self) -> None:
         """Returns True when the service unit is active."""
         result = MagicMock(stdout="active\n")
         with patch("subprocess.run", return_value=result):
-            assert is_service_active() is True
+            assert CredentialProxyManager().is_service_active() is True
 
     def test_is_service_active_false(self) -> None:
         """Returns False when the service unit is inactive."""
         result = MagicMock(stdout="inactive\n")
         with patch("subprocess.run", return_value=result):
-            assert is_service_active() is False
+            assert CredentialProxyManager().is_service_active() is False
 
     def test_is_service_active_no_systemctl(self) -> None:
         """Returns False when systemctl is not found."""
         with patch("subprocess.run", side_effect=FileNotFoundError):
-            assert is_service_active() is False
+            assert CredentialProxyManager().is_service_active() is False
 
     def test_is_service_active_timeout(self) -> None:
         """Returns False on systemctl timeout."""
         with patch("subprocess.run", side_effect=subprocess.TimeoutExpired("cmd", 5)):
-            assert is_service_active() is False
+            assert CredentialProxyManager().is_service_active() is False
 
 
 class TestGetProxyStatusModes:
@@ -508,96 +507,96 @@ class TestGetProxyStatusModes:
 
     def test_systemd_mode_service_active(self, tmp_path: Path) -> None:
         """Reports running=True only when the service unit is active."""
-        cfg = _make_cfg(tmp_path)
+        mgr = _make_mgr(tmp_path)
         with (
-            patch(f"{_LIFECYCLE}.is_socket_installed", return_value=True),
-            patch(f"{_LIFECYCLE}.is_service_active", return_value=True),
-            patch(f"{_LIFECYCLE}._probe_proxy", return_value=True),
+            patch.object(CredentialProxyManager, "is_socket_installed", return_value=True),
+            patch.object(CredentialProxyManager, "is_service_active", return_value=True),
+            patch.object(CredentialProxyManager, "_probe", return_value=True),
         ):
-            status = get_proxy_status(cfg)
+            status = mgr.get_status()
         assert status.mode == "systemd"
         assert status.running is True
         assert status.healthy is True
 
     def test_systemd_mode_service_idle(self, tmp_path: Path) -> None:
         """Reports running=False when socket is installed but service is idle."""
-        cfg = _make_cfg(tmp_path)
+        mgr = _make_mgr(tmp_path)
         with (
-            patch(f"{_LIFECYCLE}.is_socket_installed", return_value=True),
-            patch(f"{_LIFECYCLE}.is_service_active", return_value=False),
+            patch.object(CredentialProxyManager, "is_socket_installed", return_value=True),
+            patch.object(CredentialProxyManager, "is_service_active", return_value=False),
         ):
-            status = get_proxy_status(cfg)
+            status = mgr.get_status()
         assert status.mode == "systemd"
         assert status.running is False
         assert status.healthy is False
 
     def test_daemon_mode_healthy(self, tmp_path: Path) -> None:
         """Reports mode='daemon' and healthy=True when health probe succeeds."""
-        cfg = _make_cfg(tmp_path)
+        mgr = _make_mgr(tmp_path)
         with (
-            patch(f"{_LIFECYCLE}.is_socket_installed", return_value=False),
-            patch(f"{_LIFECYCLE}.is_daemon_running", return_value=True),
-            patch(f"{_LIFECYCLE}._probe_proxy", return_value=True),
+            patch.object(CredentialProxyManager, "is_socket_installed", return_value=False),
+            patch.object(CredentialProxyManager, "is_daemon_running", return_value=True),
+            patch.object(CredentialProxyManager, "_probe", return_value=True),
         ):
-            status = get_proxy_status(cfg)
+            status = mgr.get_status()
         assert status.mode == "daemon"
         assert status.running is True
         assert status.healthy is True
 
     def test_daemon_mode_unhealthy(self, tmp_path: Path) -> None:
         """Reports healthy=False when daemon is alive but probe fails."""
-        cfg = _make_cfg(tmp_path)
+        mgr = _make_mgr(tmp_path)
         with (
-            patch(f"{_LIFECYCLE}.is_socket_installed", return_value=False),
-            patch(f"{_LIFECYCLE}.is_daemon_running", return_value=True),
-            patch(f"{_LIFECYCLE}._probe_proxy", return_value=False),
+            patch.object(CredentialProxyManager, "is_socket_installed", return_value=False),
+            patch.object(CredentialProxyManager, "is_daemon_running", return_value=True),
+            patch.object(CredentialProxyManager, "_probe", return_value=False),
         ):
-            status = get_proxy_status(cfg)
+            status = mgr.get_status()
         assert status.mode == "daemon"
         assert status.running is True
         assert status.healthy is False
 
     def test_none_mode_when_nothing_running(self, tmp_path: Path) -> None:
         """Reports mode='none' and healthy=False when nothing is active."""
-        cfg = _make_cfg(tmp_path)
+        mgr = _make_mgr(tmp_path)
         with (
             _no_systemd(),
-            patch(f"{_LIFECYCLE}.is_daemon_running", return_value=False),
+            patch.object(CredentialProxyManager, "is_daemon_running", return_value=False),
         ):
-            status = get_proxy_status(cfg)
+            status = mgr.get_status()
         assert status.mode == "none"
         assert status.running is False
         assert status.healthy is False
 
     def test_systemd_mode_service_active_but_unhealthy(self, tmp_path: Path) -> None:
         """Reports running=True but healthy=False when service is up but probe fails."""
-        cfg = _make_cfg(tmp_path)
+        mgr = _make_mgr(tmp_path)
         with (
-            patch(f"{_LIFECYCLE}.is_socket_installed", return_value=True),
-            patch(f"{_LIFECYCLE}.is_service_active", return_value=True),
-            patch(f"{_LIFECYCLE}._probe_proxy", return_value=False),
+            patch.object(CredentialProxyManager, "is_socket_installed", return_value=True),
+            patch.object(CredentialProxyManager, "is_service_active", return_value=True),
+            patch.object(CredentialProxyManager, "_probe", return_value=False),
         ):
-            status = get_proxy_status(cfg)
+            status = mgr.get_status()
         assert status.mode == "systemd"
         assert status.running is True
         assert status.healthy is False
 
     def test_systemd_mode_falls_back_to_daemon(self, tmp_path: Path) -> None:
         """When socket installed but service idle, daemon running is not consulted."""
-        cfg = _make_cfg(tmp_path)
+        mgr = _make_mgr(tmp_path)
         with (
-            patch(f"{_LIFECYCLE}.is_socket_installed", return_value=True),
-            patch(f"{_LIFECYCLE}.is_service_active", return_value=False),
-            patch(f"{_LIFECYCLE}.is_daemon_running", return_value=True),
+            patch.object(CredentialProxyManager, "is_socket_installed", return_value=True),
+            patch.object(CredentialProxyManager, "is_service_active", return_value=False),
+            patch.object(CredentialProxyManager, "is_daemon_running", return_value=True),
         ):
-            status = get_proxy_status(cfg)
+            status = mgr.get_status()
         # Systemd takes precedence — daemon state is irrelevant
         assert status.mode == "systemd"
         assert status.running is False
 
 
 class TestProbeProxy:
-    """Verify _probe_proxy single-shot health check."""
+    """Verify CredentialProxyManager._probe single-shot health check."""
 
     def _mock_conn(self, *, status: int = 200) -> MagicMock:
         """Return a mock HTTPConnection whose getresponse() returns *status*."""
@@ -612,21 +611,21 @@ class TestProbeProxy:
         """Returns True when health endpoint responds 200."""
         conn = self._mock_conn(status=200)
         with patch("http.client.HTTPConnection", return_value=conn):
-            assert _probe_proxy(18731) is True
+            assert CredentialProxyManager._probe(18731) is True
 
     def test_returns_false_on_connection_refused(self) -> None:
         """Returns False when the proxy is not listening."""
         conn = MagicMock()
         conn.request.side_effect = ConnectionRefusedError
         with patch("http.client.HTTPConnection", return_value=conn):
-            assert _probe_proxy(18731) is False
+            assert CredentialProxyManager._probe(18731) is False
 
     def test_returns_false_on_timeout(self) -> None:
         """Returns False when the request times out."""
         conn = MagicMock()
         conn.request.side_effect = OSError("timed out")
         with patch("http.client.HTTPConnection", return_value=conn):
-            assert _probe_proxy(18731) is False
+            assert CredentialProxyManager._probe(18731) is False
 
 
 class TestWaitForReady:
@@ -634,26 +633,26 @@ class TestWaitForReady:
 
     def test_returns_true_on_immediate_success(self) -> None:
         """Returns True when the first probe succeeds."""
-        with patch(f"{_LIFECYCLE}._probe_proxy", return_value=True):
-            assert _wait_for_ready(18731, timeout=1.0) is True
+        with patch.object(CredentialProxyManager, "_probe", return_value=True):
+            assert CredentialProxyManager._wait_for_ready(18731, timeout=1.0) is True
 
     def test_returns_false_on_timeout(self) -> None:
         """Returns False when all probes fail within the timeout."""
         with (
-            patch(f"{_LIFECYCLE}._probe_proxy", return_value=False),
+            patch.object(CredentialProxyManager, "_probe", return_value=False),
             patch("time.sleep"),
             patch("time.monotonic", side_effect=[0.0, 0.0, 0.2, 0.4, 6.0]),
         ):
-            assert _wait_for_ready(18731, timeout=5.0) is False
+            assert CredentialProxyManager._wait_for_ready(18731, timeout=5.0) is False
 
     def test_retries_then_succeeds(self) -> None:
         """Returns True after a few failed probes followed by success."""
         with (
-            patch(f"{_LIFECYCLE}._probe_proxy", side_effect=[False, False, True]),
+            patch.object(CredentialProxyManager, "_probe", side_effect=[False, False, True]),
             patch("time.sleep"),
             patch("time.monotonic", side_effect=[0.0, 0.0, 0.2, 0.4, 0.6]),
         ):
-            assert _wait_for_ready(18731, timeout=5.0) is True
+            assert CredentialProxyManager._wait_for_ready(18731, timeout=5.0) is True
 
 
 class TestInstallSystemdUnits:
@@ -662,12 +661,13 @@ class TestInstallSystemdUnits:
     def test_install_creates_units_and_enables_socket(self, tmp_path: Path) -> None:
         """install_systemd_units renders templates and runs systemctl enable."""
         cfg = _make_cfg(tmp_path)
+        mgr = CredentialProxyManager(cfg)
         unit_dir = tmp_path / "systemd-units"
         with (
-            patch(f"{_LIFECYCLE}._systemd_unit_dir", return_value=unit_dir),
+            patch.object(CredentialProxyManager, "_systemd_unit_dir", return_value=unit_dir),
             patch("subprocess.run") as mock_run,
         ):
-            install_systemd_units(cfg)
+            mgr.install_systemd_units()
         # Verify unit files were created
         assert (unit_dir / "terok-credential-proxy.socket").is_file()
         assert (unit_dir / "terok-credential-proxy.service").is_file()
@@ -683,12 +683,13 @@ class TestInstallSystemdUnits:
     def test_socket_unit_has_both_listen_streams(self, tmp_path: Path) -> None:
         """Socket unit declares both Unix socket and TCP port ListenStream entries."""
         cfg = _make_cfg(tmp_path)
+        mgr = CredentialProxyManager(cfg)
         unit_dir = tmp_path / "systemd-units"
         with (
-            patch(f"{_LIFECYCLE}._systemd_unit_dir", return_value=unit_dir),
+            patch.object(CredentialProxyManager, "_systemd_unit_dir", return_value=unit_dir),
             patch("subprocess.run"),
         ):
-            install_systemd_units(cfg)
+            mgr.install_systemd_units()
         socket_unit = (unit_dir / "terok-credential-proxy.socket").read_text()
         listen_lines = [
             line.strip() for line in socket_unit.splitlines() if line.startswith("ListenStream")
@@ -708,10 +709,10 @@ class TestUninstallSystemdUnits:
         (unit_dir / "terok-credential-proxy.socket").write_text("[Socket]")
         (unit_dir / "terok-credential-proxy.service").write_text("[Service]")
         with (
-            patch(f"{_LIFECYCLE}._systemd_unit_dir", return_value=unit_dir),
+            patch.object(CredentialProxyManager, "_systemd_unit_dir", return_value=unit_dir),
             patch("subprocess.run") as mock_run,
         ):
-            uninstall_systemd_units()
+            CredentialProxyManager().uninstall_systemd_units()
         assert not (unit_dir / "terok-credential-proxy.socket").exists()
         assert not (unit_dir / "terok-credential-proxy.service").exists()
         # Verify daemon-reload was called

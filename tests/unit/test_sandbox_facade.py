@@ -102,22 +102,22 @@ class TestSandbox:
         assert url.startswith("http://")
 
     def test_ensure_gate_delegates(self) -> None:
-        with patch("terok_sandbox.gate.lifecycle.ensure_server_reachable") as mock:
+        from terok_sandbox.gate.lifecycle import GateServerManager
+
+        with patch.object(GateServerManager, "ensure_reachable") as mock:
             s = Sandbox()
             s.ensure_gate()
-            mock.assert_called_once_with(s.config)
+            mock.assert_called_once()
 
     def test_gate_status_delegates(self) -> None:
-        from terok_sandbox.gate.lifecycle import GateServerStatus
+        from terok_sandbox.gate.lifecycle import GateServerManager, GateServerStatus
 
         mock_status = GateServerStatus(mode="none", running=False, port=9418)
-        with patch(
-            "terok_sandbox.gate.lifecycle.get_server_status", return_value=mock_status
-        ) as mock:
+        with patch.object(GateServerManager, "get_status", return_value=mock_status) as mock:
             s = Sandbox()
             result = s.gate_status()
             assert result == mock_status
-            mock.assert_called_once_with(s.config)
+            mock.assert_called_once()
 
     def test_shield_down_delegates(self) -> None:
         with patch("terok_sandbox.shield.down") as mock:

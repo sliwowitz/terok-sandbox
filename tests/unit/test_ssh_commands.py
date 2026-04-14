@@ -25,7 +25,7 @@ from terok_sandbox.commands import (
     _handle_ssh_remove_key,
     _scope_has_keys,
 )
-from terok_sandbox.credentials.ssh import _next_key_number, generate_keypair
+from terok_sandbox.credentials.ssh import SSHManager, generate_keypair
 
 
 @pytest.fixture()
@@ -250,40 +250,40 @@ class TestNextKeyNumber:
 
     def test_empty_dir_returns_1(self, tmp_path: Path) -> None:
         """Empty scope directory starts numbering at 1."""
-        assert _next_key_number(tmp_path, "ed25519") == 1
+        assert SSHManager._next_key_number(tmp_path, "ed25519") == 1
 
     def test_nonexistent_dir_returns_1(self, tmp_path: Path) -> None:
         """Non-existent directory starts numbering at 1."""
-        assert _next_key_number(tmp_path / "nope", "ed25519") == 1
+        assert SSHManager._next_key_number(tmp_path / "nope", "ed25519") == 1
 
     def test_single_key_returns_2(self, tmp_path: Path) -> None:
         """With key-1 present, next is key-2."""
         (tmp_path / "id_ed25519_key-1").touch()
-        assert _next_key_number(tmp_path, "ed25519") == 2
+        assert SSHManager._next_key_number(tmp_path, "ed25519") == 2
 
     def test_non_contiguous_returns_max_plus_1(self, tmp_path: Path) -> None:
         """With key-1 and key-5, next is key-6 (no gap-filling)."""
         (tmp_path / "id_ed25519_key-1").touch()
         (tmp_path / "id_ed25519_key-5").touch()
-        assert _next_key_number(tmp_path, "ed25519") == 6
+        assert SSHManager._next_key_number(tmp_path, "ed25519") == 6
 
     def test_ignores_other_algo(self, tmp_path: Path) -> None:
         """RSA numbered keys are ignored when scanning for ed25519."""
         (tmp_path / "id_rsa_key-3").touch()
-        assert _next_key_number(tmp_path, "ed25519") == 1
+        assert SSHManager._next_key_number(tmp_path, "ed25519") == 1
 
     def test_ignores_non_matching_files(self, tmp_path: Path) -> None:
         """Config files and main keys are ignored."""
         (tmp_path / "config").touch()
         (tmp_path / "id_ed25519_myproject").touch()
         (tmp_path / "id_ed25519_key-2.pub").touch()  # pub suffix doesn't match
-        assert _next_key_number(tmp_path, "ed25519") == 1
+        assert SSHManager._next_key_number(tmp_path, "ed25519") == 1
 
     def test_rsa_scan(self, tmp_path: Path) -> None:
         """Scans RSA keys when algo is 'rsa'."""
         (tmp_path / "id_rsa_key-1").touch()
         (tmp_path / "id_rsa_key-2").touch()
-        assert _next_key_number(tmp_path, "rsa") == 3
+        assert SSHManager._next_key_number(tmp_path, "rsa") == 3
 
 
 # ---------------------------------------------------------------------------
@@ -492,8 +492,9 @@ class TestHandleSshAddKey:
             patch(
                 "terok_sandbox.credentials.ssh.subprocess.run", side_effect=_fake_keygen(tmp_path)
             ),
-            patch(
-                "terok_sandbox.credentials.ssh._harden_permissions",
+            patch.object(
+                SSHManager,
+                "_harden_permissions",
                 side_effect=OSError("perm denied"),
             ),
         ):

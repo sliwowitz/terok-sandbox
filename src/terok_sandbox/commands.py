@@ -79,26 +79,28 @@ def _handle_gate_start(
     *, port: int | None = None, daemon: bool = False, cfg: SandboxConfig | None = None
 ) -> None:
     """Start the gate server (systemd preferred, daemon fallback)."""
-    from .gate.lifecycle import install_systemd_units, is_systemd_available, start_daemon
+    from .gate.lifecycle import GateServerManager
 
-    if is_systemd_available() and not daemon:
-        install_systemd_units(cfg=cfg)
+    mgr = GateServerManager(cfg)
+    if mgr.is_systemd_available() and not daemon:
+        mgr.install_systemd_units()
         print("Gate server started via systemd socket activation.")
     else:
-        start_daemon(port=port, cfg=cfg)
+        mgr.start_daemon(port=port)
         print("Gate server daemon started.")
 
 
 def _handle_gate_stop(*, cfg: SandboxConfig | None = None) -> None:
     """Stop the gate server."""
-    from .gate.lifecycle import get_server_status, stop_daemon, uninstall_systemd_units
+    from .gate.lifecycle import GateServerManager
 
-    status = get_server_status(cfg=cfg)
+    mgr = GateServerManager(cfg)
+    status = mgr.get_status()
     if status.mode == "systemd":
-        uninstall_systemd_units(cfg=cfg)
+        mgr.uninstall_systemd_units()
         print("Gate server systemd units removed.")
     elif status.mode == "daemon":
-        stop_daemon(cfg=cfg)
+        mgr.stop_daemon()
         print("Gate server daemon stopped.")
     else:
         print("Gate server is not running.")
@@ -106,15 +108,16 @@ def _handle_gate_stop(*, cfg: SandboxConfig | None = None) -> None:
 
 def _handle_gate_status(*, cfg: SandboxConfig | None = None) -> None:
     """Show gate server status."""
-    from .gate.lifecycle import check_units_outdated, get_gate_base_path, get_server_status
+    from .gate.lifecycle import GateServerManager
 
-    status = get_server_status(cfg=cfg)
+    mgr = GateServerManager(cfg)
+    status = mgr.get_status()
     print(f"Mode:      {status.mode}")
     print(f"Running:   {'yes' if status.running else 'no'}")
     print(f"Port:      {status.port}")
-    print(f"Base path: {get_gate_base_path(cfg=cfg)}")
+    print(f"Base path: {mgr.gate_base_path}")
 
-    warning = check_units_outdated(cfg=cfg)
+    warning = mgr.check_units_outdated()
     if warning:
         import sys
 
@@ -207,32 +210,33 @@ SHIELD_COMMANDS: tuple[CommandDef, ...] = (
 
 def _handle_proxy_start() -> None:
     """Start the credential proxy daemon."""
-    from .credentials.lifecycle import get_proxy_status, start_daemon
+    from .credentials.lifecycle import CredentialProxyManager
 
-    status = get_proxy_status()
-    if status.running:
+    mgr = CredentialProxyManager()
+    if mgr.get_status().running:
         print("Credential proxy is already running.")
         return
-    start_daemon()
+    mgr.start_daemon()
     print("Credential proxy started.")
 
 
 def _handle_proxy_stop() -> None:
     """Stop the credential proxy daemon."""
-    from .credentials.lifecycle import is_daemon_running, stop_daemon
+    from .credentials.lifecycle import CredentialProxyManager
 
-    if not is_daemon_running():
+    mgr = CredentialProxyManager()
+    if not mgr.is_daemon_running():
         print("Credential proxy is not running.")
         return
-    stop_daemon()
+    mgr.stop_daemon()
     print("Credential proxy stopped.")
 
 
 def _handle_proxy_status() -> None:
     """Show credential proxy status."""
-    from .credentials.lifecycle import get_proxy_status
+    from .credentials.lifecycle import CredentialProxyManager
 
-    status = get_proxy_status()
+    status = CredentialProxyManager().get_status()
     state = "running" if status.running else "stopped"
     print(f"Status: {state}")
     print(f"Socket: {sanitize_tty(str(status.socket_path))}")
@@ -248,23 +252,25 @@ def _handle_proxy_status() -> None:
 
 def _handle_proxy_install() -> None:
     """Install and start systemd socket activation for the credential proxy."""
-    from .credentials.lifecycle import install_systemd_units, is_systemd_available
+    from .credentials.lifecycle import CredentialProxyManager
 
-    if not is_systemd_available():
+    mgr = CredentialProxyManager()
+    if not mgr.is_systemd_available():
         print("Error: systemd user services are not available on this host.")
         raise SystemExit(1)
-    install_systemd_units()
+    mgr.install_systemd_units()
     print("Credential proxy installed via systemd socket activation.")
 
 
 def _handle_proxy_uninstall() -> None:
     """Remove credential proxy systemd units."""
-    from .credentials.lifecycle import is_systemd_available, uninstall_systemd_units
+    from .credentials.lifecycle import CredentialProxyManager
 
-    if not is_systemd_available():
+    mgr = CredentialProxyManager()
+    if not mgr.is_systemd_available():
         print("Error: systemd user services are not available. Nothing to uninstall.")
         raise SystemExit(1)
-    uninstall_systemd_units()
+    mgr.uninstall_systemd_units()
     print("Credential proxy systemd units removed.")
 
 
@@ -489,8 +495,7 @@ def _handle_ssh_add_key(
     from .config import SandboxConfig as _SandboxConfig
     from .credentials.ssh import (
         SSHInitResult,
-        _harden_permissions,
-        _next_key_number,
+        SSHManager,
         generate_keypair,
         update_ssh_keys_json,
     )
@@ -519,7 +524,7 @@ def _handle_ssh_add_key(
             )
         key_name = name
     else:
-        key_name = f"key-{_next_key_number(dest_dir, algo)}"
+        key_name = f"key-{SSHManager._next_key_number(dest_dir, algo)}"
 
     filename = f"id_{algo}_{key_name}"
     priv_path = dest_dir / filename
@@ -537,7 +542,7 @@ def _handle_ssh_add_key(
     generate_keypair(key_type, priv_path, pub_path, comment)
 
     try:
-        _harden_permissions(dest_dir, priv_path, pub_path, dest_dir / "config")
+        SSHManager._harden_permissions(dest_dir, priv_path, pub_path, dest_dir / "config")
     except OSError as e:
         raise SystemExit(f"Failed to set permissions: {e}") from e
 

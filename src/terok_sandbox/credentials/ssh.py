@@ -144,10 +144,10 @@ class SSHManager:
             )
 
         try:
-            _harden_permissions(target_dir, priv_path, pub_path, cfg_path)
+            self._harden_permissions(target_dir, priv_path, pub_path, cfg_path)
         except OSError as e:
             raise SystemExit(f"Failed to set SSH directory permissions on {target_dir}: {e}") from e
-        _print_init_summary(target_dir, priv_path, pub_path, cfg_path)
+        self._print_init_summary(target_dir, priv_path, pub_path, cfg_path)
         return SSHInitResult(
             dir=str(target_dir),
             private_key=str(priv_path),
@@ -175,9 +175,11 @@ class SSHManager:
             "IDENTITY_FILE": str(priv_path),
             "SCOPE": scope,
         }
-        user_config = _try_render_user_template(config_template, variables)
+        user_config = SSHManager._try_render_user_template(config_template, variables)
         config_text = (
-            user_config if user_config is not None else _try_render_packaged_template(variables)
+            user_config
+            if user_config is not None
+            else SSHManager._try_render_packaged_template(variables)
         )
         if config_text is None:
             raise SystemExit(
@@ -188,6 +190,91 @@ class SSHManager:
             cfg_path.write_text(config_text)
         except Exception as e:
             raise SystemExit(f"Failed to write SSH config at {cfg_path}: {e}")
+
+    @staticmethod
+    def _try_render_user_template(
+        template_path: Path | None, variables: dict[str, str]
+    ) -> str | None:
+        """Render the user-provided SSH config template, if configured.
+
+        Raises ``SystemExit`` if the template path is configured but the file
+        is missing or rendering fails — explicit misconfiguration should fail
+        fast rather than silently falling back to the packaged template.
+        """
+        if not template_path:
+            return None
+        p = Path(template_path)
+        if not p.is_file():
+            raise SystemExit(f"SSH config template not found: {p}")
+        try:
+            return render_template(p, variables)
+        except Exception as exc:
+            raise SystemExit(f"Failed to render SSH config template {p}: {exc}") from exc
+
+    @staticmethod
+    def _try_render_packaged_template(variables: dict[str, str]) -> str | None:
+        """Attempt to render the bundled SSH config template from package resources."""
+        try:
+            raw = (
+                resources.files("terok_sandbox") / "resources" / "templates" / "ssh_config.template"
+            ).read_text()
+        except Exception:
+            return None
+        for k, v in variables.items():
+            raw = raw.replace(f"{{{{{k}}}}}", v)
+        return raw
+
+    @staticmethod
+    def _harden_permissions(
+        target_dir: Path, priv_path: Path, pub_path: Path, cfg_path: Path
+    ) -> None:
+        """Set restrictive permissions on the SSH directory and key files.
+
+        Raises ``OSError`` if any chmod operation fails.
+        """
+        os.chmod(target_dir, 0o700)
+        if priv_path.exists():
+            os.chmod(priv_path, 0o600)
+        if pub_path.exists():
+            os.chmod(pub_path, 0o600)
+        if cfg_path.exists():
+            os.chmod(cfg_path, 0o600)
+
+    @staticmethod
+    def _next_key_number(scope_dir: Path, algo: str) -> int:
+        """Scan *scope_dir* for ``id_<algo>_key-N`` files and return the next *N*.
+
+        Returns 1 when no numbered keys exist yet.  Uses max+1 (no gap-filling)
+        so that retired key numbers are never reused.
+        """
+        pattern = re.compile(rf"^id_{re.escape(algo)}_key-(\d+)$")
+        max_n = 0
+        if scope_dir.is_dir():
+            for entry in scope_dir.iterdir():
+                if m := pattern.match(entry.name):
+                    max_n = max(max_n, int(m.group(1)))
+        return max_n + 1
+
+    @staticmethod
+    def _print_init_summary(
+        target_dir: Path, priv_path: Path, pub_path: Path, cfg_path: Path
+    ) -> None:
+        """Print a human-readable summary of the initialized SSH directory."""
+        from .._util import sanitize_tty
+
+        print("SSH directory initialized:")
+        print(f"  dir:         {sanitize_tty(str(target_dir))}")
+        print(f"  private key: {sanitize_tty(str(priv_path))}")
+        print(f"  public key:  {sanitize_tty(str(pub_path))}")
+        print(f"  config:      {sanitize_tty(str(cfg_path))}")
+        try:
+            if pub_path.exists():
+                pub_key_text = pub_path.read_text(encoding="utf-8", errors="ignore").strip()
+                if pub_key_text:
+                    print("Public key:")
+                    print(f"  {sanitize_tty(pub_key_text)}")
+        except Exception:
+            pass
 
 
 def generate_keypair(key_type: str, priv_path: Path, pub_path: Path, comment: str) -> None:
@@ -266,87 +353,3 @@ def update_ssh_keys_json(keys_json_path: Path, scope: str, result: SSHInitResult
     finally:
         fcntl.flock(fd, fcntl.LOCK_UN)
         os.close(fd)
-
-
-# ---------------------------------------------------------------------------
-# Private helpers
-# ---------------------------------------------------------------------------
-
-
-def _try_render_user_template(template_path: Path | None, variables: dict[str, str]) -> str | None:
-    """Render the user-provided SSH config template, if configured.
-
-    Raises ``SystemExit`` if the template path is configured but the file
-    is missing or rendering fails — explicit misconfiguration should fail
-    fast rather than silently falling back to the packaged template.
-    """
-    if not template_path:
-        return None
-    p = Path(template_path)
-    if not p.is_file():
-        raise SystemExit(f"SSH config template not found: {p}")
-    try:
-        return render_template(p, variables)
-    except Exception as exc:
-        raise SystemExit(f"Failed to render SSH config template {p}: {exc}") from exc
-
-
-def _try_render_packaged_template(variables: dict[str, str]) -> str | None:
-    """Attempt to render the bundled SSH config template from package resources."""
-    try:
-        raw = (
-            resources.files("terok_sandbox") / "resources" / "templates" / "ssh_config.template"
-        ).read_text()
-    except Exception:
-        return None
-    for k, v in variables.items():
-        raw = raw.replace(f"{{{{{k}}}}}", v)
-    return raw
-
-
-def _harden_permissions(target_dir: Path, priv_path: Path, pub_path: Path, cfg_path: Path) -> None:
-    """Set restrictive permissions on the SSH directory and key files.
-
-    Raises ``OSError`` if any chmod operation fails.
-    """
-    os.chmod(target_dir, 0o700)
-    if priv_path.exists():
-        os.chmod(priv_path, 0o600)
-    if pub_path.exists():
-        os.chmod(pub_path, 0o600)
-    if cfg_path.exists():
-        os.chmod(cfg_path, 0o600)
-
-
-def _next_key_number(scope_dir: Path, algo: str) -> int:
-    """Scan *scope_dir* for ``id_<algo>_key-N`` files and return the next *N*.
-
-    Returns 1 when no numbered keys exist yet.  Uses max+1 (no gap-filling)
-    so that retired key numbers are never reused.
-    """
-    pattern = re.compile(rf"^id_{re.escape(algo)}_key-(\d+)$")
-    max_n = 0
-    if scope_dir.is_dir():
-        for entry in scope_dir.iterdir():
-            if m := pattern.match(entry.name):
-                max_n = max(max_n, int(m.group(1)))
-    return max_n + 1
-
-
-def _print_init_summary(target_dir: Path, priv_path: Path, pub_path: Path, cfg_path: Path) -> None:
-    """Print a human-readable summary of the initialized SSH directory."""
-    from .._util import sanitize_tty
-
-    print("SSH directory initialized:")
-    print(f"  dir:         {sanitize_tty(str(target_dir))}")
-    print(f"  private key: {sanitize_tty(str(priv_path))}")
-    print(f"  public key:  {sanitize_tty(str(pub_path))}")
-    print(f"  config:      {sanitize_tty(str(cfg_path))}")
-    try:
-        if pub_path.exists():
-            pub_key_text = pub_path.read_text(encoding="utf-8", errors="ignore").strip()
-            if pub_key_text:
-                print("Public key:")
-                print(f"  {sanitize_tty(pub_key_text)}")
-    except Exception:
-        pass

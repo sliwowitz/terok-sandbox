@@ -16,17 +16,14 @@ Delegates to domain subsystems:
 - :mod:`~.commands` — CLI command registry and handler implementations.
 """
 
+from __future__ import annotations
+
 __version__: str = "0.0.0"  # placeholder; replaced at build time
 
 from importlib.metadata import PackageNotFoundError, version as _meta_version
+from pathlib import Path
+from typing import TYPE_CHECKING
 
-try:
-    __version__ = _meta_version("terok-sandbox")
-except PackageNotFoundError:
-    pass  # editable install or running from source without metadata
-
-# -- Config ------------------------------------------------------------------
-# -- Command registry --------------------------------------------------------
 from .commands import (
     COMMANDS as SANDBOX_COMMANDS,
     DOCTOR_COMMANDS,
@@ -39,61 +36,18 @@ from .commands import (
 )
 from .config import SandboxConfig
 from .config_stack import ConfigScope, ConfigStack
-
-# -- Credential DB -----------------------------------------------------------
 from .credentials.db import CredentialDB
-
-# -- Credential proxy lifecycle ----------------------------------------------
 from .credentials.lifecycle import (
+    CredentialProxyManager,
     CredentialProxyStatus,
     ProxyUnreachableError,
-    ensure_proxy_reachable,
-    get_proxy_port,
-    get_proxy_status,
-    get_ssh_agent_port,
-    install_systemd_units as install_proxy_systemd,
-    is_daemon_running as is_proxy_running,
-    is_service_active as is_proxy_service_active,
-    is_socket_active as is_proxy_socket_active,
-    is_socket_installed as is_proxy_socket_installed,
-    is_systemd_available as is_proxy_systemd_available,
-    start_daemon as start_proxy,
-    stop_daemon as stop_proxy,
-    uninstall_systemd_units as uninstall_proxy_systemd,
 )
-
-# -- Credential constants ----------------------------------------------------
 from .credentials.proxy.constants import PHANTOM_CREDENTIALS_MARKER
-
-# -- SSH ---------------------------------------------------------------------
 from .credentials.ssh import SSHManager, generate_keypair, update_ssh_keys_json
-
-# -- Doctor (container health checks) ----------------------------------------
 from .doctor import CheckVerdict, DoctorCheck, sandbox_doctor_checks
-
-# -- Gate server -------------------------------------------------------------
-from .gate.lifecycle import (
-    GateServerStatus,
-    check_units_outdated,
-    ensure_server_reachable,
-    get_gate_base_path,
-    get_gate_server_port,
-    get_server_status,
-    install_systemd_units,
-    is_daemon_running,
-    is_systemd_available,
-    start_daemon,
-    stop_daemon,
-    uninstall_systemd_units,
-)
-
-# -- Git gate ----------------------------------------------------------------
+from .gate.lifecycle import GateServerManager, GateServerStatus
 from .gate.mirror import GateStalenessInfo, GitGate
-
-# -- Gate tokens -------------------------------------------------------------
-from .gate.tokens import create_token, revoke_token_for_task
-
-# -- Paths -------------------------------------------------------------------
+from .gate.tokens import TokenStore
 from .paths import (
     credentials_root,
     namespace_config_dir,
@@ -101,8 +55,6 @@ from .paths import (
     namespace_runtime_dir,
     namespace_state_dir,
 )
-
-# -- Runtime -----------------------------------------------------------------
 from .runtime import (
     ContainerRemoveResult,
     GpuConfigError,
@@ -121,11 +73,7 @@ from .runtime import (
     stream_initial_logs,
     wait_for_exit,
 )
-
-# -- Facade ------------------------------------------------------------------
 from .sandbox import READY_MARKER, LifecycleHooks, RunSpec, Sandbox, Sharing, VolumeSpec
-
-# -- Shield ------------------------------------------------------------------
 from .shield import (
     EnvironmentCheck,
     NftNotFoundError,
@@ -143,11 +91,172 @@ from .shield import (
     up,
 )
 
+if TYPE_CHECKING:
+    pass  # all types already imported above
+
+try:
+    __version__ = _meta_version("terok-sandbox")
+except PackageNotFoundError:
+    pass  # editable install or running from source without metadata
+
+
+# ---------------------------------------------------------------------------
+# Convenience wrappers — default-config delegates for the top-level API.
+#
+# External consumers import ``from terok_sandbox import get_server_status``
+# etc.  These thin wrappers instantiate the manager with the caller's
+# (optional) config and delegate to the class method.
+# ---------------------------------------------------------------------------
+
+
+# -- Gate server wrappers ----------------------------------------------------
+
+
+def check_units_outdated(cfg: SandboxConfig | None = None) -> str | None:
+    """Return a warning string if installed systemd units are stale."""
+    return GateServerManager(cfg).check_units_outdated()
+
+
+def ensure_server_reachable(cfg: SandboxConfig | None = None) -> None:
+    """Verify the gate server is running and configured correctly."""
+    GateServerManager(cfg).ensure_reachable()
+
+
+def get_gate_base_path(cfg: SandboxConfig | None = None) -> Path:
+    """Return the gate base path."""
+    return GateServerManager(cfg).gate_base_path
+
+
+def get_gate_server_port(cfg: SandboxConfig | None = None) -> int:
+    """Return the configured gate server port."""
+    return GateServerManager(cfg).server_port
+
+
+def get_server_status(cfg: SandboxConfig | None = None) -> GateServerStatus:
+    """Return the current gate server status."""
+    return GateServerManager(cfg).get_status()
+
+
+def install_systemd_units(cfg: SandboxConfig | None = None) -> None:
+    """Render and install gate server systemd units."""
+    GateServerManager(cfg).install_systemd_units()
+
+
+def is_daemon_running(cfg: SandboxConfig | None = None) -> bool:
+    """Check whether the gate daemon is alive."""
+    return GateServerManager(cfg).is_daemon_running()
+
+
+def is_systemd_available() -> bool:
+    """Check whether ``systemctl --user`` is usable."""
+    return GateServerManager().is_systemd_available()
+
+
+def start_daemon(port: int | None = None, cfg: SandboxConfig | None = None) -> None:
+    """Start a gate daemon process."""
+    GateServerManager(cfg).start_daemon(port)
+
+
+def stop_daemon(cfg: SandboxConfig | None = None) -> None:
+    """Stop the managed gate daemon."""
+    GateServerManager(cfg).stop_daemon()
+
+
+def uninstall_systemd_units(cfg: SandboxConfig | None = None) -> None:
+    """Disable+stop the gate socket and remove unit files."""
+    GateServerManager(cfg).uninstall_systemd_units()
+
+
+# -- Gate token wrappers -----------------------------------------------------
+
+
+def create_token(scope: str, task_id: str, cfg: SandboxConfig | None = None) -> str:
+    """Generate a gate token for a task."""
+    return TokenStore(cfg).create(scope, task_id)
+
+
+def revoke_token_for_task(scope: str, task_id: str, cfg: SandboxConfig | None = None) -> None:
+    """Remove all tokens for a scope+task pair."""
+    TokenStore(cfg).revoke_for_task(scope, task_id)
+
+
+# -- Credential proxy wrappers -----------------------------------------------
+
+
+def ensure_proxy_reachable(cfg: SandboxConfig | None = None) -> None:
+    """Verify the credential proxy is running and its TCP ports are up."""
+    CredentialProxyManager(cfg).ensure_reachable()
+
+
+def get_proxy_status(cfg: SandboxConfig | None = None) -> CredentialProxyStatus:
+    """Return the current credential proxy status."""
+    return CredentialProxyManager(cfg).get_status()
+
+
+def get_proxy_port(cfg: SandboxConfig | None = None) -> int:
+    """Return the configured credential proxy TCP port."""
+    return CredentialProxyManager(cfg).proxy_port
+
+
+def get_ssh_agent_port(cfg: SandboxConfig | None = None) -> int:
+    """Return the configured SSH agent proxy TCP port."""
+    return CredentialProxyManager(cfg).ssh_agent_port
+
+
+def install_proxy_systemd(cfg: SandboxConfig | None = None) -> None:
+    """Render and install systemd socket+service units."""
+    CredentialProxyManager(cfg).install_systemd_units()
+
+
+def is_proxy_running(cfg: SandboxConfig | None = None) -> bool:
+    """Check whether the managed proxy daemon is alive."""
+    return CredentialProxyManager(cfg).is_daemon_running()
+
+
+def is_proxy_service_active() -> bool:
+    """Check whether the credential proxy service unit is active."""
+    return CredentialProxyManager().is_service_active()
+
+
+def is_proxy_socket_active() -> bool:
+    """Check whether the credential proxy socket unit is active."""
+    return CredentialProxyManager().is_socket_active()
+
+
+def is_proxy_socket_installed() -> bool:
+    """Check whether the credential proxy socket unit file exists."""
+    return CredentialProxyManager().is_socket_installed()
+
+
+def is_proxy_systemd_available() -> bool:
+    """Check whether the systemd user session is reachable."""
+    return CredentialProxyManager().is_systemd_available()
+
+
+def start_proxy(cfg: SandboxConfig | None = None) -> None:
+    """Start the credential proxy as a background daemon."""
+    CredentialProxyManager(cfg).start_daemon()
+
+
+def stop_proxy(cfg: SandboxConfig | None = None) -> None:
+    """Stop the managed proxy daemon."""
+    CredentialProxyManager(cfg).stop_daemon()
+
+
+def uninstall_proxy_systemd(cfg: SandboxConfig | None = None) -> None:
+    """Disable+stop the socket and remove unit files."""
+    CredentialProxyManager(cfg).uninstall_systemd_units()
+
+
 __all__ = [
     # Config
     "ConfigScope",
     "ConfigStack",
     "SandboxConfig",
+    # Lifecycle managers
+    "CredentialProxyManager",
+    "GateServerManager",
+    "TokenStore",
     "credentials_root",
     "namespace_config_dir",
     "namespace_config_root",
