@@ -201,6 +201,92 @@ def _reset_config_cache():
     _paths_mod._config_paths_cache = None
 
 
+class TestConfigFilePaths:
+    """Tests for _config_file_paths() layered config discovery."""
+
+    def test_env_override_returns_single_path(self):
+        """TEROK_CONFIG_FILE returns a single-element list (no layering)."""
+        with unittest.mock.patch.dict(
+            os.environ, {"TEROK_CONFIG_FILE": str(MOCK_BASE / "custom.yml")}, clear=True
+        ):
+            result = _paths_mod._config_file_paths()
+            assert len(result) == 1
+            assert result[0][0] == "override"
+            assert result[0][1] == MOCK_BASE / "custom.yml"
+
+    def test_non_root_returns_system_and_user(self):
+        """Non-root user gets system (/etc) → user (~/.config) layers."""
+        with (
+            unittest.mock.patch.dict(os.environ, {}, clear=True),
+            unittest.mock.patch("terok_sandbox.paths._is_root", return_value=False),
+        ):
+            result = _paths_mod._config_file_paths()
+            assert len(result) == 2
+            labels = [label for label, _ in result]
+            assert labels == ["system", "user"]
+            assert result[0][1] == Path("/etc/terok/config.yml")
+
+    def test_root_returns_system_only(self):
+        """Root user gets only the system path (no user override layer)."""
+        with (
+            unittest.mock.patch.dict(os.environ, {}, clear=True),
+            unittest.mock.patch("terok_sandbox.paths._is_root", return_value=True),
+        ):
+            result = _paths_mod._config_file_paths()
+            assert len(result) == 1
+            assert result[0] == ("system", Path("/etc/terok/config.yml"))
+
+
+class TestLayeredConfigMerge:
+    """Tests for _read_config_paths() merging system + user config files."""
+
+    def test_user_overrides_system_paths(self, tmp_path: Path):
+        """User config.yml overrides system config.yml at the leaf level."""
+        sys_cfg = tmp_path / "system" / "config.yml"
+        usr_cfg = tmp_path / "user" / "config.yml"
+        sys_cfg.parent.mkdir()
+        usr_cfg.parent.mkdir()
+        sys_cfg.write_text(
+            "paths:\n  root: /srv/terok\n  build_dir: /srv/terok/build\n", encoding="utf-8"
+        )
+        usr_cfg.write_text("paths:\n  build_dir: /home/me/build\n", encoding="utf-8")
+        with unittest.mock.patch.object(
+            _paths_mod,
+            "_config_file_paths",
+            return_value=[("system", sys_cfg), ("user", usr_cfg)],
+        ):
+            result = _paths_mod._read_config_paths()
+            assert result["root"] == "/srv/terok"
+            assert result["build_dir"] == "/home/me/build"
+
+    def test_system_only_when_no_user(self, tmp_path: Path):
+        """System config is used as-is when no user config exists."""
+        sys_cfg = tmp_path / "config.yml"
+        sys_cfg.write_text("paths:\n  root: /opt/terok\n", encoding="utf-8")
+        with unittest.mock.patch.object(
+            _paths_mod,
+            "_config_file_paths",
+            return_value=[("system", sys_cfg), ("user", tmp_path / "missing.yml")],
+        ):
+            result = _paths_mod._read_config_paths()
+            assert result["root"] == "/opt/terok"
+
+    def test_user_delete_via_none(self, tmp_path: Path):
+        """User can remove a system-set key by setting it to null."""
+        sys_cfg = tmp_path / "system.yml"
+        usr_cfg = tmp_path / "user.yml"
+        sys_cfg.write_text("paths:\n  root: /srv/terok\n  build_dir: /x\n", encoding="utf-8")
+        usr_cfg.write_text("paths:\n  build_dir: null\n", encoding="utf-8")
+        with unittest.mock.patch.object(
+            _paths_mod,
+            "_config_file_paths",
+            return_value=[("system", sys_cfg), ("user", usr_cfg)],
+        ):
+            result = _paths_mod._read_config_paths()
+            assert result["root"] == "/srv/terok"
+            assert "build_dir" not in result
+
+
 class TestNamespaceRoot:
     """Tests for TEROK_ROOT env var and config.yml paths.root reading."""
 
