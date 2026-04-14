@@ -12,6 +12,8 @@ import pytest
 
 from terok_sandbox.runtime import (
     _DEFAULT_LOGIN_COMMAND,
+    _START_TIMEOUT,
+    _STOP_TIMEOUT_BUFFER,
     container_start,
     container_stop,
     login_command,
@@ -107,6 +109,7 @@ class TestContainerStart:
             stdout=subprocess.DEVNULL,
             stderr=subprocess.PIPE,
             text=True,
+            timeout=_START_TIMEOUT,
         )
         assert result.returncode == 0
 
@@ -142,6 +145,7 @@ class TestContainerStop:
             stdout=subprocess.DEVNULL,
             stderr=subprocess.PIPE,
             text=True,
+            timeout=10 + _STOP_TIMEOUT_BUFFER,
         )
         assert result.returncode == 0
 
@@ -152,6 +156,7 @@ class TestContainerStop:
 
         args = mock_run.call_args[0][0]
         assert args == ["podman", "stop", "--time", "30", "c1"]
+        assert mock_run.call_args[1]["timeout"] == 30 + _STOP_TIMEOUT_BUFFER
 
     @patch("terok_sandbox.runtime.subprocess.run")
     def test_failure_returns_nonzero(self, mock_run) -> None:

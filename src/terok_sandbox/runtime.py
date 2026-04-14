@@ -344,7 +344,7 @@ def sandbox_exec(
     *returncode*, *stdout*, and *stderr*.  Lets ``FileNotFoundError``
     (podman missing) and ``subprocess.TimeoutExpired`` propagate.
     """
-    log_debug(f"sandbox_exec({cname}, {cmd!r}, timeout={timeout})")
+    log_debug(f"sandbox_exec({cname}, cmd[0]={cmd[0]!r}, argc={len(cmd)}, timeout={timeout})")
     return subprocess.run(
         ["podman", "exec", cname, *cmd],
         capture_output=True,
@@ -367,11 +367,15 @@ def login_command(
     return ["podman", "exec", "-it", cname, *command]
 
 
+_START_TIMEOUT = 30
+"""Subprocess timeout (seconds) for ``podman start``."""
+
+
 def container_start(cname: str) -> subprocess.CompletedProcess[str]:
     """Start a stopped container, returning the process result.
 
     Captures *stderr* for error reporting; *stdout* is discarded.
-    Lets ``FileNotFoundError`` propagate when podman is absent.
+    Lets ``FileNotFoundError`` and ``TimeoutExpired`` propagate.
     """
     log_debug(f"container_start({cname})")
     return subprocess.run(
@@ -380,16 +384,22 @@ def container_start(cname: str) -> subprocess.CompletedProcess[str]:
         stdout=subprocess.DEVNULL,
         stderr=subprocess.PIPE,
         text=True,
+        timeout=_START_TIMEOUT,
     )
+
+
+_STOP_TIMEOUT_BUFFER = 5
+"""Extra seconds beyond the podman ``--time`` grace period."""
 
 
 def container_stop(cname: str, *, timeout: int = 10) -> subprocess.CompletedProcess[str]:
     """Stop a running container, returning the process result.
 
     Sends ``podman stop --time <timeout>`` which gives the container
-    *timeout* seconds to exit before SIGKILL.  Captures *stderr*
-    for error reporting; *stdout* is discarded.
-    Lets ``FileNotFoundError`` propagate when podman is absent.
+    *timeout* seconds to exit before SIGKILL.  The subprocess timeout
+    adds a buffer on top so the CLI itself can finish.  Captures
+    *stderr* for error reporting; *stdout* is discarded.
+    Lets ``FileNotFoundError`` and ``TimeoutExpired`` propagate.
     """
     log_debug(f"container_stop({cname}, timeout={timeout})")
     return subprocess.run(
@@ -398,6 +408,7 @@ def container_stop(cname: str, *, timeout: int = 10) -> subprocess.CompletedProc
         stdout=subprocess.DEVNULL,
         stderr=subprocess.PIPE,
         text=True,
+        timeout=timeout + _STOP_TIMEOUT_BUFFER,
     )
 
 
