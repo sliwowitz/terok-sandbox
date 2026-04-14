@@ -293,7 +293,9 @@ class PortRegistry:
         """Create the shared claims directory with sticky-bit permissions.
 
         Only applies ``chmod 1777`` to newly created directories — never
-        widens permissions on pre-existing paths.  Refuses symlinked paths.
+        widens permissions on pre-existing paths.  Re-validates the path
+        after the create/exist race window to catch concurrent symlink
+        or non-directory replacements.
         """
         if self._dir_ensured:
             return
@@ -304,7 +306,15 @@ class PortRegistry:
             self.registry_dir.mkdir(parents=True, exist_ok=False)
             created = True
         except FileExistsError:
-            pass
+            # Re-check after race window: concurrent create could be a symlink or non-dir.
+            if self.registry_dir.is_symlink():
+                raise SystemExit(
+                    f"Refusing to use symlinked port registry dir: {self.registry_dir}"
+                )
+            if not self.registry_dir.is_dir():
+                raise SystemExit(
+                    f"Port registry path exists but is not a directory: {self.registry_dir}"
+                )
         if created:
             try:
                 os.chmod(self.registry_dir, 0o1777)  # nosec B103 — shared multi-user dir

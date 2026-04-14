@@ -24,11 +24,16 @@ def _isolated_registry(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
 
     The global conftest suppresses ``_save_ports`` to prevent FS leaks,
     but persistence tests in this module need the real implementation.
+
+    ``_is_port_free`` is stubbed to always return True so tests are
+    deterministic regardless of host port availability.  Tests that
+    need real socket behaviour override this with their own patch.
     """
     registry = tmp_path / "terok-ports"
     registry.mkdir(exist_ok=True)
     monkeypatch.setattr(reg._default, "registry_dir", registry)
     monkeypatch.setattr(reg, "_save_ports", _real_save_ports)
+    monkeypatch.setattr(reg, "_is_port_free", lambda _port: True)
     reg.reset_cache()
 
 
@@ -262,6 +267,15 @@ def test_symlink_registry_dir_rejected(tmp_path: Path) -> None:
     link.symlink_to(real)
     registry = PortRegistry(link, reg.PORT_RANGE)
     with pytest.raises(SystemExit, match="symlinked"):
+        registry.claim("gate")
+
+
+def test_non_dir_registry_path_rejected(tmp_path: Path) -> None:
+    """Registry path that is a regular file (not a dir) → SystemExit."""
+    path = tmp_path / "not-a-dir"
+    path.write_text("")
+    registry = PortRegistry(path, reg.PORT_RANGE)
+    with pytest.raises(SystemExit, match="not a directory"):
         registry.claim("gate")
 
 
