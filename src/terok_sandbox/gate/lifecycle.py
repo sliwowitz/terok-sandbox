@@ -116,10 +116,17 @@ class GateServerManager:
         raise SystemExit(msg)
 
     def get_status(self) -> GateServerStatus:
-        """Return the current gate server status."""
+        """Return the current gate server status.
+
+        When the gate runs via systemd, the installed socket's
+        ``ListenStream`` port is the ground truth — not the config port,
+        which may have been freshly auto-allocated and wrong.
+        """
         port = self._cfg.gate_port
 
         if self.is_socket_installed():
+            # Installed socket is ground truth for the port.
+            port = self._installed_port() or port
             if self.is_socket_active():
                 return GateServerStatus(mode="systemd", running=True, port=port)
             if self.is_daemon_running():
@@ -148,7 +155,7 @@ class GateServerManager:
                 f"Systemd units are outdated "
                 f"(installed {installed_label}, expected v{_UNIT_VERSION})."
             )
-        return self._base_path_diverged()
+        return self._base_path_diverged() or self._port_diverged()
 
     @property
     def gate_base_path(self) -> Path:
@@ -380,6 +387,28 @@ class GateServerManager:
             f"Installed gate base path diverges from current config.\n"
             f"  Installed: {installed}\n"
             f"  Expected:  {expected}"
+        )
+
+    def _installed_port(self) -> int | None:
+        """Parse the ``ListenStream`` port from the installed socket unit.
+
+        Returns ``None`` if the socket unit is missing or unparseable.
+        """
+        from .._util import parse_listen_port
+
+        return parse_listen_port(self._systemd_unit_dir() / _SOCKET_UNIT)
+
+    def _port_diverged(self) -> str | None:
+        """Return a warning if the installed socket port differs from current config."""
+        installed = self._installed_port()
+        if installed is None:
+            return None
+        if installed == self._cfg.gate_port:
+            return None
+        return (
+            f"Installed gate port diverges from current config.\n"
+            f"  Installed: {installed}\n"
+            f"  Expected:  {self._cfg.gate_port}"
         )
 
     def _is_managed_server(self, pid: int) -> bool:

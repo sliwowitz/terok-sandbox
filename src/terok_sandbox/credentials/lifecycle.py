@@ -192,7 +192,9 @@ class CredentialProxyManager:
             socket_up = self.is_socket_active()
             service_up = self.is_service_active()
             running = socket_up or service_up
-            healthy = self._probe(self._cfg.proxy_port) if service_up else socket_up
+            # Installed port is ground truth — cfg port may be stale.
+            probe_port = self._installed_proxy_port() or self._cfg.proxy_port
+            healthy = self._probe(probe_port) if service_up else socket_up
         elif self.is_daemon_running():
             mode = "daemon"
             running = True
@@ -444,6 +446,24 @@ class CredentialProxyManager:
             return False
 
     # -- Private helpers -----------------------------------------------------
+
+    def _installed_proxy_port(self) -> int | None:
+        """Parse the ``ListenStream`` TCP port from the installed socket unit."""
+        from .._util import parse_listen_port
+
+        return parse_listen_port(self._systemd_unit_dir() / _SOCKET_UNIT)
+
+    def _installed_ssh_agent_port(self) -> int | None:
+        """Parse ``--ssh-agent-port=N`` from the installed service unit."""
+        from .._util import parse_cli_flag
+
+        val = parse_cli_flag(self._systemd_unit_dir() / _SERVICE_UNIT, "ssh-agent-port")
+        if val is None:
+            return None
+        try:
+            return int(val)
+        except ValueError:
+            return None
 
     def _is_managed_proxy(self, pid: int) -> bool:
         """Return whether *pid* was started with the expected PID file argument."""

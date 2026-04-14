@@ -434,6 +434,16 @@ def release_port(service_key: str) -> None:
     _default.release(service_key)
 
 
+def load_saved_ports(state_dir: Path) -> dict[str, int]:
+    """Load previously saved infrastructure port claims (read-only).
+
+    Returns a ``{service_key: port}`` dict, or empty dict if the file
+    is missing or corrupt.  Used by diagnostics (sickbay, container
+    doctor) to read current state without triggering port allocation.
+    """
+    return _load_saved_ports(state_dir)
+
+
 def reset_cache() -> None:
     """Clear all in-memory state on the default registry (for testing)."""
     _default.reset()

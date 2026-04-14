@@ -54,6 +54,44 @@ def systemd_user_unit_dir() -> Path:
     return config_home / "systemd" / "user"
 
 
+def parse_listen_port(unit_file: Path) -> int | None:
+    """Parse a ``ListenStream=127.0.0.1:PORT`` from a systemd socket unit.
+
+    Returns the integer port, or ``None`` if the file is missing, has no
+    matching line, or the port cannot be parsed.
+    """
+    if not unit_file.is_file():
+        return None
+    try:
+        for line in unit_file.read_text(encoding="utf-8").splitlines():
+            stripped = line.strip()
+            if stripped.startswith("ListenStream=127.0.0.1:"):
+                return int(stripped.rsplit(":", 1)[1])
+    except (ValueError, OSError):
+        pass
+    return None
+
+
+def parse_cli_flag(unit_file: Path, flag: str) -> str | None:
+    """Extract the value of ``--flag=VALUE`` from a systemd service ``ExecStart``.
+
+    Returns the value string, or ``None`` if not found.
+    """
+    if not unit_file.is_file():
+        return None
+    prefix = f"--{flag}="
+    try:
+        for line in unit_file.read_text(encoding="utf-8").splitlines():
+            stripped = line.strip()
+            if stripped.startswith("ExecStart=") and prefix in stripped:
+                for token in stripped.split():
+                    if token.startswith(prefix):
+                        return token.split("=", 1)[1]
+    except OSError:
+        pass
+    return None
+
+
 def write_sensitive_file(path: Path, content: str) -> bool:
     """Atomically create *path* with mode ``0o600`` and write *content*.
 
