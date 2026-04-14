@@ -52,7 +52,8 @@ def test_import_config():
     cfg = SandboxConfig()
     assert isinstance(cfg.state_dir, Path)
     assert isinstance(cfg.gate_port, int)
-    assert cfg.gate_port == 9418
+    # Default ports are auto-resolved via port registry (no longer hardcoded)
+    assert cfg.gate_port in range(18700, 19900)
 
 
 def test_import_shield():
