@@ -33,11 +33,19 @@ path = "terok_sandbox._util"
 layer = "foundation"
 utility = true
 
-# Platform-aware path resolution — standalone
+# Domain-agnostic layered config merge engine — zero internal deps
+[[modules]]
+path = "terok_sandbox.config_stack"
+layer = "foundation"
+depends_on = []
+
+# Platform-aware path resolution — uses config_stack for layered config merge
 [[modules]]
 path = "terok_sandbox.paths"
 layer = "foundation"
-depends_on = []
+depends_on = [
+    "terok_sandbox.config_stack",
+]
 
 # Configuration dataclass — same-layer dep on paths
 [[modules]]

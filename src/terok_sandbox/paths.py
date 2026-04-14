@@ -43,47 +43,52 @@ def _is_root() -> bool:
 _config_paths_cache: dict[str, str] | None = None
 
 
-def _read_config_paths() -> dict[str, str]:
-    """Read ``paths:`` from the shared terok config (cached, fail-silent).
+def _config_file_paths() -> list[tuple[str, Path]]:
+    """Ordered config.yml locations with scope labels (lowest → highest priority).
 
-    Follows the Podman model: one config file (``~/.config/terok/config.yml``)
-    is the source of truth for directory layout across all ecosystem packages.
-    Only the ``paths`` section is read — other keys are package-specific and
-    ignored here.
+    ``TEROK_CONFIG_FILE`` → single override (no layering).
+    Otherwise: ``/etc/terok/config.yml`` (system) → ``~/.config/terok/config.yml`` (user).
+    Root users get only the system path.
+    """
+    env = os.getenv("TEROK_CONFIG_FILE")
+    if env:
+        return [("override", Path(env).expanduser())]
+    result: list[tuple[str, Path]] = [
+        ("system", Path("/etc") / _NAMESPACE / "config.yml"),
+    ]
+    if not _is_root():
+        user_dir = (
+            Path(_user_config_dir(_NAMESPACE))
+            if _user_config_dir
+            else Path.home() / ".config" / _NAMESPACE
+        )
+        result.append(("user", user_dir / "config.yml"))
+    return result
+
+
+def _read_config_paths() -> dict[str, str]:
+    """Read ``paths:`` from layered terok configs (cached, fail-silent).
+
+    Merges system and user config files via :class:`ConfigStack` — user
+    values override system defaults at the leaf level.  Only the ``paths``
+    section is read; other keys are package-specific and ignored here.
     """
     global _config_paths_cache  # noqa: PLW0603
     if _config_paths_cache is not None:
         return _config_paths_cache
 
     _config_paths_cache = {}
-    cfg = _config_file_path()
-    if not cfg.is_file():
-        return _config_paths_cache
     try:
-        from yaml import safe_load  # lazy: PyYAML is a transitive dep via terok-shield
+        from .config_stack import ConfigStack, load_yaml_scope
 
-        data = safe_load(cfg.read_text(encoding="utf-8")) or {}
-        paths = data.get("paths") or {}
+        stack = ConfigStack()
+        for label, path in _config_file_paths():
+            stack.push(load_yaml_scope(label, path))
+        paths = stack.resolve_section("paths")
         _config_paths_cache = {k: str(v) for k, v in paths.items() if v}
     except Exception:  # noqa: BLE001 — fail-silent; bad config should not crash path resolution
         pass
     return _config_paths_cache
-
-
-def _config_file_path() -> Path:
-    """Return the well-known terok config.yml location.
-
-    ``TEROK_CONFIG_FILE`` → ``/etc/terok/config.yml`` (root)
-    → ``~/.config/terok/config.yml``.
-    """
-    env = os.getenv("TEROK_CONFIG_FILE")
-    if env:
-        return Path(env).expanduser()
-    if _is_root():
-        return Path("/etc") / _NAMESPACE / "config.yml"
-    if _user_config_dir is not None:
-        return Path(_user_config_dir(_NAMESPACE)) / "config.yml"
-    return Path.home() / ".config" / _NAMESPACE / "config.yml"
 
 
 def _namespace_root() -> Path | None:
