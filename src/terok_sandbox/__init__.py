@@ -223,7 +223,7 @@ def get_ssh_agent_port(cfg: SandboxConfig | None = None) -> int:
 
 
 def install_proxy_systemd(cfg: SandboxConfig | None = None, *, transport: str = "tcp") -> None:
-    """Render and install systemd socket+service units."""
+    """Render and install credential proxy systemd units for the selected transport."""
     CredentialProxyManager(cfg).install_systemd_units(transport=transport)
 
 

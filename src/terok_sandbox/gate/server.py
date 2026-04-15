@@ -29,6 +29,7 @@ import os
 import re
 import signal
 import socket
+import stat
 import subprocess
 import sys
 import threading
@@ -483,15 +484,21 @@ def _create_unix_server(
     """Create an HTTPServer bound to a Unix domain socket.
 
     Stale socket files are removed if they are actual sockets (not regular
-    files that happen to share the path).
+    files that happen to share the path).  Helpers are inlined to preserve
+    this module's zero-external-import boundary.
     """
-    from .._util._net import harden_socket, prepare_socket_path
-
-    prepare_socket_path(socket_path)
+    # Inline prepare_socket_path — remove stale socket, create parents.
+    try:
+        if not stat.S_ISSOCK(socket_path.lstat().st_mode):
+            raise RuntimeError(f"Refusing to remove non-socket path: {socket_path}")
+        socket_path.unlink()
+    except FileNotFoundError:
+        pass
+    socket_path.parent.mkdir(parents=True, exist_ok=True)
 
     sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
     sock.bind(str(socket_path))
-    harden_socket(socket_path)
+    os.chmod(socket_path, 0o600)
     sock.listen(5)
 
     server = _ThreadingHTTPServer(("localhost", 0), handler_class, bind_and_activate=False)
@@ -588,7 +595,7 @@ def main() -> None:
     )
     parser.add_argument("--base-path", required=True, help="Root directory for git repos")
     parser.add_argument("--token-file", required=True, help="Path to tokens.json")
-    parser.add_argument("--port", type=int, default=None, help="Listen port (default: 9418)")
+    parser.add_argument("--port", type=int, default=None, help="TCP listen port (default: none)")
     parser.add_argument(
         "--bind",
         default=_LISTEN_ADDR,
