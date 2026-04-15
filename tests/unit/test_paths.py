@@ -15,23 +15,23 @@ import pytest
 import terok_sandbox.paths as _paths_mod
 from terok_sandbox.paths import (
     config_root,
-    credentials_root,
     namespace_config_dir,
     namespace_config_root,
     namespace_runtime_dir,
     namespace_state_dir,
     runtime_root,
     state_root,
+    vault_root,
 )
 from tests.constants import MOCK_BASE
 
-MOCK_CREDENTIALS_DIR = MOCK_BASE / "credentials"
+MOCK_VAULT_DIR = MOCK_BASE / "vault"
 
 _NAMESPACE_SEP = "terok" + os.sep + "sandbox"
 """Expected namespace path segment for sandbox roots (``terok/sandbox``)."""
 
-_CRED_NAMESPACE_SEP = "terok" + os.sep + "credentials"
-"""Expected namespace path segment for credentials root (``terok/credentials``)."""
+_VAULT_NAMESPACE_SEP = "terok" + os.sep + "vault"
+"""Expected namespace path segment for vault root (``terok/vault``)."""
 
 
 class TestConfigRoot:
@@ -121,40 +121,38 @@ class TestRuntimeRoot:
             assert runtime_root() == Path("/run/terok/sandbox")
 
 
-class TestCredentialsRoot:
-    """Tests for credentials_root()."""
+class TestVaultRoot:
+    """Tests for vault_root()."""
 
     def test_returns_path(self):
-        """credentials_root() returns a Path instance."""
-        assert isinstance(credentials_root(), Path)
+        """vault_root() returns a Path instance."""
+        assert isinstance(vault_root(), Path)
 
     def test_env_override(self):
-        """TEROK_CREDENTIALS_DIR env var takes precedence."""
-        with unittest.mock.patch.dict(
-            os.environ, {"TEROK_CREDENTIALS_DIR": str(MOCK_CREDENTIALS_DIR)}
-        ):
-            assert credentials_root() == MOCK_CREDENTIALS_DIR
+        """TEROK_VAULT_DIR env var takes precedence."""
+        with unittest.mock.patch.dict(os.environ, {"TEROK_VAULT_DIR": str(MOCK_VAULT_DIR)}):
+            assert vault_root() == MOCK_VAULT_DIR
 
     def test_default_uses_namespace(self):
         """Default path nests under the terok/ namespace."""
         with unittest.mock.patch.dict(os.environ, {}, clear=True):
-            result = credentials_root()
-            assert _CRED_NAMESPACE_SEP in str(result)
+            result = vault_root()
+            assert _VAULT_NAMESPACE_SEP in str(result)
 
     def test_env_override_with_tilde(self):
-        """TEROK_CREDENTIALS_DIR supports ~ expansion."""
-        with unittest.mock.patch.dict(os.environ, {"TEROK_CREDENTIALS_DIR": "~/my-creds"}):
-            result = credentials_root()
+        """TEROK_VAULT_DIR supports ~ expansion."""
+        with unittest.mock.patch.dict(os.environ, {"TEROK_VAULT_DIR": "~/my-vault"}):
+            result = vault_root()
             assert "~" not in str(result)
             assert result.is_absolute()
 
     def test_root_user_fallback(self):
-        """When running as root, falls back to /var/lib/terok/credentials."""
+        """When running as root, falls back to /var/lib/terok/vault."""
         with (
             unittest.mock.patch.dict(os.environ, {}, clear=True),
             unittest.mock.patch("terok_sandbox.paths._is_root", return_value=True),
         ):
-            assert credentials_root() == Path("/var/lib/terok/credentials")
+            assert vault_root() == Path("/var/lib/terok/vault")
 
 
 class TestNamespaceConfigRoot:

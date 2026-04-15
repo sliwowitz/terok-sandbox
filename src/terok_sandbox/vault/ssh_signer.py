@@ -1,14 +1,14 @@
 # SPDX-FileCopyrightText: 2026 Jiri Vyskocil
 # SPDX-License-Identifier: Apache-2.0
 
-"""SSH agent proxy — signs with host-side private keys on behalf of containers.
+"""SSH signer — signs with host-side private keys on behalf of containers.
 
 Implements the `SSH agent protocol`_ over TCP with a phantom-token handshake.
 Containers connect via a socat bridge (``UNIX-LISTEN → TCP``) and set
 ``SSH_AUTH_SOCK`` to the local Unix socket.  Private keys never enter the
-container — the proxy reads them from the host filesystem.
+container — the signer reads them from the host filesystem.
 
-Like :mod:`server`, this module has **zero terok imports**.  It is a
+Like :mod:`token_broker`, this module has **zero terok imports**.  It is a
 self-contained security component that reads phantom tokens from the same
 sqlite3 database and key paths from a JSON sidecar file.
 
@@ -413,17 +413,17 @@ async def _handle_connection(
 # ---------------------------------------------------------------------------
 
 
-async def start_ssh_agent_server(
+async def start_ssh_signer(
     db_path: str,
     keys_file: str,
     host: str | None = None,
     port: int | None = None,
     socket_path: str | None = None,
 ) -> asyncio.Server:
-    """Start the SSH agent server on TCP, a Unix socket, or both.
+    """Start the SSH signer on TCP, a Unix socket, or both.
 
     Args:
-        db_path: Path to the credential proxy sqlite3 database (for phantom token lookups).
+        db_path: Path to the vault sqlite3 database (for phantom token lookups).
         keys_file: Path to ``ssh-keys.json`` mapping credential scopes to key file paths.
         host: Bind address for TCP (typically ``"127.0.0.1"``).
         port: TCP port to listen on.
@@ -435,7 +435,7 @@ async def start_ssh_agent_server(
     Raises:
         ValueError: If neither TCP (host+port) nor socket_path is provided.
     """
-    from .server import _TokenDB
+    from .token_broker import _TokenDB
 
     token_db = _TokenDB(db_path)
     key_cache = _KeyCache(keys_file)
@@ -462,10 +462,10 @@ async def start_ssh_agent_server(
             sock.listen(128)
         server = await asyncio.start_unix_server(_on_connect, sock=sock)
         harden_socket(path)
-        _logger.info("SSH agent proxy listening on %s", path)
+        _logger.info("SSH signer listening on %s", path)
     elif host is not None and port is not None:
         server = await asyncio.start_server(_on_connect, host, port)
-        _logger.info("SSH agent proxy listening on %s:%d", host, port)
+        _logger.info("SSH signer listening on %s:%d", host, port)
     else:
         raise ValueError("Either socket_path or host+port must be provided")
     return server
