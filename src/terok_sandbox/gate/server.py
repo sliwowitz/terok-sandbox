@@ -12,9 +12,11 @@ Token validation:
     tokens to credential scopes.  The requested repo must match the token's scope.
 
 Modes:
-    --inetd   Handle one request on an inherited socket (fd 0), then exit.
-              Used by systemd ``Accept=yes`` socket activation.
-    --detach  Bind, fork, accept loop in child.  Daemon fallback.
+    --inetd        Handle one request on an inherited socket (fd 0), then exit.
+                   Used by systemd ``Accept=yes`` socket activation.
+    --detach       Bind, fork, accept loop in child.  Daemon fallback.
+    --socket-path  Foreground mode on a Unix socket (and optionally TCP).
+                   Used by systemd ``Type=simple`` service units and socket mode.
 """
 
 from __future__ import annotations
@@ -27,8 +29,10 @@ import os
 import re
 import signal
 import socket
+import stat
 import subprocess
 import sys
+import threading
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 from socketserver import ThreadingMixIn
@@ -46,6 +50,7 @@ _ROUTE = re.compile(
 
 _CGI_WAIT_TIMEOUT = 30
 _LISTEN_ADDR = "127.0.0.1"
+_DEFAULT_PORT = 9418
 
 
 def _validate_token_data(data: object) -> dict[str, dict[str, str]]:
@@ -468,6 +473,98 @@ def _serve_daemon(
 
 
 # ---------------------------------------------------------------------------
+# Unix socket server factory
+# ---------------------------------------------------------------------------
+
+
+def _create_unix_server(
+    handler_class: type[BaseHTTPRequestHandler],
+    socket_path: Path,
+) -> _ThreadingHTTPServer:
+    """Create an HTTPServer bound to a Unix domain socket.
+
+    Stale socket files are removed if they are actual sockets (not regular
+    files that happen to share the path).  Helpers are inlined to preserve
+    this module's zero-external-import boundary.
+    """
+    # Inline prepare_socket_path — remove stale socket, create parents.
+    try:
+        if not stat.S_ISSOCK(socket_path.lstat().st_mode):
+            raise RuntimeError(f"Refusing to remove non-socket path: {socket_path}")
+        socket_path.unlink()
+    except FileNotFoundError:
+        pass
+    socket_path.parent.mkdir(parents=True, exist_ok=True)
+
+    sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    sock.bind(str(socket_path))
+    os.chmod(socket_path, 0o600)
+    sock.listen(5)
+
+    server = _ThreadingHTTPServer(("localhost", 0), handler_class, bind_and_activate=False)
+    server.socket.close()
+    server.socket = sock
+    return server
+
+
+# ---------------------------------------------------------------------------
+# Foreground mode: socket and/or TCP
+# ---------------------------------------------------------------------------
+
+
+def _serve_foreground(
+    base_path: Path,
+    token_store: TokenStore,
+    *,
+    socket_path: Path | None = None,
+    port: int | None = None,
+    bind: str = _LISTEN_ADDR,
+    pid_file: Path | None = None,
+) -> None:
+    """Run the gate server in the foreground with socket and/or TCP listeners."""
+    handler_class = _make_handler_class(base_path, token_store)
+    servers: list[HTTPServer] = []
+
+    if socket_path:
+        unix_server = _create_unix_server(handler_class, socket_path)
+        servers.append(unix_server)
+        _logger.info("Listening on %s", socket_path)
+
+    if port is not None:
+        tcp_server = _ThreadingHTTPServer((bind, port), handler_class)
+        servers.append(tcp_server)
+        _logger.info("Listening on %s:%d", bind, port)
+
+    if not servers:
+        raise RuntimeError("At least one of --socket-path or --port is required")
+
+    if pid_file:
+        pid_file.parent.mkdir(parents=True, exist_ok=True)
+        fd = os.open(
+            str(pid_file),
+            os.O_WRONLY | os.O_CREAT | os.O_TRUNC | getattr(os, "O_NOFOLLOW", 0),
+            0o600,
+        )
+        try:
+            os.write(fd, str(os.getpid()).encode())
+        finally:
+            os.close(fd)
+
+    def _shutdown(*_: object) -> None:
+        for srv in servers:
+            srv.shutdown()
+
+    signal.signal(signal.SIGTERM, _shutdown)
+    signal.signal(signal.SIGINT, _shutdown)
+
+    threads = [threading.Thread(target=srv.serve_forever, daemon=True) for srv in servers]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+
+# ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
 
@@ -498,16 +595,21 @@ def main() -> None:
     )
     parser.add_argument("--base-path", required=True, help="Root directory for git repos")
     parser.add_argument("--token-file", required=True, help="Path to tokens.json")
-    parser.add_argument("--port", type=int, default=9418, help="Listen port (daemon mode)")
+    parser.add_argument("--port", type=int, default=None, help="TCP listen port (default: none)")
     parser.add_argument(
         "--bind",
         default=_LISTEN_ADDR,
         help=f"Address to bind to (default: {_LISTEN_ADDR}). "
         "Use 0.0.0.0 to accept connections from outside.",
     )
+    parser.add_argument(
+        "--socket-path",
+        default=None,
+        help="Unix socket path to listen on (foreground mode)",
+    )
     parser.add_argument("--inetd", action="store_true", help="Handle one request on fd 0, exit")
     parser.add_argument("--detach", action="store_true", help="Fork and run as daemon")
-    parser.add_argument("--pid-file", default=None, help="PID file path (daemon mode)")
+    parser.add_argument("--pid-file", default=None, help="PID file path")
     parser.add_argument(
         "--admin-token",
         default=None,
@@ -516,8 +618,9 @@ def main() -> None:
     )
 
     args = parser.parse_args()
-    if args.inetd and args.detach:
-        parser.error("--inetd and --detach are mutually exclusive")
+    exclusive = sum([args.inetd, args.detach, bool(args.socket_path)])
+    if exclusive > 1:
+        parser.error("--inetd, --detach, and --socket-path are mutually exclusive modes")
     _configure_logging(daemon=args.detach)
 
     admin_token = args.admin_token or os.environ.get("TEROK_GATE_ADMIN_TOKEN")
@@ -526,8 +629,18 @@ def main() -> None:
 
     if args.inetd:
         _serve_inetd(base_path, token_store)
+    elif args.socket_path:
+        pid_file = Path(args.pid_file) if args.pid_file else None
+        _serve_foreground(
+            base_path,
+            token_store,
+            socket_path=Path(args.socket_path),
+            port=args.port,
+            bind=args.bind,
+            pid_file=pid_file,
+        )
     elif args.detach:
         pid_file = Path(args.pid_file) if args.pid_file else None
-        _serve_daemon(base_path, token_store, args.port, pid_file, bind=args.bind)
+        _serve_daemon(base_path, token_store, args.port or _DEFAULT_PORT, pid_file, bind=args.bind)
     else:
-        parser.error("One of --inetd or --detach is required")
+        parser.error("One of --inetd, --detach, or --socket-path is required")

@@ -19,6 +19,7 @@ import os
 import shlex
 import signal
 import subprocess
+import time
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -61,6 +62,9 @@ class CredentialProxyStatus:
     credentials_stored: tuple[str, ...]
     """Provider names with stored credentials."""
 
+    transport: str | None = None
+    """Detected transport: ``"tcp"``, ``"socket"``, or ``None`` if not running."""
+
 
 class ProxyUnreachableError(RuntimeError):
     """Raised when the credential proxy is not reachable.
@@ -88,14 +92,20 @@ class ProxyUnreachableError(RuntimeError):
 
 # ---------- Constants ----------
 
-_UNIT_VERSION = 4
+_UNIT_VERSION = 5
 """Bump when the systemd unit templates change."""
 
 _SOCKET_UNIT = "terok-credential-proxy.socket"
-"""Name of the systemd socket unit file."""
+"""Name of the systemd socket unit file (TCP mode)."""
 
 _SERVICE_UNIT = "terok-credential-proxy.service"
-"""Name of the systemd service unit file."""
+"""Name of the systemd service unit file (TCP mode)."""
+
+_SOCKET_MODE_SERVICE = "terok-credential-proxy-socket.service"
+"""Name of the systemd service unit for Unix socket mode."""
+
+_ALL_UNIT_NAMES = (_SOCKET_UNIT, _SERVICE_UNIT, _SOCKET_MODE_SERVICE)
+"""All unit file names across both transport modes (for cleanup)."""
 
 
 # ---------- Manager ----------
@@ -116,14 +126,14 @@ class CredentialProxyManager:
     # -- Public API ----------------------------------------------------------
 
     def ensure_reachable(self) -> None:
-        """Verify the credential proxy is running and its TCP ports are up.
+        """Verify the credential proxy is running and reachable.
 
-        For **systemd** socket activation the service may not have started yet
-        (e.g. after a fresh boot).  This function triggers a start via
-        ``systemctl --user start`` and waits for the HTTP and SSH agent TCP
-        ports to become reachable via ``/-/health`` and raw TCP probes.
+        Probes the Unix socket first — if the proxy socket accepts connections,
+        the service is alive.  Falls back to TCP health probing for setups
+        that only expose TCP ports.
 
-        For **daemon** mode the ``/-/health`` endpoint is probed on the TCP port.
+        For **systemd** socket activation the service may not have started yet.
+        This function triggers a start via ``systemctl --user start`` and waits.
 
         Raises :class:`ProxyUnreachableError` if the proxy is unreachable.
         Called before task creation when credential proxy is enabled.
@@ -135,25 +145,28 @@ class CredentialProxyManager:
             )
 
         # Systemd socket activation: the socket unit is active but the service
-        # may be idle.  Explicitly start the service so the TCP ports come up.
+        # may be idle.  Explicitly start the service so listeners come up.
         if self.is_socket_active():
+            unit = (
+                _SOCKET_MODE_SERVICE if self._installed_transport() == "socket" else _SERVICE_UNIT
+            )
             subprocess.run(
-                ["systemctl", "--user", "start", _SERVICE_UNIT],
+                ["systemctl", "--user", "start", unit],
                 check=False,
                 timeout=10,
             )
 
+        # Prefer Unix socket probe (works for both socket and TCP modes).
+        if self._wait_for_unix_socket(self._cfg.proxy_socket_path):
+            return
+
+        # Fallback: TCP health probe (legacy / TCP-only setups).
         if not self._wait_for_ready(self._cfg.proxy_port):
             raise SystemExit(
-                f"Credential proxy service started but TCP port {self._cfg.proxy_port} "
-                "is not reachable. Check: journalctl --user -u terok-credential-proxy"
-            )
-
-        if not self._wait_for_tcp_port(self._cfg.ssh_agent_port):
-            raise SystemExit(
-                f"Credential proxy service started but SSH agent port "
-                f"{self._cfg.ssh_agent_port} "
-                "is not reachable. Check: journalctl --user -u terok-credential-proxy"
+                "Credential proxy service started but is not reachable.\n"
+                f"Socket: {self._cfg.proxy_socket_path}\n"
+                f"TCP:    127.0.0.1:{self._cfg.proxy_port}\n"
+                "Check: journalctl --user -u terok-credential-proxy"
             )
 
     def get_status(self) -> CredentialProxyStatus:
@@ -202,6 +215,10 @@ class CredentialProxyManager:
             running = False
             healthy = False
 
+        # Derive transport from installed unit type (not reachability probe,
+        # since TCP mode also binds a Unix socket).
+        transport = self._installed_transport() if mode == "systemd" else None
+
         return CredentialProxyStatus(
             mode=mode,
             running=running,
@@ -211,6 +228,7 @@ class CredentialProxyManager:
             routes_path=self._cfg.proxy_routes_path,
             routes_configured=routes_count,
             credentials_stored=creds,
+            transport=transport,
         )
 
     @property
@@ -239,42 +257,50 @@ class CredentialProxyManager:
             return False
 
     def is_socket_installed(self) -> bool:
-        """Check whether the ``terok-credential-proxy.socket`` unit file exists."""
-        return (self._systemd_unit_dir() / _SOCKET_UNIT).is_file()
+        """Check whether any proxy systemd unit file exists (TCP or socket mode)."""
+        unit_dir = self._systemd_unit_dir()
+        return (unit_dir / _SOCKET_UNIT).is_file() or (unit_dir / _SOCKET_MODE_SERVICE).is_file()
+
+    def _is_unit_active(self, unit: str) -> bool:
+        """Check whether a systemd unit is active."""
+        try:
+            result = subprocess.run(
+                ["systemctl", "--user", "is-active", unit],
+                capture_output=True,
+                text=True,
+                timeout=5,
+            )
+            return result.stdout.strip() == "active"
+        except (FileNotFoundError, subprocess.TimeoutExpired):
+            return False
 
     def is_socket_active(self) -> bool:
-        """Check whether the ``terok-credential-proxy.socket`` unit is active."""
-        try:
-            result = subprocess.run(
-                ["systemctl", "--user", "is-active", _SOCKET_UNIT],
-                capture_output=True,
-                text=True,
-                timeout=5,
-            )
-            return result.stdout.strip() == "active"
-        except (FileNotFoundError, subprocess.TimeoutExpired):
-            return False
+        """Check whether the TCP socket unit or socket-mode service is active."""
+        return self._is_unit_active(_SOCKET_UNIT) or self._is_unit_active(_SOCKET_MODE_SERVICE)
 
     def is_service_active(self) -> bool:
-        """Check whether the ``terok-credential-proxy.service`` unit is active.
+        """Check whether the proxy daemon itself is running.
 
-        Unlike :meth:`is_socket_active`, this tells whether the proxy daemon
-        itself is running (TCP ports bound), not just whether the socket is
-        listening.  Does not trigger socket activation.
+        Checks both TCP-mode service and socket-mode service units.
         """
-        try:
-            result = subprocess.run(
-                ["systemctl", "--user", "is-active", _SERVICE_UNIT],
-                capture_output=True,
-                text=True,
-                timeout=5,
-            )
-            return result.stdout.strip() == "active"
-        except (FileNotFoundError, subprocess.TimeoutExpired):
-            return False
+        return self._is_unit_active(_SERVICE_UNIT) or self._is_unit_active(_SOCKET_MODE_SERVICE)
 
-    def install_systemd_units(self) -> None:
-        """Render and install systemd socket+service units, then enable+start the socket."""
+    def _installed_transport(self) -> str | None:
+        """Detect installed transport from unit files on disk."""
+        unit_dir = self._systemd_unit_dir()
+        if (unit_dir / _SOCKET_MODE_SERVICE).is_file():
+            return "socket"
+        if (unit_dir / _SOCKET_UNIT).is_file():
+            return "tcp"
+        return None
+
+    def install_systemd_units(self, *, transport: str = "tcp") -> None:
+        """Render and install systemd units, then enable+start.
+
+        When *transport* is ``"tcp"`` (default), installs the socket-activated
+        pair (socket + service).  When ``"socket"``, installs a single
+        long-running service that binds Unix sockets only.
+        """
         import terok_sandbox.credentials.proxy
 
         from .._util import render_template
@@ -289,6 +315,7 @@ class CredentialProxyManager:
         )
         variables = {
             "SOCKET_PATH": str(self._cfg.proxy_socket_path),
+            "SSH_AGENT_SOCKET_PATH": str(self._cfg.ssh_agent_socket_path),
             "DB_PATH": str(self._cfg.proxy_db_path),
             "ROUTES_PATH": str(self._cfg.proxy_routes_path),
             "PORT": str(self._cfg.proxy_port),
@@ -298,7 +325,17 @@ class CredentialProxyManager:
             "UNIT_VERSION": str(_UNIT_VERSION),
         }
 
-        for template_name in (_SOCKET_UNIT, _SERVICE_UNIT):
+        # Remove units from the *other* transport mode before installing.
+        self._remove_unit_files()
+
+        if transport == "socket":
+            templates = [_SOCKET_MODE_SERVICE]
+            enable_unit = _SOCKET_MODE_SERVICE
+        else:
+            templates = [_SOCKET_UNIT, _SERVICE_UNIT]
+            enable_unit = _SOCKET_UNIT
+
+        for template_name in templates:
             template_path = resource_dir / template_name
             if not template_path.is_file():
                 raise SystemExit(f"Missing systemd template: {template_path}")
@@ -308,32 +345,41 @@ class CredentialProxyManager:
         self._cfg.proxy_socket_path.parent.mkdir(parents=True, exist_ok=True)
         subprocess.run(["systemctl", "--user", "daemon-reload"], check=True, timeout=10)
         subprocess.run(
-            ["systemctl", "--user", "enable", "--now", _SOCKET_UNIT],
+            ["systemctl", "--user", "enable", "--now", enable_unit],
             check=True,
             timeout=10,
         )
         # Restart to apply updated unit configuration if socket was already active.
         subprocess.run(
-            ["systemctl", "--user", "restart", _SOCKET_UNIT],
+            ["systemctl", "--user", "restart", enable_unit],
             check=True,
             timeout=10,
         )
 
-    def uninstall_systemd_units(self) -> None:
-        """Disable+stop the socket and remove unit files."""
+    def _stop_all_units(self) -> None:
+        """Stop and disable all proxy units across both transport modes."""
         unit_dir = self._systemd_unit_dir()
+        for unit in (_SOCKET_UNIT, _SERVICE_UNIT, _SOCKET_MODE_SERVICE):
+            if (unit_dir / unit).is_file():
+                subprocess.run(
+                    ["systemctl", "--user", "disable", "--now", unit],
+                    check=False,
+                    capture_output=True,
+                    timeout=10,
+                )
 
-        subprocess.run(
-            ["systemctl", "--user", "disable", "--now", _SOCKET_UNIT],
-            check=False,
-            timeout=10,
-        )
-
-        for name in (_SOCKET_UNIT, _SERVICE_UNIT):
+    def _remove_unit_files(self) -> None:
+        """Stop active units and remove all proxy unit files."""
+        self._stop_all_units()
+        unit_dir = self._systemd_unit_dir()
+        for name in _ALL_UNIT_NAMES:
             unit_file = unit_dir / name
             if unit_file.is_file():
                 unit_file.unlink()
 
+    def uninstall_systemd_units(self) -> None:
+        """Disable+stop all proxy units and remove unit files."""
+        self._remove_unit_files()
         subprocess.run(["systemctl", "--user", "daemon-reload"], check=False, timeout=10)
 
     # -- Daemon lifecycle ----------------------------------------------------
@@ -501,11 +547,10 @@ class CredentialProxyManager:
     @staticmethod
     def _wait_for_ready(port: int, *, timeout: float = 5.0, interval: float = 0.2) -> bool:
         """Poll the health endpoint until it responds 200 or *timeout* expires."""
-        import time
-
+        probe_timeout = min(1.0, interval)
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
-            if CredentialProxyManager._probe(port, timeout=min(1.0, interval)):
+            if CredentialProxyManager._probe(port, timeout=probe_timeout):
                 return True
             time.sleep(interval)
         return False
@@ -514,7 +559,6 @@ class CredentialProxyManager:
     def _wait_for_tcp_port(port: int, timeout: float = 5.0) -> bool:
         """Wait up to *timeout* seconds for a TCP port on localhost to accept connections."""
         import socket
-        import time
 
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
@@ -525,4 +569,17 @@ class CredentialProxyManager:
             finally:
                 sock.close()
             time.sleep(0.2)
+        return False
+
+    @staticmethod
+    def _wait_for_unix_socket(path: Path, *, timeout: float = 5.0, interval: float = 0.2) -> bool:
+        """Wait up to *timeout* seconds for a Unix socket to accept connections."""
+        from .._util._net import probe_unix_socket
+
+        probe_timeout = min(1.0, interval)
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            if probe_unix_socket(path, timeout=probe_timeout):
+                return True
+            time.sleep(interval)
         return False

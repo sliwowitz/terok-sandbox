@@ -38,13 +38,18 @@ from ..config import SandboxConfig
 
 # ---------- Constants ----------
 
-_DEFAULT_PORT = 9418
-_UNIT_VERSION = 6
+_UNIT_VERSION = 7
 """Bump when the systemd unit templates change.  ``ensure_reachable``
 checks the installed version and refuses to start tasks if it is stale."""
 
 _SOCKET_UNIT = "terok-gate.socket"
-"""Name of the systemd socket unit file."""
+"""Name of the systemd socket unit file (TCP inetd mode)."""
+
+_SOCKET_MODE_SERVICE = "terok-gate-socket.service"
+"""Name of the systemd service unit for Unix socket mode."""
+
+_ALL_UNIT_NAMES = (_SOCKET_UNIT, "terok-gate@.service", _SOCKET_MODE_SERVICE)
+"""All unit file names across both transport modes (for cleanup)."""
 
 
 # ---------- Vocabulary ----------
@@ -62,6 +67,9 @@ class GateServerStatus:
 
     port: int
     """Configured port."""
+
+    transport: str | None = None
+    """Detected transport: ``"tcp"``, ``"socket"``, or ``None`` if not running."""
 
 
 # ---------- Manager ----------
@@ -115,19 +123,36 @@ class GateServerManager:
             msg += "Start the gate daemon.\n"
         raise SystemExit(msg)
 
+    def is_socket_reachable(self) -> bool:
+        """Check whether the gate Unix socket accepts connections."""
+        from .._util._net import probe_unix_socket
+
+        return probe_unix_socket(self._cfg.gate_socket_path)
+
+    def _detect_transport(self) -> str | None:
+        """Detect the active transport: ``"socket"``, ``"tcp"``, or ``None``."""
+        if self.is_socket_reachable():
+            return "socket"
+        if self.is_daemon_running():
+            return "tcp"
+        return None
+
     def get_status(self) -> GateServerStatus:
         """Return the current gate server status."""
         port = self._cfg.gate_port
+        transport = self._detect_transport()
 
         if self.is_socket_installed():
             if self.is_socket_active():
-                return GateServerStatus(mode="systemd", running=True, port=port)
-            if self.is_daemon_running():
-                return GateServerStatus(mode="daemon", running=True, port=port)
+                return GateServerStatus(
+                    mode="systemd", running=True, port=port, transport=transport or "tcp"
+                )
+            if transport:
+                return GateServerStatus(mode="daemon", running=True, port=port, transport=transport)
             return GateServerStatus(mode="systemd", running=False, port=port)
 
-        if self.is_daemon_running():
-            return GateServerStatus(mode="daemon", running=True, port=port)
+        if transport:
+            return GateServerStatus(mode="daemon", running=True, port=port, transport=transport)
 
         return GateServerStatus(mode="none", running=False, port=port)
 
@@ -181,14 +206,15 @@ class GateServerManager:
             return False
 
     def is_socket_installed(self) -> bool:
-        """Check whether the ``terok-gate.socket`` unit file exists."""
-        return (self._systemd_unit_dir() / _SOCKET_UNIT).is_file()
+        """Check whether any gate systemd unit file exists (TCP or socket mode)."""
+        unit_dir = self._systemd_unit_dir()
+        return (unit_dir / _SOCKET_UNIT).is_file() or (unit_dir / _SOCKET_MODE_SERVICE).is_file()
 
-    def is_socket_active(self) -> bool:
-        """Check whether the ``terok-gate.socket`` unit is active (listening)."""
+    def _is_unit_active(self, unit: str) -> bool:
+        """Check whether a systemd unit is active."""
         try:
             result = subprocess.run(
-                ["systemctl", "--user", "is-active", _SOCKET_UNIT],
+                ["systemctl", "--user", "is-active", unit],
                 capture_output=True,
                 text=True,
                 timeout=5,
@@ -197,8 +223,17 @@ class GateServerManager:
         except (FileNotFoundError, subprocess.TimeoutExpired):
             return False
 
-    def install_systemd_units(self) -> None:
-        """Render and install systemd socket+service units, then enable+start the socket."""
+    def is_socket_active(self) -> bool:
+        """Check whether the TCP socket unit or socket-mode service is active."""
+        return self._is_unit_active(_SOCKET_UNIT) or self._is_unit_active(_SOCKET_MODE_SERVICE)
+
+    def install_systemd_units(self, *, transport: str = "tcp") -> None:
+        """Render and install systemd units, then enable+start.
+
+        When *transport* is ``"tcp"`` (default), installs the inetd-style
+        socket+service pair.  When ``"socket"``, installs a single long-running
+        service that binds a Unix socket.
+        """
         import shutil
 
         import terok_sandbox.gate
@@ -219,13 +254,24 @@ class GateServerManager:
         resource_dir = Path(terok_sandbox.gate.__file__).resolve().parent / "resources" / "systemd"
         variables = {
             "PORT": str(self._cfg.gate_port),
+            "SOCKET_PATH": str(self._cfg.gate_socket_path),
             "GATE_BASE_PATH": str(self._cfg.gate_base_path),
             "TOKEN_FILE": str(TokenStore(self._cfg).file_path),
             "UNIT_VERSION": str(_UNIT_VERSION),
             "TEROK_GATE_BIN": gate_bin,
         }
 
-        for template_name in (_SOCKET_UNIT, "terok-gate@.service"):
+        # Remove units from the *other* transport mode before installing.
+        self._remove_unit_files()
+
+        if transport == "socket":
+            templates = [_SOCKET_MODE_SERVICE]
+            enable_unit = _SOCKET_MODE_SERVICE
+        else:
+            templates = [_SOCKET_UNIT, "terok-gate@.service"]
+            enable_unit = _SOCKET_UNIT
+
+        for template_name in templates:
             template_path = resource_dir / template_name
             if not template_path.is_file():
                 raise SystemExit(f"Missing systemd template: {template_path}")
@@ -234,26 +280,36 @@ class GateServerManager:
 
         subprocess.run(["systemctl", "--user", "daemon-reload"], check=True, timeout=10)
         subprocess.run(
-            ["systemctl", "--user", "enable", "--now", _SOCKET_UNIT],
+            ["systemctl", "--user", "enable", "--now", enable_unit],
             check=True,
             timeout=10,
         )
 
-    def uninstall_systemd_units(self) -> None:
-        """Disable+stop the socket and remove unit files."""
+    def _stop_all_units(self) -> None:
+        """Stop and disable all gate units across both transport modes."""
         unit_dir = self._systemd_unit_dir()
+        for unit in (_SOCKET_UNIT, _SOCKET_MODE_SERVICE):
+            if (unit_dir / unit).is_file():
+                subprocess.run(
+                    ["systemctl", "--user", "disable", "--now", unit],
+                    check=False,
+                    capture_output=True,
+                    timeout=10,
+                )
 
-        subprocess.run(
-            ["systemctl", "--user", "disable", "--now", _SOCKET_UNIT],
-            check=False,
-            timeout=10,
-        )
-        subprocess.run(["systemctl", "--user", "daemon-reload"], check=False, timeout=10)
-
-        for name in (_SOCKET_UNIT, "terok-gate@.service"):
+    def _remove_unit_files(self) -> None:
+        """Stop active units and remove all gate unit files."""
+        self._stop_all_units()
+        unit_dir = self._systemd_unit_dir()
+        for name in _ALL_UNIT_NAMES:
             unit_file = unit_dir / name
             if unit_file.is_file():
                 unit_file.unlink()
+
+    def uninstall_systemd_units(self) -> None:
+        """Disable+stop all gate units and remove unit files."""
+        self._remove_unit_files()
+        subprocess.run(["systemctl", "--user", "daemon-reload"], check=False, timeout=10)
 
         subprocess.run(["systemctl", "--user", "daemon-reload"], check=False, timeout=10)
 
@@ -334,35 +390,43 @@ class GateServerManager:
         return systemd_user_unit_dir()
 
     def _installed_unit_version(self) -> int | None:
-        """Return the version stamp from the installed socket unit, or ``None``."""
-        unit_file = self._systemd_unit_dir() / _SOCKET_UNIT
-        if not unit_file.is_file():
-            return None
-        try:
-            for line in unit_file.read_text(encoding="utf-8").splitlines():
-                if line.startswith("# terok-gate-version:"):
-                    return int(line.split(":", 1)[1].strip())
-        except (ValueError, OSError):
-            pass
+        """Return the version stamp from the installed unit files, or ``None``.
+
+        Checks both TCP (socket unit) and socket-mode (service unit) files.
+        """
+        unit_dir = self._systemd_unit_dir()
+        for name in (_SOCKET_UNIT, _SOCKET_MODE_SERVICE):
+            unit_file = unit_dir / name
+            if not unit_file.is_file():
+                continue
+            try:
+                for line in unit_file.read_text(encoding="utf-8").splitlines():
+                    if line.startswith("# terok-gate-version:"):
+                        return int(line.split(":", 1)[1].strip())
+            except (ValueError, OSError):
+                pass
         return None
 
     def _installed_base_path(self) -> Path | None:
         """Parse the ``--base-path=...`` baked into the installed service unit.
 
-        Returns ``None`` if the service unit is missing or unparseable.
+        Checks both TCP (terok-gate@.service) and socket-mode service files.
+        Returns ``None`` if no service unit is found or unparseable.
         """
-        service_file = self._systemd_unit_dir() / "terok-gate@.service"
-        if not service_file.is_file():
-            return None
-        try:
-            for line in service_file.read_text(encoding="utf-8").splitlines():
-                line = line.strip()
-                if line.startswith("ExecStart=") and "--base-path=" in line:
-                    for token in line.split():
-                        if token.startswith("--base-path="):
-                            return Path(token.split("=", 1)[1])
-        except OSError:
-            pass
+        unit_dir = self._systemd_unit_dir()
+        for name in ("terok-gate@.service", _SOCKET_MODE_SERVICE):
+            service_file = unit_dir / name
+            if not service_file.is_file():
+                continue
+            try:
+                for line in service_file.read_text(encoding="utf-8").splitlines():
+                    line = line.strip()
+                    if line.startswith("ExecStart=") and "--base-path=" in line:
+                        for token in line.split():
+                            if token.startswith("--base-path="):
+                                return Path(token.split("=", 1)[1])
+            except OSError:
+                pass
         return None
 
     def _base_path_diverged(self) -> str | None:

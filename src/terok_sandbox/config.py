@@ -21,6 +21,9 @@ from .paths import (
     state_root as _state_root,
 )
 
+CONTAINER_RUNTIME_DIR = "/run/terok"
+"""Container-side mount point for the host runtime directory (socket mode)."""
+
 
 @dataclass(frozen=True)
 class SandboxConfig:
@@ -128,6 +131,16 @@ class SandboxConfig:
     def proxy_routes_path(self) -> Path:
         """Return the path to the proxy route configuration JSON."""
         return self.credentials_dir / "routes.json"
+
+    @property
+    def gate_socket_path(self) -> Path:
+        """Return the Unix socket path for the gate server."""
+        return self.runtime_dir / "gate-server.sock"
+
+    @property
+    def ssh_agent_socket_path(self) -> Path:
+        """Return the Unix socket path for the SSH agent proxy."""
+        return self.runtime_dir / "ssh-agent.sock"
 
     @property
     def clone_cache_base_path(self) -> Path:
