@@ -34,7 +34,7 @@ from .commands import (
     CommandDef,
     KeyRow,
 )
-from .config import SandboxConfig
+from .config import CONTAINER_RUNTIME_DIR, SandboxConfig
 from .config_stack import ConfigScope, ConfigStack
 from .credentials.db import CredentialDB
 from .credentials.lifecycle import (
@@ -269,6 +269,7 @@ def uninstall_proxy_systemd(cfg: SandboxConfig | None = None) -> None:
 
 __all__ = [
     # Config
+    "CONTAINER_RUNTIME_DIR",
     "ConfigScope",
     "ConfigStack",
     "SandboxConfig",

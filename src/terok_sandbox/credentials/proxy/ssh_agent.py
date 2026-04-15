@@ -29,7 +29,6 @@ import asyncio
 import base64
 import json
 import logging
-import os
 import struct
 from pathlib import Path
 
@@ -446,16 +445,12 @@ async def start_ssh_agent_server(
         await _handle_connection(reader, writer, token_db, key_cache)
 
     if socket_path:
-        path = Path(socket_path)
-        if path.exists():
-            import stat
+        from terok_sandbox._util._net import harden_socket, prepare_socket_path
 
-            if not stat.S_ISSOCK(path.lstat().st_mode):
-                raise RuntimeError(f"Refusing to remove non-socket path: {path}")
-            path.unlink()
-        path.parent.mkdir(parents=True, exist_ok=True)
+        path = Path(socket_path)
+        prepare_socket_path(path)
         server = await asyncio.start_unix_server(_on_connect, path=str(path))
-        os.chmod(path, 0o600)
+        harden_socket(path)
         _logger.info("SSH agent proxy listening on %s", path)
     elif host is not None and port is not None:
         server = await asyncio.start_server(_on_connect, host, port)

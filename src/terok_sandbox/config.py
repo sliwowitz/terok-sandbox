@@ -21,6 +21,9 @@ from .paths import (
     state_root as _state_root,
 )
 
+CONTAINER_RUNTIME_DIR = "/run/terok"
+"""Container-side mount point for the host runtime directory (socket mode)."""
+
 
 @dataclass(frozen=True)
 class SandboxConfig:

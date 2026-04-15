@@ -29,7 +29,6 @@ import os
 import re
 import signal
 import socket
-import stat
 import subprocess
 import sys
 import threading
@@ -486,15 +485,13 @@ def _create_unix_server(
     Stale socket files are removed if they are actual sockets (not regular
     files that happen to share the path).
     """
-    if socket_path.exists():
-        if not stat.S_ISSOCK(socket_path.lstat().st_mode):
-            raise RuntimeError(f"Refusing to remove non-socket path: {socket_path}")
-        socket_path.unlink()
-    socket_path.parent.mkdir(parents=True, exist_ok=True)
+    from .._util._net import harden_socket, prepare_socket_path
+
+    prepare_socket_path(socket_path)
 
     sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
     sock.bind(str(socket_path))
-    os.chmod(socket_path, 0o600)
+    harden_socket(socket_path)
     sock.listen(5)
 
     server = _ThreadingHTTPServer(("localhost", 0), handler_class, bind_and_activate=False)

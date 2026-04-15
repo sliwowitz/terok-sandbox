@@ -19,6 +19,7 @@ import os
 import shlex
 import signal
 import subprocess
+import time
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -501,11 +502,10 @@ class CredentialProxyManager:
     @staticmethod
     def _wait_for_ready(port: int, *, timeout: float = 5.0, interval: float = 0.2) -> bool:
         """Poll the health endpoint until it responds 200 or *timeout* expires."""
-        import time
-
+        probe_timeout = min(1.0, interval)
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
-            if CredentialProxyManager._probe(port, timeout=min(1.0, interval)):
+            if CredentialProxyManager._probe(port, timeout=probe_timeout):
                 return True
             time.sleep(interval)
         return False
@@ -514,7 +514,6 @@ class CredentialProxyManager:
     def _wait_for_tcp_port(port: int, timeout: float = 5.0) -> bool:
         """Wait up to *timeout* seconds for a TCP port on localhost to accept connections."""
         import socket
-        import time
 
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
@@ -530,13 +529,12 @@ class CredentialProxyManager:
     @staticmethod
     def _wait_for_unix_socket(path: Path, *, timeout: float = 5.0, interval: float = 0.2) -> bool:
         """Wait up to *timeout* seconds for a Unix socket to accept connections."""
-        import time
-
         from .._util._net import probe_unix_socket
 
+        probe_timeout = min(1.0, interval)
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
-            if probe_unix_socket(path, timeout=min(1.0, interval)):
+            if probe_unix_socket(path, timeout=probe_timeout):
                 return True
             time.sleep(interval)
         return False

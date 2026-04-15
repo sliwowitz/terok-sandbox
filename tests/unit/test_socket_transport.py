@@ -27,7 +27,7 @@ from cryptography.hazmat.primitives.serialization import (
     PublicFormat,
 )
 
-from terok_sandbox._util._net import probe_unix_socket
+from terok_sandbox._util._net import harden_socket, prepare_socket_path, probe_unix_socket
 from terok_sandbox.config import SandboxConfig
 from terok_sandbox.credentials.db import CredentialDB
 from terok_sandbox.credentials.proxy.ssh_agent import (
@@ -72,6 +72,58 @@ class TestProbeUnixSocket:
         srv.close()
         # Socket file still exists, but no listener
         assert probe_unix_socket(sock_path) is False
+
+
+# ── prepare_socket_path / harden_socket ─────────────────────────────────
+
+
+class TestPrepareSocketPath:
+    """Verify shared socket path preparation utility."""
+
+    def test_removes_stale_socket(self, tmp_path: Path) -> None:
+        """Stale socket file is unlinked."""
+        sock_path = tmp_path / "s.sock"
+        srv = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        srv.bind(str(sock_path))
+        srv.close()
+
+        prepare_socket_path(sock_path)
+        assert not sock_path.exists()
+
+    def test_rejects_non_socket(self, tmp_path: Path) -> None:
+        """RuntimeError when a regular file occupies the path."""
+        path = tmp_path / "s.sock"
+        path.write_text("x")
+        with pytest.raises(RuntimeError, match="non-socket"):
+            prepare_socket_path(path)
+
+    def test_creates_parent_dirs(self, tmp_path: Path) -> None:
+        """Parent directories are created when missing."""
+        path = tmp_path / "a" / "b" / "s.sock"
+        prepare_socket_path(path)
+        assert path.parent.is_dir()
+
+    def test_noop_when_absent(self, tmp_path: Path) -> None:
+        """No error when socket path does not exist yet."""
+        prepare_socket_path(tmp_path / "new.sock")
+
+
+class TestHardenSocket:
+    """Verify socket permission hardening."""
+
+    def test_sets_owner_only(self, tmp_path: Path) -> None:
+        """Socket file is restricted to owner-only access."""
+        import os
+        import stat
+
+        sock_path = tmp_path / "s.sock"
+        srv = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        srv.bind(str(sock_path))
+        srv.close()
+
+        harden_socket(sock_path)
+        mode = stat.S_IMODE(sock_path.stat().st_mode)
+        assert mode == 0o600
 
 
 # ── SandboxConfig socket paths ──────────────────────────────────────────
