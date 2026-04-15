@@ -147,8 +147,11 @@ class CredentialProxyManager:
         # Systemd socket activation: the socket unit is active but the service
         # may be idle.  Explicitly start the service so listeners come up.
         if self.is_socket_active():
+            unit = (
+                _SOCKET_MODE_SERVICE if self._installed_transport() == "socket" else _SERVICE_UNIT
+            )
             subprocess.run(
-                ["systemctl", "--user", "start", _SERVICE_UNIT],
+                ["systemctl", "--user", "start", unit],
                 check=False,
                 timeout=10,
             )

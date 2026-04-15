@@ -206,14 +206,15 @@ class GateServerManager:
             return False
 
     def is_socket_installed(self) -> bool:
-        """Check whether the ``terok-gate.socket`` unit file exists."""
-        return (self._systemd_unit_dir() / _SOCKET_UNIT).is_file()
+        """Check whether any gate systemd unit file exists (TCP or socket mode)."""
+        unit_dir = self._systemd_unit_dir()
+        return (unit_dir / _SOCKET_UNIT).is_file() or (unit_dir / _SOCKET_MODE_SERVICE).is_file()
 
-    def is_socket_active(self) -> bool:
-        """Check whether the ``terok-gate.socket`` unit is active (listening)."""
+    def _is_unit_active(self, unit: str) -> bool:
+        """Check whether a systemd unit is active."""
         try:
             result = subprocess.run(
-                ["systemctl", "--user", "is-active", _SOCKET_UNIT],
+                ["systemctl", "--user", "is-active", unit],
                 capture_output=True,
                 text=True,
                 timeout=5,
@@ -221,6 +222,10 @@ class GateServerManager:
             return result.stdout.strip() == "active"
         except (FileNotFoundError, subprocess.TimeoutExpired):
             return False
+
+    def is_socket_active(self) -> bool:
+        """Check whether the TCP socket unit or socket-mode service is active."""
+        return self._is_unit_active(_SOCKET_UNIT) or self._is_unit_active(_SOCKET_MODE_SERVICE)
 
     def install_systemd_units(self, *, transport: str = "tcp") -> None:
         """Render and install systemd units, then enable+start.
