@@ -353,8 +353,18 @@ class CredentialProxyManager:
             timeout=10,
         )
 
+    def _stop_all_units(self) -> None:
+        """Stop and disable all proxy units across both transport modes."""
+        for unit in (_SOCKET_UNIT, _SERVICE_UNIT, _SOCKET_MODE_SERVICE):
+            subprocess.run(
+                ["systemctl", "--user", "disable", "--now", unit],
+                check=False,
+                timeout=10,
+            )
+
     def _remove_unit_files(self) -> None:
-        """Remove all proxy unit files from both transport modes."""
+        """Stop active units and remove all proxy unit files."""
+        self._stop_all_units()
         unit_dir = self._systemd_unit_dir()
         for name in _ALL_UNIT_NAMES:
             unit_file = unit_dir / name
@@ -363,15 +373,7 @@ class CredentialProxyManager:
 
     def uninstall_systemd_units(self) -> None:
         """Disable+stop all proxy units and remove unit files."""
-        for unit in (_SOCKET_UNIT, _SERVICE_UNIT, _SOCKET_MODE_SERVICE):
-            subprocess.run(
-                ["systemctl", "--user", "disable", "--now", unit],
-                check=False,
-                timeout=10,
-            )
-
         self._remove_unit_files()
-
         subprocess.run(["systemctl", "--user", "daemon-reload"], check=False, timeout=10)
 
     # -- Daemon lifecycle ----------------------------------------------------
