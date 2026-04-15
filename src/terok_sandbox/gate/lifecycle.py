@@ -287,12 +287,15 @@ class GateServerManager:
 
     def _stop_all_units(self) -> None:
         """Stop and disable all gate units across both transport modes."""
+        unit_dir = self._systemd_unit_dir()
         for unit in (_SOCKET_UNIT, _SOCKET_MODE_SERVICE):
-            subprocess.run(
-                ["systemctl", "--user", "disable", "--now", unit],
-                check=False,
-                timeout=10,
-            )
+            if (unit_dir / unit).is_file():
+                subprocess.run(
+                    ["systemctl", "--user", "disable", "--now", unit],
+                    check=False,
+                    capture_output=True,
+                    timeout=10,
+                )
 
     def _remove_unit_files(self) -> None:
         """Stop active units and remove all gate unit files."""
