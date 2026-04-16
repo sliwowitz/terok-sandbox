@@ -57,6 +57,9 @@ _ENFORCE_PATH = Path("/sys/fs/selinux/enforce")
 _LIBSELINUX_SONAME = "libselinux.so.1"
 """Versioned SONAME of libselinux — stable across distro releases."""
 
+_POLICY_COMPILE_TOOLS = ("checkmodule", "semodule_package", "semodule")
+"""Executables :func:`install_policy` shells out to, in invocation order."""
+
 
 # ---------- Detection ----------
 
@@ -107,6 +110,19 @@ def is_libselinux_available() -> bool:
     return _load_libselinux() is not None
 
 
+def missing_policy_tools() -> list[str]:
+    """Return names of policy-compilation tools not found on ``PATH``.
+
+    The ``terok_socket`` policy is compiled from its ``.te`` source at
+    install time by :func:`install_policy`, which requires all three of
+    ``checkmodule``, ``semodule_package``, and ``semodule``.  An empty
+    list means ``install_policy()`` will not fail with ``SystemExit`` for
+    missing tools.  Names are returned in invocation order so callers
+    can surface the first one a user would hit.
+    """
+    return [tool for tool in _POLICY_COMPILE_TOOLS if not shutil.which(tool)]
+
+
 # ---------- Policy installation ----------
 
 
@@ -129,12 +145,12 @@ def install_policy() -> None:
     """
     import tempfile
 
-    for tool in ("checkmodule", "semodule_package", "semodule"):
-        if not shutil.which(tool):
-            raise SystemExit(
-                f"Required tool '{tool}' not found.\n"
-                f"Install: sudo dnf install selinux-policy-devel policycoreutils"
-            )
+    missing = missing_policy_tools()
+    if missing:
+        raise SystemExit(
+            f"Required tool '{missing[0]}' not found.\n"
+            f"Install: sudo dnf install selinux-policy-devel policycoreutils"
+        )
 
     te_path = policy_source_path()
     if not te_path.is_file():

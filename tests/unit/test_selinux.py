@@ -22,6 +22,7 @@ from terok_sandbox._util._selinux import (
     is_policy_installed,
     is_selinux_enabled,
     is_selinux_enforcing,
+    missing_policy_tools,
     policy_source_path,
     socket_selinux_context,
     uninstall_policy,
@@ -150,6 +151,21 @@ class TestIsLibselinuxAvailable:
         """Returns False when CDLL load raises OSError."""
         with unittest.mock.patch("ctypes.CDLL", side_effect=OSError("not found")):
             assert is_libselinux_available() is False
+
+
+class TestMissingPolicyTools:
+    """Verify policy-tool availability probe."""
+
+    def test_none_missing(self) -> None:
+        """Empty list when every tool is on PATH."""
+        with unittest.mock.patch("shutil.which", return_value="/usr/bin/any"):
+            assert missing_policy_tools() == []
+
+    def test_reports_absent_tools_in_order(self) -> None:
+        """Tools are listed in the order install_policy would call them."""
+        present = {"semodule": "/usr/sbin/semodule"}
+        with unittest.mock.patch("shutil.which", side_effect=present.get):
+            assert missing_policy_tools() == ["checkmodule", "semodule_package"]
 
 
 # ---------- Policy installation ----------

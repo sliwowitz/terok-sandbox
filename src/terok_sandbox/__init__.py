@@ -31,6 +31,7 @@ from ._util._selinux import (
     is_policy_installed as is_selinux_policy_installed,
     is_selinux_enabled,
     is_selinux_enforcing,
+    missing_policy_tools as missing_selinux_policy_tools,
     policy_source_path as selinux_policy_source,
     uninstall_policy as uninstall_selinux_policy,
 )
@@ -410,6 +411,7 @@ __all__ = [
     "is_selinux_enabled",
     "is_selinux_enforcing",
     "is_selinux_policy_installed",
+    "missing_selinux_policy_tools",
     "selinux_policy_source",
     "uninstall_selinux_policy",
     # Meta
