@@ -54,12 +54,6 @@ _POLICY_MODULE_NAME = "terok_socket"
 _ENFORCE_PATH = Path("/sys/fs/selinux/enforce")
 """Kernel sysfs node indicating SELinux enforcement state."""
 
-_LIBSELINUX_SONAME = "libselinux.so.1"
-"""Versioned SONAME of libselinux — stable across distro releases."""
-
-_POLICY_COMPILE_TOOLS = ("checkmodule", "semodule_package", "semodule")
-"""Executables :func:`install_policy` shells out to, in invocation order."""
-
 
 # ---------- Detection ----------
 
@@ -120,7 +114,7 @@ def missing_policy_tools() -> list[str]:
     missing tools.  Names are returned in invocation order so callers
     can surface the first one a user would hit.
     """
-    return [tool for tool in _POLICY_COMPILE_TOOLS if not shutil.which(tool)]
+    return [t for t in ("checkmodule", "semodule_package", "semodule") if not shutil.which(t)]
 
 
 # ---------- Policy installation ----------
@@ -190,7 +184,7 @@ def _load_libselinux() -> ctypes.CDLL | None:
     (non-SELinux hosts, or the rare SELinux host missing the base package).
     """
     try:
-        lib = ctypes.CDLL(_LIBSELINUX_SONAME, use_errno=True)
+        lib = ctypes.CDLL("libselinux.so.1", use_errno=True)
     except OSError:
         return None
     lib.setsockcreatecon.argtypes = [ctypes.c_char_p]
