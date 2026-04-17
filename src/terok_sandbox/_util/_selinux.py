@@ -123,6 +123,7 @@ def policy_source_path() -> Path:
     return Path(str(_resource_files("terok_sandbox.resources.selinux") / "terok_socket.te"))
 
 
+@lru_cache(maxsize=1)
 def install_script_path() -> Path:
     """Return the path to the bundled ``install_policy.sh`` installer.
 
@@ -133,6 +134,15 @@ def install_script_path() -> Path:
     before the privilege escalation.
     """
     return Path(str(_resource_files("terok_sandbox.resources.selinux") / "install_policy.sh"))
+
+
+def install_command() -> str:
+    """Return the full ``sudo bash <path>`` shell command for the installer.
+
+    Single source for the command string so the setup hint, the sickbay
+    check, and any future caller all render the same invocation.
+    """
+    return f"sudo bash {install_script_path()}"
 
 
 # ---------- Socket context labeling ----------
