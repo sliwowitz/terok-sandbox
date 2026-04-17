@@ -133,6 +133,12 @@ class TestIsPolicyInstalled:
         with unittest.mock.patch("subprocess.run", return_value=result):
             assert is_policy_installed() is False
 
+    def test_priority_prefixed_output(self) -> None:
+        """Handle ``semodule -l`` output with ``priority name type`` columns."""
+        result = unittest.mock.MagicMock(stdout="200 abrt pp\n200 terok_socket pp\n")
+        with unittest.mock.patch("subprocess.run", return_value=result):
+            assert is_policy_installed() is True
+
 
 # ---------- libselinux availability ----------
 

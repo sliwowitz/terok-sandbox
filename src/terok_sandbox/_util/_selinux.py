@@ -76,7 +76,13 @@ def is_selinux_enabled() -> bool:
 
 
 def is_policy_installed() -> bool:
-    """Return ``True`` if the ``terok_socket`` policy module is loaded."""
+    """Return ``True`` if the ``terok_socket`` policy module is loaded.
+
+    Tolerant of both ``semodule -l`` output variants: names-only
+    (``terok_socket``) and priority-prefixed (``200 terok_socket pp``)
+    — a whole-token match against all of stdout handles either without
+    matching substrings like ``terok_socket_extra``.
+    """
     try:
         result = subprocess.run(
             ["semodule", "-l"],
@@ -84,13 +90,9 @@ def is_policy_installed() -> bool:
             text=True,
             timeout=10,
         )
-        return any(
-            (tokens := line.split()) and tokens[0] == _POLICY_MODULE_NAME
-            for line in result.stdout.splitlines()
-            if line.strip()
-        )
     except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
         return False
+    return _POLICY_MODULE_NAME in result.stdout.split()
 
 
 def is_libselinux_available() -> bool:
