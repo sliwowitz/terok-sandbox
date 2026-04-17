@@ -469,7 +469,7 @@ async def _run_multi(
     """Run the app on a Unix socket and optionally a TCP port simultaneously."""
     import asyncio
 
-    from aiohttp.web_runner import AppRunner, SockSite, TCPSite, UnixSite
+    from aiohttp.web_runner import AppRunner, SockSite, TCPSite
 
     runner = AppRunner(app, access_log=_logger)
     await runner.setup()
@@ -502,7 +502,21 @@ async def _run_multi(
                 path.unlink()
             path.parent.mkdir(parents=True, exist_ok=True)
             _logger.info("Listening on %s", path)
-            await UnixSite(runner, str(path)).start()
+            import socket as _socket
+
+            from ..._util._selinux import socket_selinux_context
+
+            # Bind+listen synchronously inside the SELinux context — the
+            # socket-creation-context is process-scoped, so awaiting inside
+            # the context manager could leak the ``terok_socket_t`` label
+            # onto sockets created by unrelated coroutines running during
+            # the await.  Hand the pre-bound socket to ``SockSite`` outside
+            # the context.
+            with socket_selinux_context():
+                sock = _socket.socket(_socket.AF_UNIX, _socket.SOCK_STREAM)
+                sock.bind(str(path))
+                sock.listen(128)
+            await SockSite(runner, sock).start()
 
         if sd_tcp:
             _logger.info("Using systemd-inherited TCP socket")

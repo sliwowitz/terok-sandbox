@@ -11,18 +11,49 @@ orchestration layer constructs it from :func:`core.config` values.
 
 from __future__ import annotations
 
+import sys
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Literal, get_args
 
 from .paths import (
     config_root as _config_root,
     credentials_root as _credentials_root,
+    read_config_section,
     runtime_root as _runtime_root,
     state_root as _state_root,
 )
 
 CONTAINER_RUNTIME_DIR = "/run/terok"
 """Container-side mount point for the host runtime directory (socket mode)."""
+
+ServicesMode = Literal["tcp", "socket"]
+"""Allowed values for ``services.mode`` — runtime-checked via :func:`get_args`."""
+
+
+def _services_mode() -> ServicesMode:
+    """Return the configured service transport.
+
+    Reads the ``services.mode`` field from terok's layered ``config.yml``
+    via :func:`read_config_section` — the same mechanism already used for
+    the ``paths:`` section.  Keeping the setting in terok's config rather
+    than sandbox's dataclass preserves a single source of truth that all
+    terok packages can read without cross-package plumbing.
+
+    Unrecognised values (e.g. a typo like ``soket``) are loud — we emit
+    a stderr warning and fall back to ``tcp``, the default — so config
+    mistakes are visible rather than silently downgraded.
+    """
+    raw = read_config_section("services").get("mode", "tcp")
+    valid = get_args(ServicesMode)
+    if raw in valid:
+        return raw  # type: ignore[return-value]  # narrowed by membership
+    print(
+        f"warning: services.mode {raw!r} is not recognised "
+        f"(expected one of {', '.join(valid)}) — falling back to 'tcp'",
+        file=sys.stderr,
+    )
+    return "tcp"
 
 
 @dataclass(frozen=True)
@@ -70,7 +101,17 @@ class SandboxConfig:
     """DANGEROUS: when True, the egress firewall is completely disabled."""
 
     def __post_init__(self) -> None:
-        """Auto-resolve ``None`` ports via the shared port registry."""
+        """Auto-resolve ``None`` ports via the shared port registry.
+
+        Skipped entirely when ``services.mode`` is ``socket`` — in that
+        transport the gate, credential proxy, and SSH-agent proxy all
+        listen on Unix sockets, so TCP port claims would be wasted work
+        (and, historically, a source of spurious collision errors when
+        multiple ``SandboxConfig()`` constructions raced from TUI worker
+        threads).
+        """
+        if _services_mode() == "socket":
+            return
         if self.gate_port is None or self.proxy_port is None or self.ssh_agent_port is None:
             from .port_registry import resolve_service_ports
 

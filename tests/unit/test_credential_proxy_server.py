@@ -1030,16 +1030,19 @@ class TestRunMultiSiteSelection:
 
     @pytest.mark.asyncio
     async def test_daemon_mode_creates_own_listeners(self, tmp_path: Path) -> None:
-        """When _systemd_sockets returns (None, None), UnixSite and TCPSite are used."""
+        """When _systemd_sockets returns (None, None), SockSite (Unix) and TCPSite are used."""
         import asyncio
+        import socket
         from unittest.mock import patch
 
         app = self._make_app(tmp_path)
         used_sites: list[str] = []
 
-        class _TrackingUnixSite:
-            def __init__(self, runner, path, **kw):
-                used_sites.append(f"unix:{path}")
+        class _TrackingSockSite:
+            def __init__(self, runner, sock, **kw):
+                kind = "unix" if sock.family == socket.AF_UNIX else "sock"
+                used_sites.append(f"{kind}:{sock.getsockname()}")
+                sock.close()  # prevent leak — we don't actually serve here
 
             async def start(self):
                 pass
@@ -1056,7 +1059,7 @@ class TestRunMultiSiteSelection:
                 "terok_sandbox.credentials.proxy.server._systemd_sockets",
                 return_value=(None, None),
             ),
-            patch("aiohttp.web_runner.UnixSite", _TrackingUnixSite),
+            patch("aiohttp.web_runner.SockSite", _TrackingSockSite),
             patch("aiohttp.web_runner.TCPSite", _TrackingTCPSite),
         ):
             task = asyncio.create_task(
@@ -1067,5 +1070,5 @@ class TestRunMultiSiteSelection:
             with pytest.raises(asyncio.CancelledError):
                 await task
 
-        assert any("unix:" in s for s in used_sites)
+        assert any(s.startswith("unix:") for s in used_sites)
         assert any("tcp:127.0.0.1:18731" in s for s in used_sites)
