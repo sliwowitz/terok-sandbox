@@ -6,23 +6,43 @@ module terok_socket 1.0;
 # apply to their Unix sockets via ``setsockcreatecon()`` so that
 # rootless Podman containers (``container_t``) can connect.
 #
-# Without this policy, SELinux denies ``container_t → unconfined_t``
-# ``unix_stream_socket { connectto }`` — which is correct by design
-# (Dan Walsh, Podman #23972).  This module narrows the exception to
-# terok sockets only.
+# Two rules:
+#
+# 1. Any process that explicitly labels a socket as ``terok_socket_t``
+#    (via ``setsockcreatecon()``) must also be able to create, bind,
+#    and serve it.  Labeling is opt-in: a process has to go out of its
+#    way to request the label, so granting the full listening-socket
+#    permission set to the ``domain`` attribute is not a meaningful
+#    loosening — the security-relevant gate is ``connectto``, which
+#    stays restricted to ``container_t`` below.
+#
+# 2. ``container_t`` may ``connectto`` these sockets.  This is the
+#    narrow exception carved out of the default SELinux rule that
+#    blocks ``container_t → non-container-socket connectto``
+#    (Dan Walsh, Podman #23972).
 #
 # Written in checkmodule-native module syntax (no refpolicy ``m4``
-# macros), so the build path is ``checkmodule -M -m`` → ``semodule_package``
-# → ``semodule -i`` without an m4 preprocessing step.
+# macros), so the build path is ``checkmodule -M -m`` →
+# ``semodule_package`` → ``semodule -i``.
 #
-# Install:  sudo terok setup selinux
+# Install:  sudo bash install_policy.sh
 # Remove:   sudo semodule -r terok_socket
 
 require {
+    attribute domain;
     type container_t;
-    class unix_stream_socket connectto;
+    class unix_stream_socket {
+        create bind listen accept
+        read write getattr getopt setopt shutdown
+        connectto
+    };
 }
 
 type terok_socket_t;
+
+allow domain terok_socket_t:unix_stream_socket {
+    create bind listen accept
+    read write getattr getopt setopt shutdown
+};
 
 allow container_t terok_socket_t:unix_stream_socket connectto;
