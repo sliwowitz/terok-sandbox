@@ -49,11 +49,14 @@ def make_shield(task_dir: Path, cfg: SandboxConfig | None = None) -> Shield:
     Builds a :class:`ShieldConfig` with ``state_dir`` scoped to *task_dir*.
     """
     c = _cfg(cfg)
+    # Socket-mode transports emit no loopback traffic; filter ``None`` so
+    # the nftables rule generator only sees ports that actually exist.
+    loopback = tuple(p for p in (c.gate_port, c.proxy_port, c.ssh_agent_port) if p is not None)
     config = ShieldConfig(
         state_dir=task_dir / "shield",
         mode=ShieldMode.HOOK,
         default_profiles=c.shield_profiles,
-        loopback_ports=(c.gate_port, c.proxy_port, c.ssh_agent_port),
+        loopback_ports=loopback,
         audit_enabled=c.shield_audit,
         profiles_dir=c.shield_profiles_dir,
     )

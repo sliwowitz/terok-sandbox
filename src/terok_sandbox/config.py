@@ -17,12 +17,26 @@ from pathlib import Path
 from .paths import (
     config_root as _config_root,
     credentials_root as _credentials_root,
+    read_config_section,
     runtime_root as _runtime_root,
     state_root as _state_root,
 )
 
 CONTAINER_RUNTIME_DIR = "/run/terok"
 """Container-side mount point for the host runtime directory (socket mode)."""
+
+
+def _services_mode() -> str:
+    """Return the configured service transport (``tcp`` or ``socket``).
+
+    Reads the ``services.mode`` field from terok's layered ``config.yml``
+    via :func:`read_config_section` — the same mechanism already used for
+    the ``paths:`` section.  Keeping the setting in terok's config rather
+    than sandbox's dataclass preserves a single source of truth that all
+    terok packages can read without cross-package plumbing.
+    """
+    mode = read_config_section("services").get("mode", "tcp")
+    return mode if mode in ("tcp", "socket") else "tcp"
 
 
 @dataclass(frozen=True)
@@ -70,7 +84,17 @@ class SandboxConfig:
     """DANGEROUS: when True, the egress firewall is completely disabled."""
 
     def __post_init__(self) -> None:
-        """Auto-resolve ``None`` ports via the shared port registry."""
+        """Auto-resolve ``None`` ports via the shared port registry.
+
+        Skipped entirely when ``services.mode`` is ``socket`` — in that
+        transport the gate, credential proxy, and SSH-agent proxy all
+        listen on Unix sockets, so TCP port claims would be wasted work
+        (and, historically, a source of spurious collision errors when
+        multiple ``SandboxConfig()`` constructions raced from TUI worker
+        threads).
+        """
+        if _services_mode() == "socket":
+            return
         if self.gate_port is None or self.proxy_port is None or self.ssh_agent_port is None:
             from .port_registry import resolve_service_ports
 

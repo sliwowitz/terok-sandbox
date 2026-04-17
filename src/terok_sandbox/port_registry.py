@@ -22,6 +22,7 @@ import re
 import socket
 import stat
 import tempfile
+import threading
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -80,6 +81,12 @@ class PortRegistry:
         self._held: dict[str, int] = {}
         self._service_ports: ServicePorts | None = None
         self._dir_ensured = False
+        # Guards ``_held`` and ``_service_ports`` so concurrent callers
+        # (e.g. textual worker threads each constructing their own
+        # ``SandboxConfig``) cannot race between the "already held?"
+        # check and the subsequent claim/write.  Reentrant because
+        # ``resolve_service_ports`` calls ``claim`` under the lock.
+        self._lock = threading.RLock()
 
     # ------------------------------------------------------------------
     # Public API
@@ -105,6 +112,29 @@ class PortRegistry:
         restarts.  If a previously saved port cannot be reclaimed, the call
         fails with ``SystemExit`` so the user can resolve the conflict.
         """
+        with self._lock:
+            return self._resolve_service_ports_locked(
+                gate_pref,
+                proxy_pref,
+                ssh_pref,
+                gate_explicit=gate_explicit,
+                proxy_explicit=proxy_explicit,
+                ssh_explicit=ssh_explicit,
+                state_dir=state_dir,
+            )
+
+    def _resolve_service_ports_locked(
+        self,
+        gate_pref: int | None,
+        proxy_pref: int | None,
+        ssh_pref: int | None,
+        *,
+        gate_explicit: bool,
+        proxy_explicit: bool,
+        ssh_explicit: bool,
+        state_dir: Path | None,
+    ) -> ServicePorts:
+        """Lock-holder body of :meth:`resolve_service_ports`."""
         if self._service_ports is not None:
             return self._service_ports
 
@@ -216,6 +246,18 @@ class PortRegistry:
         :meth:`resolve_service_ports` during the preference resolution
         phase.
         """
+        with self._lock:
+            return self._claim_locked(service_key, preferred, explicit=explicit, trusted=trusted)
+
+    def _claim_locked(
+        self,
+        service_key: str,
+        preferred: int | None,
+        *,
+        explicit: bool,
+        trusted: bool,
+    ) -> int:
+        """Lock-holder body of :meth:`claim`."""
         if service_key in self._held:
             return self._held[service_key]
 
