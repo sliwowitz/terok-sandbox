@@ -65,8 +65,8 @@ class GateServerStatus:
     running: bool
     """Whether the server is currently reachable."""
 
-    port: int
-    """Configured port."""
+    port: int | None
+    """Configured TCP port, or ``None`` in socket-transport mode."""
 
     transport: str | None = None
     """Detected transport: ``"tcp"``, ``"socket"``, or ``None`` if not running."""
@@ -181,8 +181,8 @@ class GateServerManager:
         return self._cfg.gate_base_path
 
     @property
-    def server_port(self) -> int:
-        """Return the configured gate server port."""
+    def server_port(self) -> int | None:
+        """Return the configured gate server TCP port, or ``None`` in socket mode."""
         return self._cfg.gate_port
 
     # -- Systemd lifecycle ---------------------------------------------------

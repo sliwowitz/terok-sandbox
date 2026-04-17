@@ -24,6 +24,20 @@ from importlib.metadata import PackageNotFoundError, version as _meta_version
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from ._util._selinux import (
+    SELINUX_SOCKET_TYPE,
+    SelinuxCheckResult,
+    SelinuxStatus,
+    check_status as check_selinux_status,
+    install_command as selinux_install_command,
+    install_script_path as selinux_install_script,
+    is_libselinux_available,
+    is_policy_installed as is_selinux_policy_installed,
+    is_selinux_enabled,
+    is_selinux_enforcing,
+    missing_policy_tools as missing_selinux_policy_tools,
+    policy_source_path as selinux_policy_source,
+)
 from .commands import (
     COMMANDS as SANDBOX_COMMANDS,
     DOCTOR_COMMANDS,
@@ -146,8 +160,8 @@ def get_gate_base_path(cfg: SandboxConfig | None = None) -> Path:
     return GateServerManager(cfg).gate_base_path
 
 
-def get_gate_server_port(cfg: SandboxConfig | None = None) -> int:
-    """Return the configured gate server port."""
+def get_gate_server_port(cfg: SandboxConfig | None = None) -> int | None:
+    """Return the configured gate server TCP port, or ``None`` in socket mode."""
     return GateServerManager(cfg).server_port
 
 
@@ -393,6 +407,19 @@ __all__ = [
     "release_port",
     "reset_port_cache",
     "resolve_service_ports",
+    # SELinux
+    "SELINUX_SOCKET_TYPE",
+    "SelinuxCheckResult",
+    "SelinuxStatus",
+    "check_selinux_status",
+    "is_libselinux_available",
+    "is_selinux_enabled",
+    "is_selinux_enforcing",
+    "is_selinux_policy_installed",
+    "missing_selinux_policy_tools",
+    "selinux_install_command",
+    "selinux_install_script",
+    "selinux_policy_source",
     # Meta
     "__version__",
 ]

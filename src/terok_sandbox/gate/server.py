@@ -3,8 +3,9 @@
 
 """Standalone HTTP gate server wrapping ``git http-backend`` with token auth.
 
-This module has **zero terok imports**.  It is a self-contained security
-component equivalent to ``git daemon``: a separate process that serves repos.
+Launched as a separate process — equivalent to ``git daemon`` — so it
+can be supervised independently by systemd and its audit-log lines
+carry their own process identity.
 
 Token validation:
     Each request must carry HTTP Basic Auth with the token as the username
@@ -36,6 +37,8 @@ import threading
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 from socketserver import ThreadingMixIn
+
+from .._util._selinux import socket_selinux_context
 
 _logger = logging.getLogger("terok-gate")
 
@@ -484,10 +487,10 @@ def _create_unix_server(
     """Create an HTTPServer bound to a Unix domain socket.
 
     Stale socket files are removed if they are actual sockets (not regular
-    files that happen to share the path).  Helpers are inlined to preserve
-    this module's zero-external-import boundary.
+    files that happen to share the path).  The socket is labeled
+    ``terok_socket_t`` via :func:`socket_selinux_context` so that
+    rootless Podman containers (``container_t``) can ``connectto`` it.
     """
-    # Inline prepare_socket_path — remove stale socket, create parents.
     try:
         if not stat.S_ISSOCK(socket_path.lstat().st_mode):
             raise RuntimeError(f"Refusing to remove non-socket path: {socket_path}")
@@ -496,10 +499,11 @@ def _create_unix_server(
         pass
     socket_path.parent.mkdir(parents=True, exist_ok=True)
 
-    sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-    sock.bind(str(socket_path))
-    os.chmod(socket_path, 0o600)
-    sock.listen(5)
+    with socket_selinux_context():
+        sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        sock.bind(str(socket_path))
+        os.chmod(socket_path, 0o600)
+        sock.listen(5)
 
     server = _ThreadingHTTPServer(("localhost", 0), handler_class, bind_and_activate=False)
     server.socket.close()

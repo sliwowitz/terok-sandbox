@@ -445,11 +445,22 @@ async def start_ssh_agent_server(
         await _handle_connection(reader, writer, token_db, key_cache)
 
     if socket_path:
+        import socket as _socket
+
         from terok_sandbox._util._net import harden_socket, prepare_socket_path
+        from terok_sandbox._util._selinux import socket_selinux_context
 
         path = Path(socket_path)
         prepare_socket_path(path)
-        server = await asyncio.start_unix_server(_on_connect, path=str(path))
+        # Bind+listen synchronously inside the SELinux context — the
+        # socket-creation-context is process-scoped, so awaiting inside
+        # the context manager could leak ``terok_socket_t`` onto sockets
+        # created by unrelated coroutines running during the await.
+        with socket_selinux_context():
+            sock = _socket.socket(_socket.AF_UNIX, _socket.SOCK_STREAM)
+            sock.bind(str(path))
+            sock.listen(128)
+        server = await asyncio.start_unix_server(_on_connect, sock=sock)
         harden_socket(path)
         _logger.info("SSH agent proxy listening on %s", path)
     elif host is not None and port is not None:
