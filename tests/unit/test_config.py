@@ -27,6 +27,18 @@ class TestSocketModeSkipsPortResolution:
         assert cfg.proxy_port is None
         assert cfg.ssh_agent_port is None
 
+    def test_invalid_mode_warns_and_falls_back(self, capsys: unittest.mock._patch[str]) -> None:
+        """A typo in ``services.mode`` emits stderr warning and defaults to tcp."""
+        from terok_sandbox.config import _services_mode
+
+        with unittest.mock.patch(
+            "terok_sandbox.config.read_config_section", return_value={"mode": "soket"}
+        ):
+            assert _services_mode() == "tcp"
+        captured = capsys.readouterr()  # type: ignore[attr-defined]
+        assert "services.mode" in captured.err
+        assert "soket" in captured.err
+
     def test_tcp_mode_resolves_ports(self) -> None:
         """In tcp mode the registry is consulted and fields are populated."""
         from terok_sandbox.port_registry import ServicePorts

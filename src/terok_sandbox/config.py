@@ -11,6 +11,7 @@ orchestration layer constructs it from :func:`core.config` values.
 
 from __future__ import annotations
 
+import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -25,6 +26,8 @@ from .paths import (
 CONTAINER_RUNTIME_DIR = "/run/terok"
 """Container-side mount point for the host runtime directory (socket mode)."""
 
+_VALID_SERVICES_MODES = ("tcp", "socket")
+
 
 def _services_mode() -> str:
     """Return the configured service transport (``tcp`` or ``socket``).
@@ -34,9 +37,20 @@ def _services_mode() -> str:
     the ``paths:`` section.  Keeping the setting in terok's config rather
     than sandbox's dataclass preserves a single source of truth that all
     terok packages can read without cross-package plumbing.
+
+    Unrecognised values (e.g. a typo like ``soket``) are loud — we emit
+    a stderr warning and fall back to ``tcp``, the default — so config
+    mistakes are visible rather than silently downgraded.
     """
-    mode = read_config_section("services").get("mode", "tcp")
-    return mode if mode in ("tcp", "socket") else "tcp"
+    raw = read_config_section("services").get("mode", "tcp")
+    if raw in _VALID_SERVICES_MODES:
+        return raw
+    print(
+        f"warning: services.mode {raw!r} is not recognised "
+        f"(expected one of {', '.join(_VALID_SERVICES_MODES)}) — falling back to 'tcp'",
+        file=sys.stderr,
+    )
+    return "tcp"
 
 
 @dataclass(frozen=True)
