@@ -14,6 +14,7 @@ from __future__ import annotations
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Literal, get_args
 
 from .paths import (
     config_root as _config_root,
@@ -26,11 +27,12 @@ from .paths import (
 CONTAINER_RUNTIME_DIR = "/run/terok"
 """Container-side mount point for the host runtime directory (socket mode)."""
 
-_VALID_SERVICES_MODES = ("tcp", "socket")
+ServicesMode = Literal["tcp", "socket"]
+"""Allowed values for ``services.mode`` — runtime-checked via :func:`get_args`."""
 
 
-def _services_mode() -> str:
-    """Return the configured service transport (``tcp`` or ``socket``).
+def _services_mode() -> ServicesMode:
+    """Return the configured service transport.
 
     Reads the ``services.mode`` field from terok's layered ``config.yml``
     via :func:`read_config_section` — the same mechanism already used for
@@ -43,11 +45,12 @@ def _services_mode() -> str:
     mistakes are visible rather than silently downgraded.
     """
     raw = read_config_section("services").get("mode", "tcp")
-    if raw in _VALID_SERVICES_MODES:
-        return raw
+    valid = get_args(ServicesMode)
+    if raw in valid:
+        return raw  # type: ignore[return-value]  # narrowed by membership
     print(
         f"warning: services.mode {raw!r} is not recognised "
-        f"(expected one of {', '.join(_VALID_SERVICES_MODES)}) — falling back to 'tcp'",
+        f"(expected one of {', '.join(valid)}) — falling back to 'tcp'",
         file=sys.stderr,
     )
     return "tcp"
