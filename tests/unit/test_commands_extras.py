@@ -9,6 +9,8 @@ from __future__ import annotations
 
 import json
 import subprocess
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -420,38 +422,48 @@ def _make_check(
     )
 
 
+@contextmanager
+def _doctor_patches(
+    checks: list[DoctorCheck],
+    *,
+    subprocess_side_effect: object = None,
+) -> Iterator[MagicMock]:
+    """Patch ``sandbox_doctor_checks``, ``subprocess.run``, and VaultManager ports.
+
+    Yields the ``subprocess.run`` mock so tests can inspect calls or override
+    return_value.  By default the mock returns a successful CompletedProcess.
+    Pass *subprocess_side_effect* (e.g. ``FileNotFoundError``, a
+    ``TimeoutExpired`` instance) to simulate probe failures.
+    """
+    with (
+        patch("terok_sandbox.doctor.sandbox_doctor_checks", return_value=checks),
+        patch("subprocess.run") as run,
+        patch.object(VaultManager, "token_broker_port", new=1),
+        patch.object(VaultManager, "ssh_signer_port", new=2),
+    ):
+        if subprocess_side_effect is not None:
+            run.side_effect = subprocess_side_effect
+        else:
+            run.return_value = subprocess.CompletedProcess(
+                args=[], returncode=0, stdout="", stderr=""
+            )
+        yield run
+
+
 class TestHandleDoctor:
     """The standalone doctor runs each check and exits per worst severity."""
 
     def test_all_ok_exits_normally(self, capsys: pytest.CaptureFixture[str]) -> None:
         checks = [_make_check(label="A", severity="ok", detail="fine")]
-        with (
-            patch("terok_sandbox.doctor.sandbox_doctor_checks", return_value=checks),
-            patch("subprocess.run") as run,
-            patch.object(VaultManager, "token_broker_port", new=18700),
-            patch.object(VaultManager, "ssh_signer_port", new=18701),
-        ):
-            run.return_value = subprocess.CompletedProcess(
-                args=[], returncode=0, stdout="", stderr=""
-            )
-            # Should NOT raise
-            _handle_doctor()
+        with _doctor_patches(checks):
+            _handle_doctor()  # must not raise
         out = capsys.readouterr().out
         assert "A" in out and "ok" in out
 
     def test_warn_exits_1(self, capsys: pytest.CaptureFixture[str]) -> None:
         checks = [_make_check(label="W", severity="warn", detail="be careful")]
-        with (
-            patch("terok_sandbox.doctor.sandbox_doctor_checks", return_value=checks),
-            patch("subprocess.run") as run,
-            patch.object(VaultManager, "token_broker_port", new=1),
-            patch.object(VaultManager, "ssh_signer_port", new=2),
-        ):
-            run.return_value = subprocess.CompletedProcess(
-                args=[], returncode=0, stdout="", stderr=""
-            )
-            with pytest.raises(SystemExit) as exc:
-                _handle_doctor()
+        with _doctor_patches(checks), pytest.raises(SystemExit) as exc:
+            _handle_doctor()
         assert exc.value.code == 1
         assert "WARN" in capsys.readouterr().out
 
@@ -460,36 +472,19 @@ class TestHandleDoctor:
             _make_check(label="A", severity="ok"),
             _make_check(label="B", severity="error", detail="boom"),
         ]
-        with (
-            patch("terok_sandbox.doctor.sandbox_doctor_checks", return_value=checks),
-            patch("subprocess.run") as run,
-            patch.object(VaultManager, "token_broker_port", new=1),
-            patch.object(VaultManager, "ssh_signer_port", new=2),
-        ):
-            run.return_value = subprocess.CompletedProcess(
-                args=[], returncode=0, stdout="", stderr=""
-            )
-            with pytest.raises(SystemExit) as exc:
-                _handle_doctor()
+        with _doctor_patches(checks), pytest.raises(SystemExit) as exc:
+            _handle_doctor()
         assert exc.value.code == 2
-        out = capsys.readouterr().out
-        assert "ERROR" in out
+        assert "ERROR" in capsys.readouterr().out
 
-    def test_host_side_check_skips_subprocess(self, capsys: pytest.CaptureFixture[str]) -> None:
+    def test_host_side_check_skips_subprocess(self) -> None:
         """host_side=True checks call evaluate(0,'','') directly, no subprocess."""
         checks = [_make_check(label="H", severity="ok", host_side=True)]
-        with (
-            patch("terok_sandbox.doctor.sandbox_doctor_checks", return_value=checks),
-            patch("subprocess.run") as run,
-            patch.object(VaultManager, "token_broker_port", new=1),
-            patch.object(VaultManager, "ssh_signer_port", new=2),
-        ):
+        with _doctor_patches(checks) as run:
             _handle_doctor()
         run.assert_not_called()
 
-    def test_probe_unavailable_yields_unavailable_verdict(
-        self, capsys: pytest.CaptureFixture[str]
-    ) -> None:
+    def test_probe_unavailable_yields_unavailable_verdict(self) -> None:
         """FileNotFoundError from probe → evaluate is called with rc=1 and 'unavailable'."""
         captured: dict = {}
 
@@ -498,47 +493,30 @@ class TestHandleDoctor:
             return CheckVerdict(severity="warn", detail="probe missing")
 
         check = DoctorCheck(
-            category="net",
-            label="P",
-            probe_cmd=["nonexistent-binary"],
-            evaluate=evaluate,
+            category="net", label="P", probe_cmd=["nonexistent-binary"], evaluate=evaluate
         )
         with (
-            patch("terok_sandbox.doctor.sandbox_doctor_checks", return_value=[check]),
-            patch("subprocess.run", side_effect=FileNotFoundError),
-            patch.object(VaultManager, "token_broker_port", new=1),
-            patch.object(VaultManager, "ssh_signer_port", new=2),
+            _doctor_patches([check], subprocess_side_effect=FileNotFoundError),
+            pytest.raises(SystemExit),
         ):
-            with pytest.raises(SystemExit):
-                _handle_doctor()
+            _handle_doctor()
         assert captured["rc"] == 1
         assert "unavailable" in captured["err"]
 
     def test_probe_timeout_yields_unavailable_verdict(self) -> None:
+        """TimeoutExpired from probe → evaluate is called with rc=1 and 'unavailable'."""
         captured: dict = {}
 
         def evaluate(rc: int, out: str, err: str) -> CheckVerdict:
-            captured["rc"] = rc
+            captured["rc"], captured["err"] = rc, err
             return CheckVerdict(severity="warn", detail="t/o")
 
-        check = DoctorCheck(
-            category="net",
-            label="P",
-            probe_cmd=["sleep", "9"],
-            evaluate=evaluate,
-        )
-        with (
-            patch("terok_sandbox.doctor.sandbox_doctor_checks", return_value=[check]),
-            patch(
-                "subprocess.run",
-                side_effect=subprocess.TimeoutExpired("sleep", 5),
-            ),
-            patch.object(VaultManager, "token_broker_port", new=1),
-            patch.object(VaultManager, "ssh_signer_port", new=2),
-        ):
-            with pytest.raises(SystemExit):
-                _handle_doctor()
+        check = DoctorCheck(category="net", label="P", probe_cmd=["sleep", "9"], evaluate=evaluate)
+        timeout = subprocess.TimeoutExpired("sleep", 5)
+        with _doctor_patches([check], subprocess_side_effect=timeout), pytest.raises(SystemExit):
+            _handle_doctor()
         assert captured["rc"] == 1
+        assert "unavailable" in captured["err"]
 
     def test_check_without_probe_cmd_calls_evaluate_directly(self) -> None:
         """A check with no probe_cmd and host_side=False still gets evaluate(0,'','')."""
@@ -549,12 +527,7 @@ class TestHandleDoctor:
             return CheckVerdict(severity="ok", detail="")
 
         check = DoctorCheck(category="x", label="L", probe_cmd=[], evaluate=evaluate)
-        with (
-            patch("terok_sandbox.doctor.sandbox_doctor_checks", return_value=[check]),
-            patch("subprocess.run") as run,
-            patch.object(VaultManager, "token_broker_port", new=1),
-            patch.object(VaultManager, "ssh_signer_port", new=2),
-        ):
+        with _doctor_patches([check]) as run:
             _handle_doctor()
         run.assert_not_called()
         assert called == [(0, "", "")]

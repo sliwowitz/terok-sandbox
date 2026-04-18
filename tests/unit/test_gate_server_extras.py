@@ -363,6 +363,13 @@ class TestConfigureLogging:
 # ---------------------------------------------------------------------------
 
 
+def _make_token_file(tmp_path: Path) -> Path:
+    """Create an empty tokens.json under *tmp_path* and return its path."""
+    token_file = tmp_path / "tokens.json"
+    token_file.write_text("{}")
+    return token_file
+
+
 class TestMainCliDispatch:
     """main() validates flag combinations and dispatches to the right serve fn."""
 
@@ -372,8 +379,7 @@ class TestMainCliDispatch:
         gate_logger.handlers.clear()
 
     def test_inetd_dispatches_to_serve_inetd(self, tmp_path: Path) -> None:
-        token_file = tmp_path / "tokens.json"
-        token_file.write_text("{}")
+        token_file = _make_token_file(tmp_path)
         with (
             patch(
                 "sys.argv",
@@ -393,8 +399,7 @@ class TestMainCliDispatch:
         inetd.assert_called_once()
 
     def test_socket_path_dispatches_to_serve_foreground(self, tmp_path: Path) -> None:
-        token_file = tmp_path / "tokens.json"
-        token_file.write_text("{}")
+        token_file = _make_token_file(tmp_path)
         sock_path = tmp_path / "g.sock"
         with (
             patch(
@@ -423,8 +428,7 @@ class TestMainCliDispatch:
         assert kwargs["port"] == 9418
 
     def test_detach_dispatches_to_serve_daemon(self, tmp_path: Path) -> None:
-        token_file = tmp_path / "tokens.json"
-        token_file.write_text("{}")
+        token_file = _make_token_file(tmp_path)
         with (
             patch(
                 "sys.argv",
@@ -445,8 +449,7 @@ class TestMainCliDispatch:
 
     def test_no_mode_flag_errors_out(self, tmp_path: Path) -> None:
         """Without --inetd, --detach, or --socket-path, argparse errors."""
-        token_file = tmp_path / "tokens.json"
-        token_file.write_text("{}")
+        token_file = _make_token_file(tmp_path)
         with (
             patch(
                 "sys.argv",
@@ -458,8 +461,7 @@ class TestMainCliDispatch:
                 main()
 
     def test_mutually_exclusive_modes_error_out(self, tmp_path: Path) -> None:
-        token_file = tmp_path / "tokens.json"
-        token_file.write_text("{}")
+        token_file = _make_token_file(tmp_path)
         with (
             patch(
                 "sys.argv",
@@ -480,8 +482,7 @@ class TestMainCliDispatch:
 
     def test_admin_token_via_env_var(self, tmp_path: Path) -> None:
         """admin token can come from TEROK_GATE_ADMIN_TOKEN env var as fallback."""
-        token_file = tmp_path / "tokens.json"
-        token_file.write_text("{}")
+        token_file = _make_token_file(tmp_path)
         with (
             patch(
                 "sys.argv",

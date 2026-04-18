@@ -525,13 +525,17 @@ async def _run_multi(
             _logger.info("Listening on 127.0.0.1:%d", port)
             await TCPSite(runner, "127.0.0.1", port).start()
 
-        if (ssh_signer_port or ssh_signer_socket_path) and ssh_keys_file and db_path:
+        if (
+            (ssh_signer_port is not None or ssh_signer_socket_path is not None)
+            and ssh_keys_file is not None
+            and db_path is not None
+        ):
             from .ssh_signer import start_ssh_signer
 
             ssh_server = await start_ssh_signer(
                 db_path=db_path,
                 keys_file=ssh_keys_file,
-                host="127.0.0.1" if ssh_signer_port else None,
+                host="127.0.0.1" if ssh_signer_port is not None else None,
                 port=ssh_signer_port,
                 socket_path=ssh_signer_socket_path,
             )
@@ -591,10 +595,10 @@ def main() -> None:
     parser.add_argument("--log-file", default=None, help="Append log output to this file")
     args = parser.parse_args()
 
-    if args.ssh_signer_port and args.ssh_signer_socket_path:
+    if args.ssh_signer_port is not None and args.ssh_signer_socket_path is not None:
         parser.error("--ssh-signer-port and --ssh-signer-socket-path are mutually exclusive")
-    has_ssh_transport = args.ssh_signer_port or args.ssh_signer_socket_path
-    if bool(has_ssh_transport) != bool(args.ssh_keys_file):
+    has_ssh_transport = args.ssh_signer_port is not None or args.ssh_signer_socket_path is not None
+    if has_ssh_transport != (args.ssh_keys_file is not None):
         parser.error(
             "SSH signer transport (--ssh-signer-port/--ssh-signer-socket-path) "
             "and --ssh-keys-file must be provided together"
