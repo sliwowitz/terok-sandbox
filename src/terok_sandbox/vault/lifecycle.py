@@ -576,12 +576,16 @@ class VaultManager:
         """
         for unit in (_SOCKET_UNIT, _SERVICE_UNIT, _SOCKET_MODE_SERVICE):
             if self._is_unit_active(unit):
-                subprocess.run(
-                    ["systemctl", "--user", "stop", unit],
-                    check=False,
-                    capture_output=True,
-                    timeout=10,
-                )
+                try:
+                    subprocess.run(
+                        ["systemctl", "--user", "stop", unit],
+                        check=False,
+                        capture_output=True,
+                        timeout=10,
+                    )
+                except subprocess.TimeoutExpired:
+                    # A wedged unit must not block the PID-file path below.
+                    pass
         pidfile = self._cfg.vault_pid_path
         if not pidfile.is_file():
             return

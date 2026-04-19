@@ -389,6 +389,31 @@ class TestDaemon:
         assert calls[0].args[0][:3] == ["systemctl", "--user", "stop"]
         assert "terok-gate-socket.service" in calls[0].args[0]
 
+    def test_stop_daemon_wedged_systemctl_does_not_block_pidfile_cleanup(self) -> None:
+        """A hung ``systemctl stop`` must not skip the PID-file SIGTERM path."""
+        with tempfile.TemporaryDirectory() as td:
+            pid_file = write_pid_file(Path(td))
+            from terok_sandbox.config import SandboxConfig
+
+            mock_cfg = unittest.mock.MagicMock(spec=SandboxConfig)
+            mock_cfg.pid_file_path = pid_file
+
+            with (
+                unittest.mock.patch.object(GateServerManager, "_is_unit_active", return_value=True),
+                unittest.mock.patch.object(
+                    GateServerManager, "_is_managed_server", return_value=True
+                ),
+                unittest.mock.patch(
+                    "subprocess.run",
+                    side_effect=subprocess.TimeoutExpired(cmd="systemctl", timeout=10),
+                ),
+                unittest.mock.patch("os.kill") as mock_kill,
+            ):
+                GateServerManager(mock_cfg).stop_daemon()
+
+            mock_kill.assert_called_once_with(99999, unittest.mock.ANY)
+            assert not pid_file.exists()
+
 
 class TestIsDaemonRunning:
     """Tests for is_daemon_running."""
