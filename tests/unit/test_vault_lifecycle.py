@@ -252,6 +252,25 @@ class TestStopDaemon:
 
         assert not pidfile.exists()
 
+    def test_socket_mode_stops_systemd_unit(self, tmp_path: Path) -> None:
+        """stop_daemon stops the socket-mode service when systemd-activated (no PID file)."""
+        mgr = _make_mgr(tmp_path)
+        assert not mgr._cfg.vault_pid_path.exists()
+
+        def _active(_self: VaultManager, unit: str) -> bool:
+            return unit == "terok-vault-socket.service"
+
+        with (
+            patch.object(VaultManager, "_is_unit_active", _active),
+            patch("subprocess.run") as mock_run,
+        ):
+            mgr.stop_daemon()
+
+        calls = [c for c in mock_run.call_args_list if "stop" in c.args[0]]
+        assert len(calls) == 1
+        assert calls[0].args[0][:3] == ["systemctl", "--user", "stop"]
+        assert "terok-vault-socket.service" in calls[0].args[0]
+
 
 class TestIsDaemonRunning:
     """Verify is_daemon_running behaviour."""

@@ -368,6 +368,27 @@ class TestDaemon:
                 mock_kill.assert_called_once_with(99999, unittest.mock.ANY)
             assert not pid_file.exists()
 
+    def test_stop_daemon_socket_mode_stops_systemd_unit(self) -> None:
+        """In socket mode there is no PID file; ``stop_daemon`` still stops the active unit."""
+        from terok_sandbox.config import SandboxConfig
+
+        mock_cfg = unittest.mock.MagicMock(spec=SandboxConfig)
+        mock_cfg.pid_file_path = MISSING_PATH / "pid"
+
+        def _active(_self: GateServerManager, unit: str) -> bool:
+            return unit == "terok-gate-socket.service"
+
+        with (
+            unittest.mock.patch.object(GateServerManager, "_is_unit_active", _active),
+            unittest.mock.patch("subprocess.run") as mock_run,
+        ):
+            GateServerManager(mock_cfg).stop_daemon()
+
+        calls = [c for c in mock_run.call_args_list if "stop" in c.args[0]]
+        assert len(calls) == 1
+        assert calls[0].args[0][:3] == ["systemctl", "--user", "stop"]
+        assert "terok-gate-socket.service" in calls[0].args[0]
+
 
 class TestIsDaemonRunning:
     """Tests for is_daemon_running."""
