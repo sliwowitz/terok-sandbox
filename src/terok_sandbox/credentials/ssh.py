@@ -34,11 +34,12 @@ class SSHManager:
     """Generates SSH keypairs for a scope and stores them in the vault.
 
     Each scope may hold multiple keys (e.g. GitHub + GitLab), each with a
-    distinct fingerprint.  ``init`` is additive by default: re-running on an
-    already-provisioned scope returns the most recently registered key
-    without disturbing anything.  ``force=True`` rotates — unassigns every
-    existing key from the scope (cascade-deleting orphans) and installs a
-    fresh one.
+    distinct fingerprint.  ``init`` is **additive** by default: every call
+    generates a new keypair and assigns it alongside any existing keys.
+    ``force=True`` **rotates** — the new key is created and assigned
+    *before* the scope's previous assignments are revoked, so a mid-run
+    crash can leave stale keys (harmless, to be manually cleaned) but
+    never leaves the scope with no key at all.
     """
 
     def __init__(self, *, scope: str, db: CredentialDB) -> None:
@@ -56,24 +57,20 @@ class SSHManager:
         Args:
             key_type: ``"ed25519"`` (default) or ``"rsa"``.
             comment: Comment to embed in the public key.  Defaults to
-                ``tk-main:<scope>`` so the signer can promote the primary
-                workspace key to the front of the identity list.
-            force: When ``True``, rotate — unassign every currently
-                assigned key from the scope and generate a new one.
+                ``tk-main:<scope>`` for the first key, ``tk-side:<scope>:<n>``
+                for additional keys (so the signer's ``tk-main:`` promotion
+                still picks the primary deploy key).
+            force: When ``True``, rotate — drop every *other* key assigned
+                to the scope after the new one is stored and assigned.
 
         Returns:
             Metadata sufficient to display the key to the user or register
             it with a remote.  No filesystem paths.
         """
-        if force:
-            self._db.unassign_all_ssh_keys(self._scope)
-        else:
-            existing = self._db.list_ssh_keys_for_scope(self._scope)
-            if existing:
-                return self._result_from_row(existing[-1])
+        existing = self._db.list_ssh_keys_for_scope(self._scope)
+        effective_comment = comment or self._default_comment(existing)
 
-        comment = comment or f"tk-main:{self._scope}"
-        keypair = generate_keypair(key_type, comment=comment)
+        keypair = generate_keypair(key_type, comment=effective_comment)
         key_id = self._db.store_ssh_key(
             key_type=keypair.key_type,
             private_pem=keypair.private_pem,
@@ -82,6 +79,13 @@ class SSHManager:
             fingerprint=keypair.fingerprint,
         )
         self._db.assign_ssh_key(self._scope, key_id)
+
+        if force:
+            # New key is already durable — tear down the old assignments.
+            for row in existing:
+                if row.id != key_id:
+                    self._db.unassign_ssh_key(self._scope, row.id)
+
         return SSHInitResult(
             key_id=key_id,
             key_type=keypair.key_type,
@@ -90,26 +94,16 @@ class SSHManager:
             public_line=keypair.public_line,
         )
 
-    def _result_from_row(self, row) -> SSHInitResult:
-        """Render an :class:`SSHInitResult` from an existing DB row."""
-        records = self._db.load_ssh_keys_for_scope(self._scope)
-        record = next(r for r in records if r.id == row.id)
-        return SSHInitResult(
-            key_id=row.id,
-            key_type=row.key_type,
-            fingerprint=row.fingerprint,
-            comment=row.comment,
-            public_line=_public_line(record.key_type, record.public_blob, record.comment),
-        )
+    def _default_comment(self, existing) -> str:
+        """Pick a default comment based on whether the scope already has keys.
 
-
-def _public_line(key_type: str, public_blob: bytes, comment: str) -> str:
-    """Render the one-line OpenSSH public key form ``<type> <base64> <comment>``."""
-    import base64
-
-    algo = "ssh-ed25519" if key_type == "ed25519" else "ssh-rsa"
-    b64 = base64.b64encode(public_blob).decode("ascii")
-    return f"{algo} {b64} {comment}".rstrip()
+        The signer's ``tk-main:`` promotion heuristic expects exactly one
+        primary key per scope; additional keys use ``tk-side:`` so they
+        don't compete for the front of the identity list.
+        """
+        if existing:
+            return f"tk-side:{self._scope}:{len(existing) + 1}"
+        return f"tk-main:{self._scope}"
 
 
 __all__ = ["SSHInitResult", "SSHManager", "DEFAULT_RSA_BITS", "GeneratedKeypair"]

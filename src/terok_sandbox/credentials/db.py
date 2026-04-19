@@ -28,9 +28,42 @@ from __future__ import annotations
 
 import dataclasses
 import json
+import re
 import secrets
 import sqlite3
 from pathlib import Path
+
+# ── Scope-name guard ────────────────────────────────────────────────────────
+
+_SCOPE_NAME_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
+_MAX_SCOPE_LEN = 64
+"""Bound below the 108-byte AF_UNIX path limit once combined with
+``ssh-agent-local-<scope>.sock`` + ``runtime_dir``."""
+
+
+class InvalidScopeName(ValueError):
+    """Raised when a scope name would be unsafe as a filesystem path segment.
+
+    Scopes are embedded verbatim in per-scope Unix-socket paths
+    (``ssh-agent-local-<scope>.sock``), so unrestricted input could lead
+    to traversal (``../``) or oversized sockaddr strings.  Every write
+    path that persists a scope validates through this helper first, so
+    a malicious or buggy caller can't slip a hostile name past the CLI.
+    """
+
+
+def _require_safe_scope(scope: str) -> None:
+    """Reject scope names that would be unsafe as a filename fragment."""
+    if not isinstance(scope, str) or not scope:
+        raise InvalidScopeName("scope must be a non-empty string")
+    if len(scope) > _MAX_SCOPE_LEN:
+        raise InvalidScopeName(f"scope {scope!r} exceeds the {_MAX_SCOPE_LEN}-character limit")
+    if not _SCOPE_NAME_RE.fullmatch(scope):
+        raise InvalidScopeName(
+            f"invalid scope {scope!r}: must start with alphanumeric and match "
+            "[A-Za-z0-9][A-Za-z0-9._-]*"
+        )
+
 
 # ── Domain types ────────────────────────────────────────────────────────────
 
@@ -199,7 +232,13 @@ class CredentialDB:
         return SSHKeyRow(*row) if row else None
 
     def assign_ssh_key(self, scope: str, key_id: int) -> None:
-        """Grant *scope* access to *key_id* (idempotent)."""
+        """Grant *scope* access to *key_id* (idempotent).
+
+        Rejects unsafe scope names with :class:`InvalidScopeName` — the
+        value is later embedded in per-scope Unix-socket paths, so
+        traversal-like strings (``../``, ``/``) must not be persisted.
+        """
+        _require_safe_scope(scope)
         cur = self._conn.execute(
             "INSERT OR IGNORE INTO ssh_key_assignments (scope, key_id) VALUES (?, ?)",
             (scope, key_id),

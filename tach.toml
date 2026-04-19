@@ -53,13 +53,16 @@ path = "terok_sandbox.port_registry"
 layer = "foundation"
 depends_on = ["terok_sandbox.paths"]
 
-# Configuration dataclass — same-layer dep on paths + port_registry
+# Configuration dataclass — same-layer dep on paths + port_registry,
+# plus credentials.db for the scope-name guard reused by per-scope
+# socket paths.
 [[modules]]
 path = "terok_sandbox.config"
 layer = "foundation"
 depends_on = [
     "terok_sandbox.paths",
     "terok_sandbox.port_registry",
+    "terok_sandbox.credentials.db",
 ]
 
 # Health check protocol + sandbox-level diagnostics

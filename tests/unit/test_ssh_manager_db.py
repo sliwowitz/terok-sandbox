@@ -33,7 +33,7 @@ class TestInit:
         assert rows[0].id == result["key_id"]
 
     def test_default_comment_is_tk_main(self, db: CredentialDB) -> None:
-        """The default comment is ``tk-main:<scope>`` for signer promotion."""
+        """First key on a scope gets the ``tk-main:<scope>`` comment."""
         result = SSHManager(scope="myproj", db=db).init()
         assert result["comment"] == "tk-main:myproj"
 
@@ -42,15 +42,23 @@ class TestInit:
         result = SSHManager(scope="myproj", db=db).init(comment="custom")
         assert result["comment"] == "custom"
 
-    def test_idempotent_without_force(self, db: CredentialDB) -> None:
-        """Re-running init on a scope that already has a key is a no-op."""
+    def test_additive_without_force(self, db: CredentialDB) -> None:
+        """force=False is additive: each init adds a new key alongside existing ones."""
         first = SSHManager(scope="proj", db=db).init()
         second = SSHManager(scope="proj", db=db).init()
-        assert first["key_id"] == second["key_id"]
-        assert len(db.list_ssh_keys_for_scope("proj")) == 1
+        assert first["key_id"] != second["key_id"]
+        rows = db.list_ssh_keys_for_scope("proj")
+        assert {r.id for r in rows} == {first["key_id"], second["key_id"]}
 
-    def test_force_rotates(self, db: CredentialDB) -> None:
-        """force=True unassigns existing keys and provisions a fresh one."""
+    def test_second_key_gets_tk_side_comment(self, db: CredentialDB) -> None:
+        """Additional keys use ``tk-side:`` so only one ``tk-main:`` leads the agent."""
+        first = SSHManager(scope="proj", db=db).init()
+        assert first["comment"].startswith("tk-main:")
+        second = SSHManager(scope="proj", db=db).init()
+        assert second["comment"].startswith("tk-side:")
+
+    def test_force_rotates_after_new_key_assigned(self, db: CredentialDB) -> None:
+        """force=True assigns the new key *before* revoking the old ones."""
         first = SSHManager(scope="proj", db=db).init()
         second = SSHManager(scope="proj", db=db).init(force=True)
         assert first["key_id"] != second["key_id"]

@@ -89,20 +89,32 @@ class ScopeSocketReconciler:
             raise
 
     async def _reconcile(self) -> None:
-        """Bind missing sockets, close orphaned ones."""
+        """Bind missing sockets, close orphaned ones.
+
+        ``_last_version`` only advances when the full reconciliation step
+        converges on the DB's current state — a transient failure on one
+        scope leaves the counter unchanged so the next poll retries
+        instead of waiting for some unrelated DB write to bump the
+        version again.
+        """
         version, desired = self._snapshot()
         if version == self._last_version:
             return
-        self._last_version = version
 
         current = set(self._servers)
+        converged = True
         for scope in desired - current:
-            await self._bind_scope(scope)
+            if not await self._bind_scope(scope):
+                converged = False
         for scope in current - desired:
-            await self._unbind_scope(scope)
+            if not await self._unbind_scope(scope):
+                converged = False
 
-    async def _bind_scope(self, scope: str) -> None:
-        """Start a per-scope signer and record its server."""
+        if converged:
+            self._last_version = version
+
+    async def _bind_scope(self, scope: str) -> bool:
+        """Start a per-scope signer; return ``True`` on success."""
         path = self._socket_path(scope)
         try:
             server = await start_ssh_signer_local(
@@ -112,18 +124,25 @@ class ScopeSocketReconciler:
             )
         except Exception:
             _logger.exception("Failed to bind scope socket for %r", scope)
-            return
+            return False
         self._servers[scope] = server
+        return True
 
-    async def _unbind_scope(self, scope: str) -> None:
-        """Close the server for *scope* and remove its socket file."""
-        server = self._servers.pop(scope)
-        server.close()
+    async def _unbind_scope(self, scope: str) -> bool:
+        """Close *scope*'s server and unlink its socket; return ``True`` on success."""
+        server = self._servers.pop(scope, None)
+        if server is None:
+            return True
         try:
+            server.close()
             await server.wait_closed()
-        except Exception:  # noqa: BLE001
-            pass
+        except Exception:
+            _logger.exception("Failed to tear down scope socket for %r", scope)
+            # Put the server back so the next pass retries the teardown.
+            self._servers[scope] = server
+            return False
         self._socket_path(scope).unlink(missing_ok=True)
+        return True
 
     def _socket_path(self, scope: str) -> Path:
         """Return the canonical socket path for a scope."""

@@ -24,6 +24,7 @@ import base64
 import dataclasses
 import hashlib
 import os
+import re
 from pathlib import Path
 
 from cryptography.hazmat.primitives.asymmetric import ed25519, rsa
@@ -165,19 +166,32 @@ def import_ssh_keypair(
     )
 
 
+_PASSPHRASE_HINT = re.compile(r"(encrypted|password|passphrase)", re.IGNORECASE)
+
+
 def parse_openssh_keypair(
     priv_bytes: bytes,
     pub_bytes: bytes | None = None,
     *,
     comment_override: str | None = None,
 ) -> GeneratedKeypair:
-    """Parse raw OpenSSH bytes into the canonical :class:`GeneratedKeypair` form."""
+    """Parse raw OpenSSH bytes into the canonical :class:`GeneratedKeypair` form.
+
+    Passphrase-protected keys raise :class:`PasswordProtectedKeyError`.
+    Cryptography signals that condition with either ``TypeError`` ("Password
+    was not given but private key is encrypted" on older releases) or
+    ``ValueError`` (newer releases), depending on version — we catch both
+    and only translate when the message mentions encryption/password.
+    Malformed non-protected PEMs keep bubbling up as plain ``ValueError``.
+    """
     try:
         private_key = load_ssh_private_key(priv_bytes, password=None)
-    except TypeError as exc:
-        raise PasswordProtectedKeyError(
-            "private key is passphrase-protected; run `ssh-keygen -p -f <file>` to strip it"
-        ) from exc
+    except (TypeError, ValueError) as exc:
+        if isinstance(exc, TypeError) or _PASSPHRASE_HINT.search(str(exc)):
+            raise PasswordProtectedKeyError(
+                "private key is passphrase-protected; run `ssh-keygen -p -f <file>` to strip it"
+            ) from exc
+        raise
 
     key_type = _classify_key(private_key)
     private_pem = private_key.private_bytes(
