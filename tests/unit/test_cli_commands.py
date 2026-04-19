@@ -64,13 +64,13 @@ class TestCommandRegistry:
         names = {cmd.name for cmd in GATE_COMMANDS}
         assert {"start", "stop", "status"} <= names
 
-    def test_shield_has_setup_status(self) -> None:
+    def test_shield_has_install_hooks_and_status(self) -> None:
         names = {cmd.name for cmd in SHIELD_COMMANDS}
-        assert {"setup", "status"} <= names
+        assert {"install-hooks", "status"} <= names
 
     def test_ssh_has_import_and_remove(self) -> None:
         names = {cmd.name for cmd in SSH_COMMANDS}
-        assert {"import", "remove-key"} <= names
+        assert {"import", "remove"} <= names
 
 
 # ---------------------------------------------------------------------------
@@ -95,7 +95,7 @@ class TestCLIBasics:
     def test_shield_no_subcommand_shows_help(self) -> None:
         out, _, _ = _run_cli("shield")
         combined = out.lower()
-        assert "setup" in combined or "status" in combined
+        assert "install-hooks" in combined or "status" in combined
 
     def test_gate_no_subcommand_shows_help(self) -> None:
         out, _, _ = _run_cli("gate")

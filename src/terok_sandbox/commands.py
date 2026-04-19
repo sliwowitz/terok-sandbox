@@ -186,7 +186,7 @@ GATE_COMMANDS: tuple[CommandDef, ...] = (
 
 SHIELD_COMMANDS: tuple[CommandDef, ...] = (
     CommandDef(
-        name="setup",
+        name="install-hooks",
         help="Install OCI hooks for the shield firewall",
         handler=_handle_shield_setup,
         group="shield",
@@ -315,7 +315,7 @@ VAULT_COMMANDS: tuple[CommandDef, ...] = (
 def _build_key_rows(cfg: SandboxConfig) -> list[KeyRow]:
     """Load ssh-keys.json and resolve each entry into a displayable row.
 
-    Shared by ``list`` and ``remove-key`` so both present identical
+    Shared by ``list`` and ``remove`` so both present identical
     information.  Returns an empty list when no keys are registered.
     """
     import base64
@@ -481,7 +481,7 @@ def _handle_ssh_import(
     print(f"Registered key for scope '{sanitize_tty(scope)}': {sanitize_tty(str(priv_dst))}")
 
 
-def _handle_ssh_add_key(
+def _handle_ssh_add(
     *,
     scope: str,
     name: str | None = None,
@@ -757,7 +757,7 @@ def _prompt_file_action(*, delete_files: bool, keep_files: bool, yes: bool = Fal
     return answer in ("y", "yes")
 
 
-def _handle_ssh_remove_key(
+def _handle_ssh_remove(
     *,
     scope: str | None = None,
     name: str | None = None,
@@ -890,9 +890,9 @@ SSH_COMMANDS: tuple[CommandDef, ...] = (
         ),
     ),
     CommandDef(
-        name="add-key",
+        name="add",
         help="Generate a new SSH keypair for a credential scope",
-        handler=_handle_ssh_add_key,
+        handler=_handle_ssh_add,
         group="ssh",
         args=(
             ArgDef(name="scope", help="Credential scope to associate the key with"),
@@ -916,9 +916,9 @@ SSH_COMMANDS: tuple[CommandDef, ...] = (
         ),
     ),
     CommandDef(
-        name="remove-key",
+        name="remove",
         help="Remove SSH keys from the auth proxy's key store",
-        handler=_handle_ssh_remove_key,
+        handler=_handle_ssh_remove,
         group="ssh",
         args=(
             ArgDef(

@@ -160,8 +160,8 @@ def run_setup(*, root: bool = False, user: bool = False) -> None:
     if not root and not user:
         raise SystemExit(
             "Specify --root (system-wide, uses sudo) or --user (user-local).\n"
-            "  shield setup --root   # /etc/containers/oci/hooks.d\n"
-            "  shield setup --user   # ~/.local/share/containers/oci/hooks.d"
+            "  shield install-hooks --root   # /etc/containers/oci/hooks.d\n"
+            "  shield install-hooks --user   # ~/.local/share/containers/oci/hooks.d"
         )
     setup_hooks_direct(root=root)
 
