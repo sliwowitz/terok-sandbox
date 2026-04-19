@@ -511,6 +511,18 @@ def is_ssh_url(url: str | None) -> bool:
 # ---------- Private helpers ----------
 
 
+_SOCKET_BIND_WAIT_SECONDS = 4.0
+"""Client-side tolerance for the daemon's reconciler to bind a fresh scope socket.
+
+Roughly two of the reconciler's own poll ticks
+(:data:`terok_sandbox.vault.scope_sockets._POLL_INTERVAL_SECONDS`) — enough to
+absorb one full miss plus the next bind attempt.
+"""
+
+_SOCKET_POLL_INTERVAL = 0.1
+"""How often :func:`_wait_for_socket` rechecks while inside the grace window."""
+
+
 def _git_env_with_ssh(*, scope: str, use_personal_ssh: bool = False) -> dict:
     """Return a subprocess env for *scope*'s git operations.
 
@@ -561,12 +573,6 @@ def _git_env_with_ssh(*, scope: str, use_personal_ssh: bool = False) -> dict:
     return env
 
 
-_SOCKET_BIND_WAIT_SECONDS = 4.0
-"""Upper bound for the daemon's reconciler to bind a freshly-assigned scope."""
-
-_SOCKET_POLL_INTERVAL = 0.1
-
-
 def _wait_for_socket(path: Path, timeout: float) -> None:
     """Block up to *timeout* seconds for *path* to become a Unix socket."""
     deadline = time.monotonic() + timeout
@@ -577,26 +583,25 @@ def _wait_for_socket(path: Path, timeout: float) -> None:
 
 
 def _db_has_keys_for_scope(db_path: Path, scope: str) -> bool:
-    """Cheap existence check — a single SELECT on the assignments table.
+    """Return ``True`` iff *scope* owns at least one row in ``ssh_key_assignments``.
 
-    Opens its own sqlite connection so the caller doesn't need to
-    plumb a ``CredentialDB`` through the gate layer.  Returns ``False``
-    on any DB error so the caller falls straight through to
+    Opens the DB read-only via the ``file:?mode=ro`` URI so a missing DB
+    file raises cleanly instead of being auto-created as a side effect.
+    Any ``sqlite3.Error`` — missing file, missing table, locked DB —
+    collapses to ``False`` so the caller falls straight through to
     :class:`GateAuthNotConfigured` instead of hanging.
     """
     try:
-        conn = sqlite3.connect(str(db_path))
+        conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+        try:
+            row = conn.execute(
+                "SELECT 1 FROM ssh_key_assignments WHERE scope = ? LIMIT 1",
+                (scope,),
+            ).fetchone()
+        finally:
+            conn.close()
     except sqlite3.Error:
         return False
-    try:
-        row = conn.execute(
-            "SELECT 1 FROM ssh_key_assignments WHERE scope = ? LIMIT 1",
-            (scope,),
-        ).fetchone()
-    except sqlite3.Error:
-        return False
-    finally:
-        conn.close()
     return row is not None
 
 

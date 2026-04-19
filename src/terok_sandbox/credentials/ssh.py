@@ -111,10 +111,12 @@ class SSHManager:
         Returns:
             Metadata sufficient to display the key to the user or register
             it with a remote.  No filesystem paths.
+
+        Raises:
+            InvalidScopeName: if the scope fails validation.  Checked
+                *before* any key material is generated so a rejected
+                call leaves no orphaned row in ``ssh_keys``.
         """
-        # Validate the scope before we mint a private key — otherwise a
-        # malformed scope would leave an orphaned secret in ``ssh_keys``
-        # and still bump ``ssh_keys_version``.
         _require_safe_scope(self._scope)
 
         existing = self._db.list_ssh_keys_for_scope(self._scope)
