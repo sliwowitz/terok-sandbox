@@ -32,15 +32,14 @@ class SSHInitResult(TypedDict):
 
 
 class SSHManager:
-    """Generates SSH keypairs for a scope and stores them in the vault.
+    """Mints SSH keypairs for a scope and stores them in the vault.
 
     Each scope may hold multiple keys (e.g. GitHub + GitLab), each with a
     distinct fingerprint.  ``init`` is **additive** by default: every call
     generates a new keypair and assigns it alongside any existing keys.
-    ``force=True`` **rotates** — the new key is created and assigned
-    *before* the scope's previous assignments are revoked, so a mid-run
-    crash can leave stale keys (harmless, to be manually cleaned) but
-    never leaves the scope with no key at all.
+    ``force=True`` **rotates** atomically — the new key takes the scope
+    in a single transaction that also revokes every prior assignment, so
+    concurrent rotations converge on exactly one primary key.
 
     Two constructors for two ownership stories:
 
@@ -105,8 +104,8 @@ class SSHManager:
                 ``tk-main:<scope>`` for the first key, ``tk-side:<scope>:<n>``
                 for additional keys (so the signer's ``tk-main:`` promotion
                 still picks the primary deploy key).
-            force: When ``True``, rotate — drop every *other* key assigned
-                to the scope after the new one is stored and assigned.
+            force: When ``True``, rotate — the new key takes the scope in
+                a single transaction that drops every prior assignment.
 
         Returns:
             Metadata sufficient to display the key to the user or register
@@ -120,10 +119,9 @@ class SSHManager:
         _require_safe_scope(self._scope)
 
         existing = self._db.list_ssh_keys_for_scope(self._scope)
-        # A ``force=True`` rotation leaves exactly this key assigned, so the
-        # new key *is* the primary even when prior keys existed.  Empty
-        # comments are preserved as-is — only ``None`` falls back to the
-        # derived default.
+        # After a force-rotation the new key is the scope's only key, so it
+        # *is* the primary even when prior keys existed.  An explicit empty
+        # comment is honored; only ``None`` falls back to the derived default.
         primary = force or not existing
         effective_comment = (
             comment
@@ -140,8 +138,6 @@ class SSHManager:
             fingerprint=keypair.fingerprint,
         )
         if force:
-            # Atomic "assign new + revoke every other" so two concurrent
-            # force-rotations can't both leave their key assigned.
             self._db.replace_ssh_keys_for_scope(self._scope, keep_key_id=key_id)
         else:
             self._db.assign_ssh_key(self._scope, key_id)
