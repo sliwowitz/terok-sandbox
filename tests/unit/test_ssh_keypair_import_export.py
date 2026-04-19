@@ -15,6 +15,7 @@ from terok_sandbox.credentials.db import CredentialDB
 from terok_sandbox.credentials.ssh_keypair import (
     KeypairMismatchError,
     PasswordProtectedKeyError,
+    UnsafeCommentError,
     export_ssh_keypair,
     generate_keypair,
     import_ssh_keypair,
@@ -252,6 +253,48 @@ class TestExport:
         import_ssh_keypair(db, "proj", priv, pub_path=pub)
         with pytest.raises(ValueError, match="key_id .* not assigned"):
             export_ssh_keypair(db, "proj", tmp_path / "out", key_id=99999)
+
+
+class TestCommentGuard:
+    """Unsafe comments (control chars, newlines, oversize) are rejected at entry."""
+
+    @pytest.mark.parametrize(
+        "bad",
+        [
+            "line1\nline2",  # LF — breaks authorized_keys / public-line contract
+            "has\rCR",  # CR — same
+            "esc\x1b[31mred",  # ANSI escape — terminal spoofing
+            "null\x00byte",  # C0
+            "del\x7fchar",  # DEL
+        ],
+    )
+    def test_generate_rejects_control_chars(self, bad: str) -> None:
+        """Every C0 control char or DEL in a comment fails fast at generation time."""
+        with pytest.raises(UnsafeCommentError, match="disallowed control character"):
+            generate_keypair("ed25519", comment=bad)
+
+    def test_generate_rejects_oversize(self) -> None:
+        """A 201-char comment is over the 200-char bound."""
+        with pytest.raises(UnsafeCommentError, match="character limit"):
+            generate_keypair("ed25519", comment="x" * 201)
+
+    def test_generate_accepts_plain_ascii(self) -> None:
+        """Printable ASCII passes through untouched."""
+        kp = generate_keypair("ed25519", comment="tk-main:myproj")
+        assert kp.comment == "tk-main:myproj"
+
+    def test_import_rejects_poisoned_pub_file_comment(
+        self, tmp_path: Path, db: CredentialDB
+    ) -> None:
+        """A ``.pub`` file whose comment smuggles an ANSI escape is rejected."""
+        kp = generate_keypair("ed25519", comment="clean")
+        priv = tmp_path / "id"
+        pub = tmp_path / "id.pub"
+        priv.write_bytes(kp.private_pem)
+        # Replace the clean comment with a malicious one in the .pub file.
+        pub.write_text(kp.public_line.rsplit(" ", 1)[0] + " bad\x1b[31m\n")
+        with pytest.raises(UnsafeCommentError):
+            import_ssh_keypair(db, "proj", priv, pub_path=pub)
 
 
 class TestPublicLine:
