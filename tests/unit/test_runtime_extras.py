@@ -189,6 +189,84 @@ class TestIsContainerRunning:
         assert is_container_running("c") is False
 
 
+class TestImageExists:
+    """``podman image exists`` exit-code translation."""
+
+    @patch("terok_sandbox.runtime.subprocess.run")
+    def test_present(self, mock_run) -> None:
+        from terok_sandbox.runtime import image_exists
+
+        mock_run.return_value = subprocess.CompletedProcess(args=[], returncode=0)
+        assert image_exists("terok-l1-cli:test") is True
+
+    @patch("terok_sandbox.runtime.subprocess.run")
+    def test_absent(self, mock_run) -> None:
+        from terok_sandbox.runtime import image_exists
+
+        mock_run.return_value = subprocess.CompletedProcess(args=[], returncode=1)
+        assert image_exists("missing:tag") is False
+
+    @patch("terok_sandbox.runtime.subprocess.run", side_effect=FileNotFoundError)
+    def test_no_podman_is_false(self, _run) -> None:
+        from terok_sandbox.runtime import image_exists
+
+        assert image_exists("any:tag") is False
+
+
+class TestImageLabels:
+    """Parse the ``Config.Labels`` dict from ``podman inspect``."""
+
+    @patch("terok_sandbox.runtime.subprocess.run")
+    def test_returns_labels_dict(self, mock_run) -> None:
+        from terok_sandbox.runtime import image_labels
+
+        mock_run.return_value = subprocess.CompletedProcess(
+            args=[],
+            returncode=0,
+            stdout='{"ai.terok.agents": "claude,codex", "build": "v1"}',
+            stderr="",
+        )
+        assert image_labels("terok-l1-cli:test") == {
+            "ai.terok.agents": "claude,codex",
+            "build": "v1",
+        }
+
+    @patch("terok_sandbox.runtime.subprocess.run")
+    def test_null_labels_returns_empty(self, mock_run) -> None:
+        """Podman emits ``null`` when the image has no labels set."""
+        from terok_sandbox.runtime import image_labels
+
+        mock_run.return_value = subprocess.CompletedProcess(
+            args=[], returncode=0, stdout="null", stderr=""
+        )
+        assert image_labels("terok-l1-cli:test") == {}
+
+    @patch("terok_sandbox.runtime.subprocess.run", side_effect=FileNotFoundError)
+    def test_no_podman_returns_empty(self, _run) -> None:
+        from terok_sandbox.runtime import image_labels
+
+        assert image_labels("any:tag") == {}
+
+    @patch(
+        "terok_sandbox.runtime.subprocess.run",
+        side_effect=subprocess.CalledProcessError(1, ["podman"]),
+    )
+    def test_missing_image_returns_empty(self, _run) -> None:
+        from terok_sandbox.runtime import image_labels
+
+        assert image_labels("missing:tag") == {}
+
+    @patch("terok_sandbox.runtime.subprocess.run")
+    def test_unparseable_output_returns_empty(self, mock_run) -> None:
+        """Garbled output from podman does not leak as a JSONDecodeError."""
+        from terok_sandbox.runtime import image_labels
+
+        mock_run.return_value = subprocess.CompletedProcess(
+            args=[], returncode=0, stdout="not-json", stderr=""
+        )
+        assert image_labels("any:tag") == {}
+
+
 # ---------------------------------------------------------------------------
 # stop_task_containers
 # ---------------------------------------------------------------------------

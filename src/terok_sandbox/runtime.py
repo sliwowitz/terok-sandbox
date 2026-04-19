@@ -180,6 +180,56 @@ def is_container_running(cname: str) -> bool:
     return out.lower() == "true"
 
 
+def image_exists(tag: str) -> bool:
+    """Return ``True`` when a container image with *tag* is present locally.
+
+    Uses ``podman image exists`` (exit 0 = present).  Returns ``False`` when
+    podman is not on PATH — callers that need to distinguish "image missing"
+    from "podman missing" should check executable availability themselves.
+    """
+    try:
+        result = subprocess.run(
+            ["podman", "image", "exists", tag],
+            capture_output=True,
+            timeout=10,
+        )
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        return False
+    return result.returncode == 0
+
+
+def image_labels(tag: str) -> dict[str, str]:
+    """Return the OCI ``Config.Labels`` of *tag* as a string dict.
+
+    Empty dict when the image is absent, has no labels, or podman is
+    unavailable.  Labels are the natural vocabulary for cross-cutting
+    image metadata (agent taxonomy, build-context hash, provenance) —
+    :func:`get_container_state` and friends cover container state, this
+    covers image state.
+    """
+    try:
+        result = subprocess.run(
+            ["podman", "inspect", "--format", "{{json .Config.Labels}}", tag],
+            capture_output=True,
+            text=True,
+            check=True,
+            timeout=10,
+        )
+    except (FileNotFoundError, subprocess.CalledProcessError, subprocess.TimeoutExpired):
+        return {}
+
+    import json as _json
+
+    try:
+        parsed = _json.loads(result.stdout) or {}
+    except _json.JSONDecodeError:
+        return {}
+    # podman sometimes emits ``null`` when Labels is unset
+    if not isinstance(parsed, dict):
+        return {}
+    return {str(k): str(v) for k, v in parsed.items()}
+
+
 def get_container_rw_size(cname: str) -> int | None:
     """Return the writable-layer size in bytes for *cname*, or ``None``.
 
