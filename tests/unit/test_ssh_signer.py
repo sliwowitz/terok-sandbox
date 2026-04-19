@@ -185,6 +185,278 @@ class TestDecodeRecord:
             _decode_record(rec)
 
 
+class TestResolveScopeFromToken:
+    """Verify the container-facing handshake branches."""
+
+    @pytest.mark.asyncio
+    async def test_missing_handshake_returns_none(self) -> None:
+        """A stream with no handshake bytes returns None (the warning log fires)."""
+        from terok_sandbox.vault.ssh_signer import _resolve_scope_from_token
+
+        reader = asyncio.StreamReader()
+        reader.feed_eof()
+        writer = _FakeWriter()
+        token_db = object()  # unused on this branch
+        assert await _resolve_scope_from_token(reader, writer, token_db) is None
+
+
+class _FakeWriter:
+    """Stub writer for ``writer.get_extra_info('peername')`` and nothing else."""
+
+    def get_extra_info(self, _key: str) -> str:
+        return "test-peer"
+
+
+class TestServeAgentSessionErrors:
+    """Verify ``_serve_agent_session`` refuses malformed sign requests."""
+
+    @pytest.mark.asyncio
+    async def test_malformed_sign_request_returns_failure(self, tmp_path: Path) -> None:
+        """A sign payload shorter than the declared strings triggers SSH_AGENT_FAILURE."""
+        from terok_sandbox.vault.ssh_signer import (
+            SSH_AGENT_FAILURE,
+            SSH_AGENTC_SIGN_REQUEST,
+            _DBKeyCache,
+            _serve_agent_session,
+        )
+
+        db_path = tmp_path / "vault.db"
+        db = CredentialDB(db_path)
+        _seed_key(db, "proj")
+        cache = _DBKeyCache(db)
+
+        # Build a sign request whose payload is pure garbage — _unpack_string raises.
+        payload = b"\x00\x00\x00\x7fnot-a-valid-blob"  # length 127 with only 16 bytes following
+        msg = bytes([SSH_AGENTC_SIGN_REQUEST]) + payload
+        reader = asyncio.StreamReader()
+        reader.feed_data(struct.pack(">I", len(msg)) + msg)
+        reader.feed_eof()
+
+        outputs: list[bytes] = []
+
+        class _CapturingWriter(_FakeWriter):
+            def write(self, data: bytes) -> None:
+                outputs.append(data)
+
+            async def drain(self) -> None:
+                pass
+
+        writer = _CapturingWriter()
+        await _serve_agent_session(reader, writer, "proj", cache)
+        db.close()
+
+        # Parse back the response: 4-byte length + 1-byte msg_type.
+        assert outputs, "server wrote nothing"
+        combined = b"".join(outputs)
+        (body_len,) = struct.unpack(">I", combined[:4])
+        body = combined[4 : 4 + body_len]
+        assert body[0] == SSH_AGENT_FAILURE
+
+
+class TestConnectionHandlerCleanup:
+    """``_handle_*_connection`` swallows session errors and close errors."""
+
+    @pytest.mark.asyncio
+    async def test_local_handler_swallows_session_error(self, tmp_path: Path) -> None:
+        """A session crash is logged and the writer is still closed."""
+        import unittest.mock as mock
+
+        from terok_sandbox.vault import ssh_signer as sig
+
+        reader = asyncio.StreamReader()
+        reader.feed_eof()
+        writer = mock.MagicMock()
+        writer.wait_closed = mock.AsyncMock()
+        with mock.patch.object(
+            sig, "_serve_agent_session", side_effect=RuntimeError("session boom")
+        ):
+            await sig._handle_local_connection(reader, writer, "proj", key_cache=mock.MagicMock())
+        writer.close.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_local_handler_swallows_wait_closed_error(self, tmp_path: Path) -> None:
+        """A failure in ``writer.wait_closed()`` during cleanup is swallowed."""
+        import unittest.mock as mock
+
+        from terok_sandbox.vault import ssh_signer as sig
+
+        reader = asyncio.StreamReader()
+        reader.feed_eof()
+        writer = mock.MagicMock()
+        writer.wait_closed = mock.AsyncMock(side_effect=OSError("close boom"))
+        with mock.patch.object(sig, "_serve_agent_session", new=mock.AsyncMock()):
+            await sig._handle_local_connection(reader, writer, "proj", key_cache=mock.MagicMock())
+        writer.close.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_container_handler_swallows_session_error(self, tmp_path: Path) -> None:
+        """The container path also logs+recovers when the session raises."""
+        import unittest.mock as mock
+
+        from terok_sandbox.vault import ssh_signer as sig
+
+        reader = asyncio.StreamReader()
+        reader.feed_eof()
+        writer = mock.MagicMock()
+        writer.wait_closed = mock.AsyncMock()
+        with (
+            mock.patch.object(sig, "_resolve_scope_from_token", return_value="proj"),
+            mock.patch.object(sig, "_serve_agent_session", side_effect=RuntimeError("boom")),
+        ):
+            await sig._handle_container_connection(
+                reader, writer, token_db=mock.MagicMock(), key_cache=mock.MagicMock()
+            )
+        writer.close.assert_called_once()
+
+
+class TestServeAgentSessionMissingFlags:
+    """Verify the payload-too-short-for-flags branch returns SSH_AGENT_FAILURE."""
+
+    @pytest.mark.asyncio
+    async def test_missing_flags_field_returns_failure(self, tmp_path: Path) -> None:
+        """A sign request with two strings but no trailing flags field is malformed."""
+        from terok_sandbox.vault.ssh_signer import (
+            SSH_AGENT_FAILURE,
+            SSH_AGENTC_SIGN_REQUEST,
+            _DBKeyCache,
+            _serve_agent_session,
+        )
+
+        db_path = tmp_path / "vault.db"
+        db = CredentialDB(db_path)
+        _seed_key(db, "proj")
+        cache = _DBKeyCache(db)
+
+        # Two empty strings (blob + data), then 0 bytes where flags should be.
+        payload = _pack_string(b"") + _pack_string(b"")
+        msg = bytes([SSH_AGENTC_SIGN_REQUEST]) + payload
+        reader = asyncio.StreamReader()
+        reader.feed_data(struct.pack(">I", len(msg)) + msg)
+        reader.feed_eof()
+
+        outputs: list[bytes] = []
+
+        class _CapturingWriter(_FakeWriter):
+            def write(self, data: bytes) -> None:
+                outputs.append(data)
+
+            async def drain(self) -> None:
+                pass
+
+        await _serve_agent_session(reader, _CapturingWriter(), "proj", cache)
+        db.close()
+
+        combined = b"".join(outputs)
+        (body_len,) = struct.unpack(">I", combined[:4])
+        assert combined[4] == SSH_AGENT_FAILURE
+
+
+class TestReadMsg:
+    """Verify ``_read_msg`` enforces message-length bounds."""
+
+    @pytest.mark.asyncio
+    async def test_zero_length_rejected(self) -> None:
+        """A length-prefix of zero can't contain even a message-type byte."""
+        from terok_sandbox.vault.ssh_signer import _read_msg
+
+        reader = asyncio.StreamReader()
+        reader.feed_data(struct.pack(">I", 0))
+        reader.feed_eof()
+        with pytest.raises(ValueError, match="Invalid message length"):
+            await _read_msg(reader)
+
+    @pytest.mark.asyncio
+    async def test_oversized_length_rejected(self) -> None:
+        """A 1 MiB message exceeds the 256 KiB cap."""
+        from terok_sandbox.vault.ssh_signer import _read_msg
+
+        reader = asyncio.StreamReader()
+        reader.feed_data(struct.pack(">I", 1024 * 1024))
+        reader.feed_eof()
+        with pytest.raises(ValueError, match="Invalid message length"):
+            await _read_msg(reader)
+
+
+class TestReadHandshake:
+    """Verify ``_read_handshake`` token-read edge cases."""
+
+    @pytest.mark.asyncio
+    async def test_short_stream_returns_none(self) -> None:
+        """A stream that EOFs before the 4-byte length prefix returns None."""
+        from terok_sandbox.vault.ssh_signer import _read_handshake
+
+        reader = asyncio.StreamReader()
+        reader.feed_data(b"\x00\x00")  # only 2 of 4 bytes
+        reader.feed_eof()
+        assert await _read_handshake(reader) is None
+
+    @pytest.mark.asyncio
+    async def test_zero_length_prefix_returns_none(self) -> None:
+        """A token of length 0 is not a legitimate value."""
+        from terok_sandbox.vault.ssh_signer import _read_handshake
+
+        reader = asyncio.StreamReader()
+        reader.feed_data(struct.pack(">I", 0))
+        reader.feed_eof()
+        assert await _read_handshake(reader) is None
+
+    @pytest.mark.asyncio
+    async def test_oversized_length_prefix_returns_none(self) -> None:
+        """A length prefix beyond 1024 bytes is rejected without reading further."""
+        from terok_sandbox.vault.ssh_signer import _read_handshake
+
+        reader = asyncio.StreamReader()
+        reader.feed_data(struct.pack(">I", 2048))
+        reader.feed_eof()
+        assert await _read_handshake(reader) is None
+
+    @pytest.mark.asyncio
+    async def test_token_body_truncated_returns_none(self) -> None:
+        """Declared length > bytes available in stream → None (IncompleteReadError path)."""
+        from terok_sandbox.vault.ssh_signer import _read_handshake
+
+        reader = asyncio.StreamReader()
+        reader.feed_data(struct.pack(">I", 20) + b"short")
+        reader.feed_eof()
+        assert await _read_handshake(reader) is None
+
+
+class TestKeyCacheErrorRecovery:
+    """Verify ``_DBKeyCache`` gracefully skips un-decodable rows."""
+
+    def test_undecodable_record_is_logged_and_skipped(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """One corrupt key in a scope doesn't poison the others."""
+        import logging
+
+        from terok_sandbox.vault.ssh_signer import _DBKeyCache
+
+        db_path = tmp_path / "vault.db"
+        db = CredentialDB(db_path)
+        # First key: valid.
+        good_blob = _seed_key(db, "proj", comment="good")
+        # Second key: corrupt PEM but valid blob/fingerprint metadata.
+        kp = generate_keypair("ed25519", comment="sibling")
+        bad_id = db.store_ssh_key(
+            key_type="ed25519",
+            private_pem=b"GARBAGE",  # cryptography will reject this
+            public_blob=kp.public_blob,
+            comment="sibling",
+            fingerprint="f" * 64,
+        )
+        db.assign_ssh_key("proj", bad_id)
+
+        caplog.set_level(logging.ERROR, logger="terok-ssh-agent")
+        keys = _DBKeyCache(db).get("proj")
+        db.close()
+
+        # Only the valid one survives.
+        assert len(keys) == 1
+        assert keys[0][1] == good_blob
+        assert any("Failed to decode" in rec.message for rec in caplog.records)
+
+
 class TestDBKeyCache:
     """Verify the version-counter cache behaviour."""
 

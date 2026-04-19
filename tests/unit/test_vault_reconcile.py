@@ -148,3 +148,65 @@ class TestReconciler:
             db_path=str(tmp_path / "unused.db"), runtime_dir=runtime_dir
         )
         assert await reconciler._unbind_scope("ghost") is True
+
+    async def test_unbind_close_failure_keeps_scope_tracked(self, tmp_path: Path) -> None:
+        """A ``server.close`` error leaves the scope in ``_servers`` for retry."""
+        import unittest.mock as mock
+
+        runtime_dir = tmp_path / "runtime"
+        runtime_dir.mkdir()
+        reconciler = ScopeSocketReconciler(
+            db_path=str(tmp_path / "unused.db"), runtime_dir=runtime_dir
+        )
+        bad_server = mock.MagicMock()
+        bad_server.close.side_effect = RuntimeError("close boom")
+        reconciler._servers["proj"] = bad_server
+
+        assert await reconciler._unbind_scope("proj") is False
+        assert "proj" in reconciler._servers  # still tracked — retried next tick
+
+    async def test_unbind_unlink_failure_keeps_scope_tracked(self, tmp_path: Path) -> None:
+        """An ``unlink`` OSError leaves the scope tracked so the next pass retries."""
+        import unittest.mock as mock
+
+        runtime_dir = tmp_path / "runtime"
+        runtime_dir.mkdir()
+        reconciler = ScopeSocketReconciler(
+            db_path=str(tmp_path / "unused.db"), runtime_dir=runtime_dir
+        )
+        server = mock.AsyncMock()
+        server.close = mock.MagicMock()
+        server.wait_closed = mock.AsyncMock()
+        reconciler._servers["proj"] = server
+
+        def _boom(*_a, **_kw):
+            raise OSError("unlink boom")
+
+        with mock.patch("pathlib.Path.unlink", _boom):
+            assert await reconciler._unbind_scope("proj") is False
+        assert "proj" in reconciler._servers
+
+    async def test_reconcile_unbind_failure_keeps_version_pinned(self, tmp_path: Path) -> None:
+        """One failing unbind in a pass stops ``_last_version`` from advancing."""
+        import unittest.mock as mock
+
+        db_path = tmp_path / "vault.db"
+        db = CredentialDB(db_path)
+        key_id = _seed(db, "proj")
+        runtime_dir = tmp_path / "runtime"
+        reconciler = ScopeSocketReconciler(db_path=str(db_path), runtime_dir=runtime_dir)
+        try:
+            await reconciler.start()
+            # Force the next unbind to fail.
+            reconciler._servers["proj"] = mock.MagicMock(
+                close=mock.MagicMock(side_effect=RuntimeError("boom"))
+            )
+            db.unassign_ssh_key("proj", key_id)
+            version_before = reconciler._last_version
+            await reconciler._reconcile()
+            assert reconciler._last_version == version_before  # did not advance
+        finally:
+            db.close()
+            # Clear the poisoned server so stop() doesn't try to close it again.
+            reconciler._servers.clear()
+            await reconciler.stop()
