@@ -81,12 +81,21 @@ class GeneratedKeypair:
 
 @dataclasses.dataclass(frozen=True, slots=True)
 class ImportResult:
-    """Outcome of importing an OpenSSH keypair into the DB."""
+    """Outcome of importing an OpenSSH keypair into the DB.
+
+    ``already_present`` reflects whether the *key* (by fingerprint) was
+    already in the ``ssh_keys`` table.  ``scope_was_assigned`` reflects
+    whether the *scope* already owned a link to that key before this
+    call.  The two combine into four honest call outcomes: minted +
+    linked, minted + re-linked (can't happen), re-used + linked (the
+    common "multi-scope share" path), and re-used + no-op.
+    """
 
     key_id: int
     fingerprint: str
     comment: str
     already_present: bool
+    scope_was_assigned: bool
 
 
 @dataclasses.dataclass(frozen=True, slots=True)
@@ -195,7 +204,12 @@ def import_ssh_keypair(
     pub_bytes = pub_path.read_bytes() if pub_path else None
     parsed = parse_openssh_keypair(priv_bytes, pub_bytes, comment_override=comment)
 
-    already = db.get_ssh_key_by_fingerprint(parsed.fingerprint) is not None
+    existing_row = db.get_ssh_key_by_fingerprint(parsed.fingerprint)
+    already = existing_row is not None
+    scope_was_assigned = already and any(
+        r.id == existing_row.id for r in db.list_ssh_keys_for_scope(scope)
+    )
+
     key_id = db.store_ssh_key(
         key_type=parsed.key_type,
         private_pem=parsed.private_pem,
@@ -209,6 +223,7 @@ def import_ssh_keypair(
         fingerprint=parsed.fingerprint,
         comment=parsed.comment,
         already_present=already,
+        scope_was_assigned=scope_was_assigned,
     )
 
 

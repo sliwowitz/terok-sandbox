@@ -451,9 +451,15 @@ def _handle_ssh_import(
         except PasswordProtectedKeyError as exc:
             raise SystemExit(str(exc)) from exc
 
-        state = "already registered" if result.already_present else "registered"
+        pretty_scope = sanitize_tty(scope)
+        if not result.already_present:
+            headline = f"Imported new key to scope '{pretty_scope}':"
+        elif result.scope_was_assigned:
+            headline = f"Key already linked to scope '{pretty_scope}' — nothing to do:"
+        else:
+            headline = f"Linked existing vault key to scope '{pretty_scope}':"
         print(
-            f"Key {state} for scope '{sanitize_tty(scope)}':\n"
+            f"{headline}\n"
             f"  id:          {result.key_id}\n"
             f"  fingerprint: SHA256:{sanitize_tty(result.fingerprint)}\n"
             f"  comment:     {sanitize_tty(result.comment)}"
@@ -539,9 +545,15 @@ def _handle_ssh_pub(
     *,
     scope: str,
     key_id: int | None = None,
+    all_keys: bool = False,
     cfg: SandboxConfig | None = None,
 ) -> None:
-    """Print the scope's public key line to stdout (for piping to a deploy-key form)."""
+    """Print a scope's public key line(s) to stdout.
+
+    Default: the most recently assigned key — the one likely to be the
+    primary deploy key.  ``--all`` prints every key assigned to the scope
+    (one per line, newest last); ``--key-id`` targets a specific row.
+    """
     from .config import SandboxConfig as _SandboxConfig
     from .credentials.ssh_keypair import public_line_of
 
@@ -549,11 +561,18 @@ def _handle_ssh_pub(
     if cfg is None:
         cfg = _SandboxConfig()
 
+    if all_keys and key_id is not None:
+        raise SystemExit("--all and --key-id are mutually exclusive")
+
     db = _open_db(cfg)
     try:
         records = db.load_ssh_keys_for_scope(scope)
         if not records:
             raise SystemExit(f"scope {scope!r} has no SSH keys assigned")
+        if all_keys:
+            for record in records:
+                print(public_line_of(record))
+            return
         if key_id is None:
             record = records[-1]
         else:
@@ -562,6 +581,49 @@ def _handle_ssh_pub(
                 raise SystemExit(f"key_id {key_id} is not assigned to scope {scope!r}")
             record = matches[0]
         print(public_line_of(record))
+    finally:
+        db.close()
+
+
+def _handle_ssh_link(
+    *,
+    key_id: int,
+    scope: str,
+    cfg: SandboxConfig | None = None,
+) -> None:
+    """Assign an already-stored ssh_keys row to an additional scope.
+
+    The inverse of ``ssh remove`` — adds a row in ``ssh_key_assignments``
+    linking *scope* to *key_id*.  Idempotent: re-linking an existing
+    pair is a no-op.  Useful when several projects legitimately share a
+    single deploy key.
+    """
+    from .config import SandboxConfig as _SandboxConfig
+
+    _validate_scope_name(scope)
+    if cfg is None:
+        cfg = _SandboxConfig()
+
+    db = _open_db(cfg)
+    try:
+        # Existence check up front — ``assign_ssh_key`` would otherwise
+        # bubble a raw foreign-key error for a stale id.
+        key_exists = db._conn.execute(  # noqa: SLF001 — one-shot read
+            "SELECT 1 FROM ssh_keys WHERE id = ?", (key_id,)
+        ).fetchone()
+        if not key_exists:
+            raise SystemExit(f"No ssh_keys row with id={key_id}")
+
+        already_linked = db._conn.execute(  # noqa: SLF001
+            "SELECT 1 FROM ssh_key_assignments WHERE scope = ? AND key_id = ?",
+            (scope, key_id),
+        ).fetchone()
+        if already_linked:
+            print(f"Scope '{sanitize_tty(scope)}' is already linked to key id={key_id}")
+            return
+
+        db.assign_ssh_key(scope, key_id)
+        print(f"Linked key id={key_id} to scope '{sanitize_tty(scope)}'")
     finally:
         db.close()
 
@@ -803,6 +865,28 @@ SSH_COMMANDS: tuple[CommandDef, ...] = (
                 default=None,
                 dest="key_id",
                 type=int,
+            ),
+            ArgDef(
+                name="--all",
+                help="Print every key assigned to the scope, one per line",
+                action="store_true",
+                dest="all_keys",
+            ),
+        ),
+    ),
+    CommandDef(
+        name="link",
+        help="Link an existing vault key to an additional scope",
+        handler=_handle_ssh_link,
+        group="ssh",
+        args=(
+            ArgDef(name="scope", help="Credential scope to link the key to"),
+            ArgDef(
+                name="--key-id",
+                help="ssh_keys.id of the key already stored in the vault",
+                dest="key_id",
+                type=int,
+                required=True,
             ),
         ),
     ),

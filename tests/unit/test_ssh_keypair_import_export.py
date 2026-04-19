@@ -106,6 +106,43 @@ class TestImport:
         assert first.key_id == second.key_id
         assert second.already_present is True
 
+    def test_newly_imported_key_reports_fresh(self, tmp_path: Path, db: CredentialDB) -> None:
+        """First-time import: not already present, scope wasn't assigned."""
+        kp = generate_keypair("ed25519", comment="")
+        priv = tmp_path / "id"
+        pub = tmp_path / "id.pub"
+        priv.write_bytes(kp.private_pem)
+        pub.write_text(kp.public_line + "\n")
+        result = import_ssh_keypair(db, "proj-a", priv, pub_path=pub)
+        assert result.already_present is False
+        assert result.scope_was_assigned is False
+
+    def test_second_scope_reports_key_present_scope_new(
+        self, tmp_path: Path, db: CredentialDB
+    ) -> None:
+        """Re-importing the same key under a new scope: key present, scope fresh."""
+        kp = generate_keypair("ed25519", comment="")
+        priv = tmp_path / "id"
+        pub = tmp_path / "id.pub"
+        priv.write_bytes(kp.private_pem)
+        pub.write_text(kp.public_line + "\n")
+        import_ssh_keypair(db, "proj-a", priv, pub_path=pub)
+        result = import_ssh_keypair(db, "proj-b", priv, pub_path=pub)
+        assert result.already_present is True
+        assert result.scope_was_assigned is False
+
+    def test_redundant_import_reports_both_flags(self, tmp_path: Path, db: CredentialDB) -> None:
+        """Importing the same key twice for the same scope: fully redundant."""
+        kp = generate_keypair("ed25519", comment="")
+        priv = tmp_path / "id"
+        pub = tmp_path / "id.pub"
+        priv.write_bytes(kp.private_pem)
+        pub.write_text(kp.public_line + "\n")
+        import_ssh_keypair(db, "proj-a", priv, pub_path=pub)
+        result = import_ssh_keypair(db, "proj-a", priv, pub_path=pub)
+        assert result.already_present is True
+        assert result.scope_was_assigned is True
+
     def test_rsa_import_round_trip(self, tmp_path: Path, db: CredentialDB) -> None:
         """RSA keys flow through import just like ed25519 — classifier picks the right algo."""
         kp = generate_keypair("rsa", comment="rsa-import")
