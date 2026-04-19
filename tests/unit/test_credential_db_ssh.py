@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pytest
 
-from terok_sandbox.credentials.db import CredentialDB
+from terok_sandbox.credentials.db import CredentialDB, InvalidScopeName, _require_safe_scope
 
 
 @pytest.fixture()
@@ -141,3 +141,41 @@ class TestLoadRecords:
         assert r.public_blob == b"pub-blob-fp-raw"
         assert r.comment == "hello"
         assert r.fingerprint == "fp-raw"
+
+
+class TestScopeNameGuard:
+    """``_require_safe_scope`` blocks path-unsafe and oversized scope names."""
+
+    @pytest.mark.parametrize(
+        "bad",
+        [
+            "",  # empty
+            "../escape",  # traversal
+            "with/slash",  # slash
+            "with\\backslash",  # backslash
+            "-starts-with-dash",  # leading dash
+            ".hidden",  # leading dot
+            "_underscore",  # leading underscore
+            "space in name",  # whitespace
+            "null\x00char",  # NUL byte
+            "a" * 65,  # over the 64-char cap
+        ],
+    )
+    def test_rejects_unsafe_names(self, bad: str) -> None:
+        """A representative set of hostile inputs are refused."""
+        with pytest.raises(InvalidScopeName):
+            _require_safe_scope(bad)
+
+    @pytest.mark.parametrize(
+        "good",
+        ["proj", "My-Project", "alpha.beta", "0xdeadbeef", "a" * 64],
+    )
+    def test_accepts_reasonable_names(self, good: str) -> None:
+        """Valid scope identifiers pass the guard silently."""
+        _require_safe_scope(good)  # must not raise
+
+    def test_assign_rejects_unsafe_scope(self, db: CredentialDB) -> None:
+        """``assign_ssh_key`` refuses to persist a hostile scope name."""
+        key_id = _store_key(db, "fp-x")
+        with pytest.raises(InvalidScopeName):
+            db.assign_ssh_key("../evil", key_id)
