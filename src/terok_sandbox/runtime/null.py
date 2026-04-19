@@ -332,11 +332,19 @@ class NullRuntime:
         return self._exec_results.get(key, ExecResult(exit_code=0, stdout="", stderr=""))
 
     def force_remove(self, containers: list[Container]) -> list[ContainerRemoveResult]:
-        """Record the call and return success for each container."""
+        """Record the call and clear every fixture for each container."""
         names = [c.name for c in containers]
         self._force_remove_calls.append(names)
         for name in names:
             self._container_states.pop(name, None)
+            self._container_images.pop(name, None)
+            self._container_rw_sizes.pop(name, None)
+            self._container_exit_codes.pop(name, None)
+            self._ready_results.pop(name, None)
+            # Drop any pre-registered exec results keyed by this container name
+            self._exec_results = {
+                key: result for key, result in self._exec_results.items() if key[0] != name
+            }
         return [ContainerRemoveResult(name=n, removed=True) for n in names]
 
     def reserve_port(self, host: str = "127.0.0.1") -> PortReservation:

@@ -141,13 +141,16 @@ def test_reserve_port_returns_valid_port():
 
 def test_reserve_port_unique():
     """Consecutive reservations return different ports while held."""
+    import contextlib
+
     from terok_sandbox import PodmanRuntime
 
     runtime = PodmanRuntime()
-    reservations = [runtime.reserve_port() for _ in range(10)]
-    try:
+    with contextlib.ExitStack() as stack:
+        reservations = []
+        for _ in range(10):
+            reservation = runtime.reserve_port()
+            reservations.append(reservation)
+            stack.callback(reservation.close)
         ports = {r.port for r in reservations}
         assert len(ports) == 10
-    finally:
-        for r in reservations:
-            r.close()

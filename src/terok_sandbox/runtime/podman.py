@@ -739,7 +739,13 @@ class PodmanRuntime:
 
         Lets :class:`FileNotFoundError` (podman missing) and
         :class:`subprocess.TimeoutExpired` propagate unchanged.
+
+        Raises :class:`ValueError` if *cmd* is empty — podman exec with
+        no argv is never a valid request and catching it here avoids a
+        later ``IndexError`` in the debug log.
         """
+        if not cmd:
+            raise ValueError("exec argv must not be empty")
         log_debug(
             f"PodmanRuntime.exec({container.name}, cmd[0]={cmd[0]!r}, "
             f"argc={len(cmd)}, timeout={timeout})"

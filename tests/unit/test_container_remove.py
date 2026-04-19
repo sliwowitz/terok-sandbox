@@ -131,6 +131,8 @@ class TestForceRemove:
         assert results[1].removed is False
         assert results[2].removed is True  # no such container = success
 
-    def test_empty_list(self) -> None:
-        """Empty input yields empty output; no podman call."""
+    @patch("terok_sandbox.runtime.podman.subprocess.run")
+    def test_empty_list(self, mock_run) -> None:
+        """Empty input yields empty output; no podman call is made."""
         assert PodmanRuntime().force_remove([]) == []
+        mock_run.assert_not_called()
