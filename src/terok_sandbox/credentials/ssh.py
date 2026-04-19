@@ -17,7 +17,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import TypedDict
 
-from .db import CredentialDB
+from .db import CredentialDB, _require_safe_scope
 from .ssh_keypair import DEFAULT_RSA_BITS, GeneratedKeypair, generate_keypair
 
 
@@ -112,6 +112,11 @@ class SSHManager:
             Metadata sufficient to display the key to the user or register
             it with a remote.  No filesystem paths.
         """
+        # Validate the scope before we mint a private key — otherwise a
+        # malformed scope would leave an orphaned secret in ``ssh_keys``
+        # and still bump ``ssh_keys_version``.
+        _require_safe_scope(self._scope)
+
         existing = self._db.list_ssh_keys_for_scope(self._scope)
         effective_comment = comment or self._default_comment(existing)
 

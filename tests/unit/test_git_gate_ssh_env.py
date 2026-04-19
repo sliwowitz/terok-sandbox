@@ -11,6 +11,8 @@ SSH; with neither, :class:`GateAuthNotConfigured` is raised.
 from __future__ import annotations
 
 import socket
+import sqlite3
+from contextlib import ExitStack
 from pathlib import Path
 from unittest.mock import patch
 
@@ -31,12 +33,51 @@ def _bind_socket(path: Path) -> socket.socket:
     return s
 
 
-def _patch_config(tmp_path: Path):
-    """Patch ``SandboxConfig().ssh_signer_local_socket_path`` to point into *tmp_path*."""
-    return patch(
-        "terok_sandbox.config.SandboxConfig.ssh_signer_local_socket_path",
-        new=lambda self, scope: _patched_socket_path(tmp_path, scope),
+def _seed_assignments_db(tmp_path: Path, scopes: list[str]) -> Path:
+    """Create a minimal ``ssh_key_assignments`` table seeded with *scopes*."""
+    db_path = tmp_path / "credentials.db"
+    conn = sqlite3.connect(str(db_path))
+    try:
+        conn.execute(
+            "CREATE TABLE ssh_key_assignments (scope TEXT NOT NULL, key_id INTEGER NOT NULL)"
+        )
+        conn.executemany(
+            "INSERT INTO ssh_key_assignments (scope, key_id) VALUES (?, ?)",
+            [(s, 1) for s in scopes],
+        )
+        conn.commit()
+    finally:
+        conn.close()
+    return db_path
+
+
+def _patch_config(tmp_path: Path, *, scopes_with_keys: list[str] | None = None):
+    """Patch ``SandboxConfig`` so the socket dir and DB both point into *tmp_path*.
+
+    When *scopes_with_keys* is ``None`` the DB file doesn't exist, which
+    forces :func:`_db_has_keys_for_scope` down its ``sqlite3.Error`` path
+    and skips the wait-for-bind window — matching the "no keys assigned"
+    scenario.
+    """
+    db_path = (
+        _seed_assignments_db(tmp_path, scopes_with_keys)
+        if scopes_with_keys is not None
+        else tmp_path / "nonexistent.db"
     )
+    stack = ExitStack()
+    stack.enter_context(
+        patch(
+            "terok_sandbox.config.SandboxConfig.ssh_signer_local_socket_path",
+            new=lambda self, scope: _patched_socket_path(tmp_path, scope),
+        )
+    )
+    stack.enter_context(
+        patch(
+            "terok_sandbox.config.SandboxConfig.db_path",
+            new=property(lambda self: db_path),
+        )
+    )
+    return stack
 
 
 class TestVaultPath:
@@ -71,6 +112,49 @@ class TestVaultPath:
         assert "nowhere" in str(excinfo.value)
         assert "ssh-init" in str(excinfo.value)
         assert "use-personal-ssh" in str(excinfo.value)
+
+
+class TestBindRaceWindow:
+    """Verify the grace window for the reconciler to bind a fresh socket."""
+
+    def test_waits_for_socket_when_db_says_scope_has_keys(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Socket missing but DB shows keys → poll until socket appears."""
+        sock_path = _patched_socket_path(tmp_path, "proj")
+
+        ticks: list[int] = []
+        sockets: list[socket.socket] = []
+
+        def fake_sleep(_delay: float) -> None:
+            # On the third poll, the reconciler "binds" the socket.
+            ticks.append(1)
+            if len(ticks) == 3:
+                sockets.append(_bind_socket(sock_path))
+
+        monkeypatch.setattr("terok_sandbox.gate.mirror.time.sleep", fake_sleep)
+
+        try:
+            with _patch_config(tmp_path, scopes_with_keys=["proj"]):
+                env = _git_env_with_ssh(scope="proj")
+        finally:
+            for s in sockets:
+                s.close()
+
+        assert env["SSH_AUTH_SOCK"] == str(sock_path)
+        assert len(ticks) >= 3  # proved we actually waited
+
+    def test_no_wait_when_db_has_no_keys(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Socket missing and DB empty → raise immediately, no waiting."""
+        slept: list[float] = []
+        monkeypatch.setattr("terok_sandbox.gate.mirror.time.sleep", slept.append)
+
+        with _patch_config(tmp_path, scopes_with_keys=[]), pytest.raises(GateAuthNotConfigured):
+            _git_env_with_ssh(scope="proj")
+
+        assert slept == []  # no grace window when nothing's assigned
 
 
 class TestPersonalOptIn:

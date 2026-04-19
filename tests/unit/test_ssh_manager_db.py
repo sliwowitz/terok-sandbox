@@ -65,6 +65,20 @@ class TestInit:
         rows = db.list_ssh_keys_for_scope("proj")
         assert [r.id for r in rows] == [second["key_id"]]
 
+    def test_invalid_scope_rejected_before_key_material_is_persisted(
+        self, db: CredentialDB
+    ) -> None:
+        """An unsafe scope fails fast — ``ssh_keys`` stays empty."""
+        from terok_sandbox.credentials.db import InvalidScopeName
+
+        with pytest.raises(InvalidScopeName):
+            SSHManager(scope="../evil", db=db).init()
+        # The private key must not have been stored.
+        assert db.list_ssh_keys_for_scope("../evil") == []
+        # And no orphaned rows crept into ``ssh_keys`` under any scope.
+        orphaned = db._conn.execute("SELECT COUNT(*) FROM ssh_keys").fetchone()[0]
+        assert orphaned == 0
+
 
 class TestOwnership:
     """``SSHManager`` owns its DB iff constructed via :meth:`SSHManager.open`."""

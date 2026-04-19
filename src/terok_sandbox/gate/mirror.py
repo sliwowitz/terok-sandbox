@@ -27,8 +27,10 @@ import os
 import re
 import shlex
 import shutil
+import sqlite3
 import stat
 import subprocess
+import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime
@@ -533,7 +535,16 @@ def _git_env_with_ssh(*, scope: str, use_personal_ssh: bool = False) -> dict:
     if use_personal_ssh:
         return env  # let the user's ambient SSH handle it
 
-    sock = SandboxConfig().ssh_signer_local_socket_path(scope)
+    cfg = SandboxConfig()
+    sock = cfg.ssh_signer_local_socket_path(scope)
+
+    # The vault daemon's reconciler binds the per-scope socket on a short
+    # poll interval, so a ``gate-sync`` fired right after ``ssh-init`` /
+    # ``ssh-import`` can race the bind.  If the DB already says this scope
+    # owns keys, give the daemon a bounded grace window to catch up before
+    # declaring it unconfigured.
+    if not _is_unix_socket(sock) and _db_has_keys_for_scope(cfg.db_path, scope):
+        _wait_for_socket(sock, _SOCKET_BIND_WAIT_SECONDS)
     if not _is_unix_socket(sock):
         raise GateAuthNotConfigured(scope)
 
@@ -548,6 +559,45 @@ def _git_env_with_ssh(*, scope: str, use_personal_ssh: bool = False) -> dict:
         ]
     )
     return env
+
+
+_SOCKET_BIND_WAIT_SECONDS = 4.0
+"""Upper bound for the daemon's reconciler to bind a freshly-assigned scope."""
+
+_SOCKET_POLL_INTERVAL = 0.1
+
+
+def _wait_for_socket(path: Path, timeout: float) -> None:
+    """Block up to *timeout* seconds for *path* to become a Unix socket."""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if _is_unix_socket(path):
+            return
+        time.sleep(_SOCKET_POLL_INTERVAL)
+
+
+def _db_has_keys_for_scope(db_path: Path, scope: str) -> bool:
+    """Cheap existence check — a single SELECT on the assignments table.
+
+    Opens its own sqlite connection so the caller doesn't need to
+    plumb a ``CredentialDB`` through the gate layer.  Returns ``False``
+    on any DB error so the caller falls straight through to
+    :class:`GateAuthNotConfigured` instead of hanging.
+    """
+    try:
+        conn = sqlite3.connect(str(db_path))
+    except sqlite3.Error:
+        return False
+    try:
+        row = conn.execute(
+            "SELECT 1 FROM ssh_key_assignments WHERE scope = ? LIMIT 1",
+            (scope,),
+        ).fetchone()
+    except sqlite3.Error:
+        return False
+    finally:
+        conn.close()
+    return row is not None
 
 
 def _is_unix_socket(path: Path) -> bool:
