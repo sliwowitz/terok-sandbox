@@ -475,9 +475,10 @@ class GitGate:
 # ---------- Public predicates ----------
 
 
-# scp-style SSH URL: ``user@host:path``.  Host part forbids ``:`` and ``/``
-# so ``https://`` and Windows ``C:\…`` paths stay out of the match.
-_SCP_SSH_RE = re.compile(r"^[^@/\s:]+@[^:/\s]+:.+")
+# scp-style SSH URL: optional ``user@`` prefix, then ``host:path``.  Host
+# must be ≥2 chars so Windows ``C:\…`` paths (1-char "host") stay out.
+# Any other URL scheme is ruled out before we consult this pattern.
+_SCP_SSH_RE = re.compile(r"^(?:[^@/\s:]+@)?[^:/\s]{2,}:.+")
 
 
 def is_ssh_url(url: str | None) -> bool:
@@ -486,8 +487,13 @@ def is_ssh_url(url: str | None) -> bool:
     Accepts the two forms git itself accepts:
 
     - ``ssh://[user@]host[:port]/path`` — explicit URL scheme.
-    - ``[user@]host:path`` — scp-style shorthand (``git@github.com:foo.git``,
-      ``deploy@host:repo.git``).
+    - ``[user@]host:path`` — scp-style shorthand.  The user part is
+      optional (``git@github.com:foo.git``, ``deploy@host:repo.git``,
+      bare ``github.com:foo.git``).
+
+    Non-SSH URL schemes (``https://``, ``http://``, ``file://``) short-
+    circuit to ``False`` before the scp-style regex is consulted, so
+    ``http://example.com:80/path`` isn't misread as ``host:port``.
 
     Shared with terok-main: both the gate's env builder and callers that
     branch on "does this project use SSH?" (e.g. deploy-key prompts,
@@ -496,7 +502,12 @@ def is_ssh_url(url: str | None) -> bool:
     if not url:
         return False
     candidate = url.strip()
-    return candidate.lower().startswith("ssh://") or bool(_SCP_SSH_RE.match(candidate))
+    lowered = candidate.lower()
+    if lowered.startswith("ssh://"):
+        return True
+    if "://" in candidate:
+        return False
+    return bool(_SCP_SSH_RE.match(candidate))
 
 
 # ---------- Private helpers ----------

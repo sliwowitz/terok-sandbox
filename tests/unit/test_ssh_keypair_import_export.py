@@ -191,10 +191,15 @@ class TestExport:
         )
         assert parsed.fingerprint == imp.fingerprint
 
-    def test_empty_scope_raises(self, db: CredentialDB, tmp_path: Path) -> None:
-        """Exporting a scope with no keys fails explicitly."""
+    def test_scope_with_no_keys_raises(self, db: CredentialDB, tmp_path: Path) -> None:
+        """Exporting a known scope that owns no keys fails explicitly."""
         with pytest.raises(ValueError):
             export_ssh_keypair(db, "proj", tmp_path / "out")
+
+    def test_empty_scope_raises(self, db: CredentialDB, tmp_path: Path) -> None:
+        """An empty-string scope is never a legitimate caller."""
+        with pytest.raises(ValueError):
+            export_ssh_keypair(db, "", tmp_path / "out")
 
     @pytest.mark.parametrize("bad_name", ["../escape", "/etc/passwd", "sub/file", ".", ".."])
     def test_rejects_path_like_out_name(
