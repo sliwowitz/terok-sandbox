@@ -177,7 +177,7 @@ class GitGate:
         env in that case — fetching `GateAuthNotConfigured` on an HTTPS
         project would be absurd.
         """
-        if not _is_ssh_url(self._upstream_url):
+        if not is_ssh_url(self._upstream_url):
             return os.environ.copy()
         return _git_env_with_ssh(
             scope=self._scope,
@@ -470,14 +470,22 @@ class GitGate:
             return None
 
 
-# ---------- Private helpers ----------
+# ---------- Public predicates ----------
 
 
-def _is_ssh_url(url: str | None) -> bool:
-    """Return ``True`` for SSH-scheme git URLs (``git@host:`` or ``ssh://``)."""
+def is_ssh_url(url: str | None) -> bool:
+    """Return ``True`` for SSH-scheme git URLs (``git@host:`` or ``ssh://``).
+
+    Shared with terok-main: both the gate's env builder and callers that
+    branch on "does this project use SSH?" (e.g. deploy-key prompts,
+    gate-sync fallback hints) must agree on one definition.
+    """
     if not url:
         return False
     return url.startswith("git@") or url.startswith("ssh://")
+
+
+# ---------- Private helpers ----------
 
 
 def _git_env_with_ssh(*, scope: str, use_personal_ssh: bool = False) -> dict:

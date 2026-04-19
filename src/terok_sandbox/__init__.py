@@ -66,7 +66,7 @@ from .credentials.ssh_keypair import (
 )
 from .doctor import CheckVerdict, DoctorCheck, sandbox_doctor_checks
 from .gate.lifecycle import GateServerManager, GateServerStatus
-from .gate.mirror import GateStalenessInfo, GitGate
+from .gate.mirror import GateAuthNotConfigured, GateStalenessInfo, GitGate, is_ssh_url
 from .gate.tokens import TokenStore
 from .paths import (
     namespace_config_dir,
@@ -406,8 +406,10 @@ __all__ = [
     "status",
     "up",
     # Git gate
+    "GateAuthNotConfigured",
     "GateStalenessInfo",
     "GitGate",
+    "is_ssh_url",
     # Credential constants
     "PHANTOM_CREDENTIALS_MARKER",
     # Credential DB
