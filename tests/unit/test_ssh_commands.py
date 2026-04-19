@@ -19,10 +19,10 @@ from cryptography.hazmat.primitives.serialization import (
 )
 
 from terok_sandbox.commands import (
-    _handle_ssh_add_key,
+    _handle_ssh_add,
     _handle_ssh_import,
     _handle_ssh_list,
-    _handle_ssh_remove_key,
+    _handle_ssh_remove,
     _scope_has_keys,
 )
 from terok_sandbox.credentials.ssh import SSHManager, generate_keypair
@@ -287,7 +287,7 @@ class TestNextKeyNumber:
 
 
 # ---------------------------------------------------------------------------
-# ssh add-key
+# ssh add
 # ---------------------------------------------------------------------------
 
 
@@ -308,7 +308,7 @@ def _fake_keygen(tmp_path: Path):
 
 
 class TestHandleSshAddKey:
-    """Verify _handle_ssh_add_key generates keypairs and registers them."""
+    """Verify _handle_ssh_add generates keypairs and registers them."""
 
     def test_generates_with_explicit_name(
         self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
@@ -318,7 +318,7 @@ class TestHandleSshAddKey:
         with patch(
             "terok_sandbox.credentials.ssh.subprocess.run", side_effect=_fake_keygen(tmp_path)
         ):
-            _handle_ssh_add_key(scope="myproj", name="deploy-gitlab", create_scope=True, cfg=cfg)
+            _handle_ssh_add(scope="myproj", name="deploy-gitlab", create_scope=True, cfg=cfg)
 
         dest_dir = cfg.ssh_keys_dir / "myproj"
         assert (dest_dir / "id_ed25519_deploy-gitlab").is_file()
@@ -338,7 +338,7 @@ class TestHandleSshAddKey:
         with patch(
             "terok_sandbox.credentials.ssh.subprocess.run", side_effect=_fake_keygen(tmp_path)
         ):
-            _handle_ssh_add_key(scope="proj", create_scope=True, cfg=cfg)
+            _handle_ssh_add(scope="proj", create_scope=True, cfg=cfg)
 
         dest_dir = cfg.ssh_keys_dir / "proj"
         assert (dest_dir / "id_ed25519_key-1").is_file()
@@ -349,8 +349,8 @@ class TestHandleSshAddKey:
         with patch(
             "terok_sandbox.credentials.ssh.subprocess.run", side_effect=_fake_keygen(tmp_path)
         ):
-            _handle_ssh_add_key(scope="proj", create_scope=True, cfg=cfg)
-            _handle_ssh_add_key(scope="proj", cfg=cfg)
+            _handle_ssh_add(scope="proj", create_scope=True, cfg=cfg)
+            _handle_ssh_add(scope="proj", cfg=cfg)
 
         dest_dir = cfg.ssh_keys_dir / "proj"
         assert (dest_dir / "id_ed25519_key-1").is_file()
@@ -362,9 +362,7 @@ class TestHandleSshAddKey:
         with patch(
             "terok_sandbox.credentials.ssh.subprocess.run", side_effect=_fake_keygen(tmp_path)
         ):
-            _handle_ssh_add_key(
-                scope="proj", key_type="rsa", name="my-key", create_scope=True, cfg=cfg
-            )
+            _handle_ssh_add(scope="proj", key_type="rsa", name="my-key", create_scope=True, cfg=cfg)
 
         assert (cfg.ssh_keys_dir / "proj" / "id_rsa_my-key").is_file()
 
@@ -378,7 +376,7 @@ class TestHandleSshAddKey:
             _fake_keygen(tmp_path)(cmd)
 
         with patch("terok_sandbox.credentials.ssh.subprocess.run", side_effect=_capture):
-            _handle_ssh_add_key(scope="proj", name="deploy", create_scope=True, cfg=cfg)
+            _handle_ssh_add(scope="proj", name="deploy", create_scope=True, cfg=cfg)
 
         assert len(captured_cmds) == 1
         args = dict(zip(captured_cmds[0][1::2], captured_cmds[0][2::2], strict=False))
@@ -394,8 +392,8 @@ class TestHandleSshAddKey:
             _fake_keygen(tmp_path)(cmd)
 
         with patch("terok_sandbox.credentials.ssh.subprocess.run", side_effect=_capture):
-            _handle_ssh_add_key(scope="proj", name="deploy", create_scope=True, cfg=cfg)
-            _handle_ssh_add_key(scope="proj", name="gitlab", cfg=cfg)
+            _handle_ssh_add(scope="proj", name="deploy", create_scope=True, cfg=cfg)
+            _handle_ssh_add(scope="proj", name="gitlab", cfg=cfg)
 
         assert len(captured_cmds) == 2
         args_second = dict(zip(captured_cmds[1][1::2], captured_cmds[1][2::2], strict=False))
@@ -412,7 +410,7 @@ class TestHandleSshAddKey:
             "terok_sandbox.credentials.ssh.subprocess.run", side_effect=_fake_keygen(tmp_path)
         ):
             with pytest.raises(SystemExit, match="already exists"):
-                _handle_ssh_add_key(scope="proj", name="my-key", create_scope=True, cfg=cfg)
+                _handle_ssh_add(scope="proj", name="my-key", create_scope=True, cfg=cfg)
 
     def test_existing_pub_key_refuses_overwrite(self, tmp_path: Path) -> None:
         """A lone .pub file also prevents generation."""
@@ -425,7 +423,7 @@ class TestHandleSshAddKey:
             "terok_sandbox.credentials.ssh.subprocess.run", side_effect=_fake_keygen(tmp_path)
         ):
             with pytest.raises(SystemExit, match="already exists"):
-                _handle_ssh_add_key(scope="proj", name="my-key", create_scope=True, cfg=cfg)
+                _handle_ssh_add(scope="proj", name="my-key", create_scope=True, cfg=cfg)
 
     def test_registers_in_ssh_keys_json(self, tmp_path: Path) -> None:
         """Generated key is registered in ssh-keys.json."""
@@ -433,7 +431,7 @@ class TestHandleSshAddKey:
         with patch(
             "terok_sandbox.credentials.ssh.subprocess.run", side_effect=_fake_keygen(tmp_path)
         ):
-            _handle_ssh_add_key(scope="proj", name="extra", create_scope=True, cfg=cfg)
+            _handle_ssh_add(scope="proj", name="extra", create_scope=True, cfg=cfg)
 
         data = json.loads(cfg.ssh_keys_json_path.read_text())
         entry = data["proj"][0]
@@ -448,7 +446,7 @@ class TestHandleSshAddKey:
             "terok_sandbox.credentials.ssh.subprocess.run", side_effect=_fake_keygen(tmp_path)
         ):
             with pytest.raises(SystemExit, match="Invalid key name"):
-                _handle_ssh_add_key(scope="proj", name=bad_name, create_scope=True, cfg=cfg)
+                _handle_ssh_add(scope="proj", name=bad_name, create_scope=True, cfg=cfg)
 
     @pytest.mark.parametrize("good_name", ["deploy", "my-key", "DEPLOY", "my_key", "_private"])
     def test_valid_name_accepted(self, tmp_path: Path, good_name: str) -> None:
@@ -457,7 +455,7 @@ class TestHandleSshAddKey:
         with patch(
             "terok_sandbox.credentials.ssh.subprocess.run", side_effect=_fake_keygen(tmp_path)
         ):
-            _handle_ssh_add_key(scope="proj", name=good_name, create_scope=True, cfg=cfg)
+            _handle_ssh_add(scope="proj", name=good_name, create_scope=True, cfg=cfg)
 
         assert (cfg.ssh_keys_dir / "proj" / f"id_ed25519_{good_name}").is_file()
 
@@ -472,7 +470,7 @@ class TestHandleSshAddKey:
             "terok_sandbox.credentials.ssh.subprocess.run", side_effect=_fake_keygen(tmp_path)
         ):
             with pytest.raises(SystemExit, match="Invalid scope"):
-                _handle_ssh_add_key(scope=bad_scope, name="key", create_scope=True, cfg=cfg)
+                _handle_ssh_add(scope=bad_scope, name="key", create_scope=True, cfg=cfg)
 
     def test_invalid_key_type_exits(self, tmp_path: Path) -> None:
         """Unsupported key type raises SystemExit."""
@@ -481,9 +479,7 @@ class TestHandleSshAddKey:
             "terok_sandbox.credentials.ssh.subprocess.run", side_effect=_fake_keygen(tmp_path)
         ):
             with pytest.raises(SystemExit, match="Unsupported --key-type"):
-                _handle_ssh_add_key(
-                    scope="proj", name="k", key_type="dsa", create_scope=True, cfg=cfg
-                )
+                _handle_ssh_add(scope="proj", name="k", key_type="dsa", create_scope=True, cfg=cfg)
 
     def test_permission_error_exits(self, tmp_path: Path) -> None:
         """OSError during permission hardening raises SystemExit."""
@@ -499,7 +495,7 @@ class TestHandleSshAddKey:
             ),
         ):
             with pytest.raises(SystemExit, match="Failed to set permissions"):
-                _handle_ssh_add_key(scope="proj", name="k", create_scope=True, cfg=cfg)
+                _handle_ssh_add(scope="proj", name="k", create_scope=True, cfg=cfg)
 
     def test_pub_key_read_error_is_silent(
         self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
@@ -516,7 +512,7 @@ class TestHandleSshAddKey:
         with patch(
             "terok_sandbox.credentials.ssh.subprocess.run", side_effect=_keygen_then_remove_pub
         ):
-            _handle_ssh_add_key(scope="proj", name="k", create_scope=True, cfg=cfg)
+            _handle_ssh_add(scope="proj", name="k", create_scope=True, cfg=cfg)
 
         out = capsys.readouterr().out
         assert "SSH key generated" in out
@@ -531,7 +527,7 @@ class TestHandleSshAddKey:
                 "terok_sandbox.credentials.ssh.subprocess.run", side_effect=_fake_keygen(tmp_path)
             ),
         ):
-            _handle_ssh_add_key(scope="proj", name="standalone", create_scope=True)
+            _handle_ssh_add(scope="proj", name="standalone", create_scope=True)
 
         assert (cfg.ssh_keys_dir / "proj" / "id_ed25519_standalone").is_file()
 
@@ -592,10 +588,10 @@ class TestScopeHasKeys:
 
 
 class TestCreateScopeValidationAddKey:
-    """Verify _handle_ssh_add_key rejects unknown scopes without --create-scope."""
+    """Verify _handle_ssh_add rejects unknown scopes without --create-scope."""
 
     def test_unknown_scope_without_create_scope_exits(self, tmp_path: Path) -> None:
-        """add-key with unknown scope and no --create-scope raises SystemExit."""
+        """``ssh add`` with unknown scope and no --create-scope raises SystemExit."""
         cfg = _mock_cfg(tmp_path)
         # Pre-populate ssh-keys.json with a different scope
         _write_keys_json(cfg, {"existing-scope": []})
@@ -603,27 +599,27 @@ class TestCreateScopeValidationAddKey:
             "terok_sandbox.credentials.ssh.subprocess.run", side_effect=_fake_keygen(tmp_path)
         ):
             with pytest.raises(SystemExit, match=r"(?s)Unknown scope.*Use --create-scope"):
-                _handle_ssh_add_key(scope="brand-new", name="k", cfg=cfg)
+                _handle_ssh_add(scope="brand-new", name="k", cfg=cfg)
 
     def test_unknown_scope_with_create_scope_succeeds(self, tmp_path: Path) -> None:
-        """add-key with unknown scope and create_scope=True succeeds."""
+        """``ssh add`` with unknown scope and create_scope=True succeeds."""
         cfg = _mock_cfg(tmp_path)
         _write_keys_json(cfg, {"existing-scope": []})
         with patch(
             "terok_sandbox.credentials.ssh.subprocess.run", side_effect=_fake_keygen(tmp_path)
         ):
-            _handle_ssh_add_key(scope="brand-new", name="k", create_scope=True, cfg=cfg)
+            _handle_ssh_add(scope="brand-new", name="k", create_scope=True, cfg=cfg)
         data = json.loads(cfg.ssh_keys_json_path.read_text())
         assert "brand-new" in data
 
     def test_known_scope_without_create_scope_succeeds(self, tmp_path: Path) -> None:
-        """add-key with known scope (pre-populated ssh-keys.json) succeeds without --create-scope."""
+        """``ssh add`` with known scope (pre-populated ssh-keys.json) succeeds without --create-scope."""
         cfg = _mock_cfg(tmp_path)
         _write_keys_json(cfg, {"known-scope": [{"private_key": "/old", "public_key": "/old.pub"}]})
         with patch(
             "terok_sandbox.credentials.ssh.subprocess.run", side_effect=_fake_keygen(tmp_path)
         ):
-            _handle_ssh_add_key(scope="known-scope", name="k", cfg=cfg)
+            _handle_ssh_add(scope="known-scope", name="k", cfg=cfg)
         data = json.loads(cfg.ssh_keys_json_path.read_text())
         assert len(data["known-scope"]) == 2
 
@@ -869,7 +865,7 @@ class TestHandleSshList:
 
 
 # ---------------------------------------------------------------------------
-# ssh remove-key
+# ssh remove
 # ---------------------------------------------------------------------------
 
 
@@ -892,7 +888,7 @@ def _populate_keys(tmp_path: Path, cfg: object, count: int = 2) -> list[tuple[Pa
 
 
 class TestHandleSshRemoveKey:
-    """Verify _handle_ssh_remove_key in both interactive and parameterized modes."""
+    """Verify _handle_ssh_remove in both interactive and parameterized modes."""
 
     # -- Parameterized mode (with filters) ------------------------------------
 
@@ -901,7 +897,7 @@ class TestHandleSshRemoveKey:
         cfg = _mock_cfg(tmp_path)
         pairs = _populate_keys(tmp_path, cfg, count=2)
 
-        _handle_ssh_remove_key(scope="scope-0", yes=True, keep_files=True, cfg=cfg)
+        _handle_ssh_remove(scope="scope-0", yes=True, keep_files=True, cfg=cfg)
 
         out = capsys.readouterr().out
         assert "Removed 1 key" in out
@@ -921,7 +917,7 @@ class TestHandleSshRemoveKey:
         cfg = _mock_cfg(tmp_path)
         pairs = _populate_keys(tmp_path, cfg, count=1)
 
-        _handle_ssh_remove_key(scope="scope-0", yes=True, delete_files=True, cfg=cfg)
+        _handle_ssh_remove(scope="scope-0", yes=True, delete_files=True, cfg=cfg)
 
         out = capsys.readouterr().out
         assert "Deleted 2 file" in out
@@ -933,7 +929,7 @@ class TestHandleSshRemoveKey:
         cfg = _mock_cfg(tmp_path)
         _populate_keys(tmp_path, cfg, count=3)
 
-        _handle_ssh_remove_key(name="tk-side:scope-*", yes=True, keep_files=True, cfg=cfg)
+        _handle_ssh_remove(name="tk-side:scope-*", yes=True, keep_files=True, cfg=cfg)
 
         out = capsys.readouterr().out
         assert "Removed 3 keys" in out
@@ -953,7 +949,7 @@ class TestHandleSshRemoveKey:
         fp = rows[0].fingerprint  # "SHA256:..."
         prefix = fp[7:15]  # first 8 chars after "SHA256:"
 
-        _handle_ssh_remove_key(fingerprint=prefix, yes=True, keep_files=True, cfg=cfg)
+        _handle_ssh_remove(fingerprint=prefix, yes=True, keep_files=True, cfg=cfg)
 
         data = json.loads(cfg.ssh_keys_json_path.read_text())
         assert data == {}
@@ -964,13 +960,13 @@ class TestHandleSshRemoveKey:
         _populate_keys(tmp_path, cfg, count=1)
 
         with pytest.raises(SystemExit, match="No keys match"):
-            _handle_ssh_remove_key(scope="nonexistent", yes=True, keep_files=True, cfg=cfg)
+            _handle_ssh_remove(scope="nonexistent", yes=True, keep_files=True, cfg=cfg)
 
     def test_no_keys_registered_exits(self, tmp_path: Path) -> None:
         """Empty key store raises SystemExit."""
         cfg = _mock_cfg(tmp_path)
         with pytest.raises(SystemExit, match="No SSH keys registered"):
-            _handle_ssh_remove_key(scope="any", yes=True, keep_files=True, cfg=cfg)
+            _handle_ssh_remove(scope="any", yes=True, keep_files=True, cfg=cfg)
 
     def test_multi_match_prompts_confirm(
         self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
@@ -980,7 +976,7 @@ class TestHandleSshRemoveKey:
         _populate_keys(tmp_path, cfg, count=2)
 
         with patch("builtins.input", return_value="y"):
-            _handle_ssh_remove_key(name="tk-side:*", keep_files=True, cfg=cfg)
+            _handle_ssh_remove(name="tk-side:*", keep_files=True, cfg=cfg)
 
         out = capsys.readouterr().out
         assert "Removed 2 keys" in out
@@ -992,7 +988,7 @@ class TestHandleSshRemoveKey:
 
         with patch("builtins.input", return_value="n"):
             with pytest.raises(SystemExit, match="Aborted"):
-                _handle_ssh_remove_key(name="tk-side:*", keep_files=True, cfg=cfg)
+                _handle_ssh_remove(name="tk-side:*", keep_files=True, cfg=cfg)
 
     def test_single_match_still_confirms(
         self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
@@ -1002,7 +998,7 @@ class TestHandleSshRemoveKey:
         _populate_keys(tmp_path, cfg, count=1)
 
         with patch("builtins.input", return_value="y"):
-            _handle_ssh_remove_key(scope="scope-0", keep_files=True, cfg=cfg)
+            _handle_ssh_remove(scope="scope-0", keep_files=True, cfg=cfg)
 
         out = capsys.readouterr().out
         assert "Removed 1 key" in out
@@ -1014,7 +1010,7 @@ class TestHandleSshRemoveKey:
 
         with patch("builtins.input", return_value="n"):
             with pytest.raises(SystemExit, match="Aborted"):
-                _handle_ssh_remove_key(scope="scope-0", keep_files=True, cfg=cfg)
+                _handle_ssh_remove(scope="scope-0", keep_files=True, cfg=cfg)
 
         # Key must still be in the registry
         data = json.loads(cfg.ssh_keys_json_path.read_text())
@@ -1030,7 +1026,7 @@ class TestHandleSshRemoveKey:
         _populate_keys(tmp_path, cfg, count=2)
 
         with patch("builtins.input", side_effect=["1", "n"]):  # select 1, keep files
-            _handle_ssh_remove_key(cfg=cfg)
+            _handle_ssh_remove(cfg=cfg)
 
         out = capsys.readouterr().out
         assert "Removed 1 key" in out
@@ -1047,7 +1043,7 @@ class TestHandleSshRemoveKey:
         _populate_keys(tmp_path, cfg, count=2)
 
         with patch("builtins.input", side_effect=["all", "n"]):
-            _handle_ssh_remove_key(cfg=cfg)
+            _handle_ssh_remove(cfg=cfg)
 
         out = capsys.readouterr().out
         assert "Removed 2 keys" in out
@@ -1062,7 +1058,7 @@ class TestHandleSshRemoveKey:
         _populate_keys(tmp_path, cfg, count=3)
 
         with patch("builtins.input", side_effect=["1,3", "n"]):
-            _handle_ssh_remove_key(cfg=cfg)
+            _handle_ssh_remove(cfg=cfg)
 
         out = capsys.readouterr().out
         assert "Removed 2 keys" in out
@@ -1079,7 +1075,7 @@ class TestHandleSshRemoveKey:
 
         with patch("builtins.input", return_value="5"):
             with pytest.raises(SystemExit, match="Invalid selection"):
-                _handle_ssh_remove_key(cfg=cfg)
+                _handle_ssh_remove(cfg=cfg)
 
     def test_interactive_empty_input_aborts(self, tmp_path: Path) -> None:
         """Empty input in interactive mode aborts."""
@@ -1088,7 +1084,7 @@ class TestHandleSshRemoveKey:
 
         with patch("builtins.input", return_value=""):
             with pytest.raises(SystemExit, match="Aborted"):
-                _handle_ssh_remove_key(cfg=cfg)
+                _handle_ssh_remove(cfg=cfg)
 
     def test_interactive_eof_aborts(self, tmp_path: Path) -> None:
         """EOFError (piped stdin) aborts gracefully."""
@@ -1097,7 +1093,7 @@ class TestHandleSshRemoveKey:
 
         with patch("builtins.input", side_effect=EOFError):
             with pytest.raises(SystemExit, match="Aborted"):
-                _handle_ssh_remove_key(cfg=cfg)
+                _handle_ssh_remove(cfg=cfg)
 
     def test_yes_without_filters_exits(self, tmp_path: Path) -> None:
         """--yes without any filter flags raises SystemExit."""
@@ -1105,7 +1101,7 @@ class TestHandleSshRemoveKey:
         _populate_keys(tmp_path, cfg, count=1)
 
         with pytest.raises(SystemExit, match="Cannot use --yes"):
-            _handle_ssh_remove_key(yes=True, keep_files=True, cfg=cfg)
+            _handle_ssh_remove(yes=True, keep_files=True, cfg=cfg)
 
     # -- File deletion prompt -------------------------------------------------
 
@@ -1118,7 +1114,7 @@ class TestHandleSshRemoveKey:
 
         # First 'y' confirms removal, second 'y' confirms file deletion
         with patch("builtins.input", side_effect=["y", "y"]):
-            _handle_ssh_remove_key(scope="scope-0", cfg=cfg)
+            _handle_ssh_remove(scope="scope-0", cfg=cfg)
 
         assert not pairs[0][0].exists()
         assert not pairs[0][1].exists()
@@ -1130,7 +1126,7 @@ class TestHandleSshRemoveKey:
 
         # First 'y' confirms removal, second 'n' keeps files
         with patch("builtins.input", side_effect=["y", "n"]):
-            _handle_ssh_remove_key(scope="scope-0", cfg=cfg)
+            _handle_ssh_remove(scope="scope-0", cfg=cfg)
 
         assert pairs[0][0].is_file()
         assert pairs[0][1].is_file()
@@ -1143,7 +1139,7 @@ class TestHandleSshRemoveKey:
         pairs = _populate_keys(tmp_path, cfg, count=1)
 
         # No input() mock needed — --yes skips the file prompt entirely
-        _handle_ssh_remove_key(scope="scope-0", yes=True, cfg=cfg)
+        _handle_ssh_remove(scope="scope-0", yes=True, cfg=cfg)
 
         out = capsys.readouterr().out
         assert "kept on disk" in out
@@ -1155,7 +1151,7 @@ class TestHandleSshRemoveKey:
         _populate_keys(tmp_path, cfg, count=1)
 
         with pytest.raises(SystemExit, match="Cannot use both"):
-            _handle_ssh_remove_key(
+            _handle_ssh_remove(
                 scope="scope-0", yes=True, delete_files=True, keep_files=True, cfg=cfg
             )
 
@@ -1181,7 +1177,7 @@ class TestHandleSshRemoveKey:
         _populate_keys(tmp_path, cfg, count=2)
 
         with patch("builtins.input", side_effect=["1,1,1", "n"]):
-            _handle_ssh_remove_key(cfg=cfg)
+            _handle_ssh_remove(cfg=cfg)
 
         out = capsys.readouterr().out
         assert "Removed 1 key" in out
@@ -1231,7 +1227,7 @@ class TestHandleSshRemoveKey:
         data["scope-0"][0]["private_key"] = str(outside)
         cfg.ssh_keys_json_path.write_text(json.dumps(data))
 
-        _handle_ssh_remove_key(scope="scope-0", yes=True, delete_files=True, cfg=cfg)
+        _handle_ssh_remove(scope="scope-0", yes=True, delete_files=True, cfg=cfg)
 
         err = capsys.readouterr().err
         assert "Refusing to delete outside managed dir" in err
