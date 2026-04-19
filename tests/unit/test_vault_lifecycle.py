@@ -252,6 +252,46 @@ class TestStopDaemon:
 
         assert not pidfile.exists()
 
+    def test_socket_mode_stops_systemd_unit(self, tmp_path: Path) -> None:
+        """stop_daemon stops the socket-mode service when systemd-activated (no PID file)."""
+        mgr = _make_mgr(tmp_path)
+        assert not mgr._cfg.vault_pid_path.exists()
+
+        def _active(_self: VaultManager, unit: str) -> bool:
+            return unit == "terok-vault-socket.service"
+
+        with (
+            patch.object(VaultManager, "_is_unit_active", _active),
+            patch("subprocess.run") as mock_run,
+        ):
+            mgr.stop_daemon()
+
+        calls = [c for c in mock_run.call_args_list if "stop" in c.args[0]]
+        assert len(calls) == 1
+        assert calls[0].args[0][:3] == ["systemctl", "--user", "stop"]
+        assert "terok-vault-socket.service" in calls[0].args[0]
+
+    def test_wedged_systemctl_does_not_block_pidfile_cleanup(self, tmp_path: Path) -> None:
+        """A hung ``systemctl stop`` must not skip the PID-file SIGTERM path — panic's whole point is belt-and-suspenders."""
+        mgr = _make_mgr(tmp_path)
+        pidfile = mgr._cfg.vault_pid_path
+        pidfile.parent.mkdir(parents=True, exist_ok=True)
+        pidfile.write_text("42")
+
+        with (
+            patch.object(VaultManager, "_is_unit_active", return_value=True),
+            patch.object(VaultManager, "_is_managed_vault", return_value=True),
+            patch(
+                "subprocess.run",
+                side_effect=subprocess.TimeoutExpired(cmd="systemctl", timeout=10),
+            ),
+            patch("os.kill") as mock_kill,
+        ):
+            mgr.stop_daemon()
+
+        mock_kill.assert_called_once_with(42, 15)
+        assert not pidfile.exists()
+
 
 class TestIsDaemonRunning:
     """Verify is_daemon_running behaviour."""

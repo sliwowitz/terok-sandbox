@@ -368,6 +368,52 @@ class TestDaemon:
                 mock_kill.assert_called_once_with(99999, unittest.mock.ANY)
             assert not pid_file.exists()
 
+    def test_stop_daemon_socket_mode_stops_systemd_unit(self) -> None:
+        """In socket mode there is no PID file; ``stop_daemon`` still stops the active unit."""
+        from terok_sandbox.config import SandboxConfig
+
+        mock_cfg = unittest.mock.MagicMock(spec=SandboxConfig)
+        mock_cfg.pid_file_path = MISSING_PATH / "pid"
+
+        def _active(_self: GateServerManager, unit: str) -> bool:
+            return unit == "terok-gate-socket.service"
+
+        with (
+            unittest.mock.patch.object(GateServerManager, "_is_unit_active", _active),
+            unittest.mock.patch("subprocess.run") as mock_run,
+        ):
+            GateServerManager(mock_cfg).stop_daemon()
+
+        calls = [c for c in mock_run.call_args_list if "stop" in c.args[0]]
+        assert len(calls) == 1
+        assert calls[0].args[0][:3] == ["systemctl", "--user", "stop"]
+        assert "terok-gate-socket.service" in calls[0].args[0]
+
+    def test_stop_daemon_wedged_systemctl_does_not_block_pidfile_cleanup(self) -> None:
+        """A hung ``systemctl stop`` must not skip the PID-file SIGTERM path."""
+        with tempfile.TemporaryDirectory() as td:
+            pid_file = write_pid_file(Path(td))
+            from terok_sandbox.config import SandboxConfig
+
+            mock_cfg = unittest.mock.MagicMock(spec=SandboxConfig)
+            mock_cfg.pid_file_path = pid_file
+
+            with (
+                unittest.mock.patch.object(GateServerManager, "_is_unit_active", return_value=True),
+                unittest.mock.patch.object(
+                    GateServerManager, "_is_managed_server", return_value=True
+                ),
+                unittest.mock.patch(
+                    "subprocess.run",
+                    side_effect=subprocess.TimeoutExpired(cmd="systemctl", timeout=10),
+                ),
+                unittest.mock.patch("os.kill") as mock_kill,
+            ):
+                GateServerManager(mock_cfg).stop_daemon()
+
+            mock_kill.assert_called_once_with(99999, unittest.mock.ANY)
+            assert not pid_file.exists()
+
 
 class TestIsDaemonRunning:
     """Tests for is_daemon_running."""

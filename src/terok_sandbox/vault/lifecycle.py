@@ -566,7 +566,26 @@ class VaultManager:
         )
 
     def stop_daemon(self) -> None:
-        """Stop the managed vault daemon by sending SIGTERM."""
+        """Stop the vault, whether running as a systemd unit or a PID-file daemon.
+
+        Both paths are attempted unconditionally: systemd-managed vaults
+        live under ``terok-vault-socket.service`` / ``terok-vault.service``
+        and have no PID file, while a manually-started daemon has a PID
+        file but no active unit.  Running both paths also sweeps stray
+        daemons that outlived their systemd unit.
+        """
+        for unit in (_SOCKET_UNIT, _SERVICE_UNIT, _SOCKET_MODE_SERVICE):
+            if self._is_unit_active(unit):
+                try:
+                    subprocess.run(
+                        ["systemctl", "--user", "stop", unit],
+                        check=False,
+                        capture_output=True,
+                        timeout=10,
+                    )
+                except subprocess.TimeoutExpired:
+                    # A wedged unit must not block the PID-file path below.
+                    pass
         pidfile = self._cfg.vault_pid_path
         if not pidfile.is_file():
             return
