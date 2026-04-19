@@ -1,55 +1,82 @@
 # SPDX-FileCopyrightText: 2025 Jiri Vyskocil
 # SPDX-License-Identifier: Apache-2.0
 
-"""Tests for _git_env_with_ssh — SSH env setup for host-side gate operations."""
+"""Tests for the gate's ``_git_env_with_ssh`` — three-branch policy.
+
+The gate prefers the vault-managed per-scope socket by default; explicit
+opt-in (``use_personal_ssh=True``) falls through to the user's ambient
+SSH; with neither, :class:`GateAuthNotConfigured` is raised.
+"""
 
 from __future__ import annotations
 
 from pathlib import Path
+from unittest.mock import patch
 
-from terok_sandbox.gate.mirror import _git_env_with_ssh
+import pytest
+
+from terok_sandbox.gate.mirror import GateAuthNotConfigured, _git_env_with_ssh
 
 
-class TestGitEnvWithSsh:
-    """Verify GIT_SSH_COMMAND is built from the key file, not a config file."""
+def _patched_socket_path(tmp_path: Path, scope: str) -> Path:
+    """Return a tmp-path-based socket location used by the patched config."""
+    return tmp_path / f"ssh-agent-local-{scope}.sock"
 
-    def test_sets_git_ssh_command_when_key_exists(self, tmp_path: Path) -> None:
-        """When the private key file exists, GIT_SSH_COMMAND points to it."""
-        key = tmp_path / "id_ed25519_myproj"
-        key.write_text("fake-key")
 
-        env = _git_env_with_ssh(scope="myproj", ssh_host_dir=tmp_path, ssh_key_name=None)
+def _patch_config(tmp_path: Path):
+    """Patch ``SandboxConfig().ssh_signer_local_socket_path`` to point into *tmp_path*."""
+    return patch(
+        "terok_sandbox.config.SandboxConfig.ssh_signer_local_socket_path",
+        new=lambda self, scope: _patched_socket_path(tmp_path, scope),
+    )
 
-        assert "GIT_SSH_COMMAND" in env
+
+class TestVaultPath:
+    """Verify the default vault-only branch."""
+
+    def test_sets_env_when_socket_present(self, tmp_path: Path) -> None:
+        """With a vault socket in place, env steers git at the vault."""
+        sock = _patched_socket_path(tmp_path, "proj")
+        sock.touch()
+
+        with _patch_config(tmp_path):
+            env = _git_env_with_ssh(scope="proj")
+
+        assert env["SSH_AUTH_SOCK"] == str(sock)
         cmd = env["GIT_SSH_COMMAND"]
-        assert str(key) in cmd
-        assert "IdentitiesOnly=yes" in cmd
+        assert "IdentityFile=none" in cmd
         assert "StrictHostKeyChecking=no" in cmd
-        assert env["SSH_AUTH_SOCK"] == ""
+        assert "IdentitiesOnly=yes" not in cmd  # agent must remain consulted
 
-    def test_blocks_host_keys_when_key_missing(self, tmp_path: Path) -> None:
-        """When no key file exists, host keys are blocked by default."""
-        env = _git_env_with_ssh(scope="myproj", ssh_host_dir=tmp_path, ssh_key_name=None)
+    def test_raises_when_socket_missing_and_no_opt_in(self, tmp_path: Path) -> None:
+        """Without a vault socket and without opt-in, refuse to run."""
+        with _patch_config(tmp_path), pytest.raises(GateAuthNotConfigured) as excinfo:
+            _git_env_with_ssh(scope="nowhere")
+        assert "nowhere" in str(excinfo.value)
+        assert "ssh-init" in str(excinfo.value)
+        assert "use-personal-ssh" in str(excinfo.value)
 
-        assert "GIT_SSH_COMMAND" in env
-        cmd = env["GIT_SSH_COMMAND"]
-        assert "IdentitiesOnly=yes" in cmd
-        assert "IdentityFile" not in cmd
-        assert env["SSH_AUTH_SOCK"] == ""
 
-    def test_allows_host_keys_when_opted_in(self, tmp_path: Path) -> None:
-        """When allow_host_keys=True and key is missing, env is unmodified."""
-        env = _git_env_with_ssh(
-            scope="myproj", ssh_host_dir=tmp_path, ssh_key_name=None, allow_host_keys=True
+class TestPersonalOptIn:
+    """Verify ``use_personal_ssh=True`` leaves the env alone."""
+
+    def test_returns_untouched_env(self, tmp_path: Path) -> None:
+        """Opt-in: no GIT_SSH_COMMAND injected, SSH_AUTH_SOCK not forced."""
+        import os
+
+        with _patch_config(tmp_path):
+            env = _git_env_with_ssh(scope="anything", use_personal_ssh=True)
+
+        assert env.get("SSH_AUTH_SOCK") == os.environ.get("SSH_AUTH_SOCK")
+        assert "GIT_SSH_COMMAND" not in env or env["GIT_SSH_COMMAND"] == os.environ.get(
+            "GIT_SSH_COMMAND", ""
         )
 
-        assert "GIT_SSH_COMMAND" not in env
+    def test_opt_in_wins_even_when_socket_exists(self, tmp_path: Path) -> None:
+        """Opt-in bypasses the vault socket entirely."""
+        _patched_socket_path(tmp_path, "proj").touch()
 
-    def test_respects_explicit_key_name(self, tmp_path: Path) -> None:
-        """An explicit ssh_key_name overrides the derived default."""
-        key = tmp_path / "my_custom_key"
-        key.write_text("fake-key")
+        with _patch_config(tmp_path):
+            env = _git_env_with_ssh(scope="proj", use_personal_ssh=True)
 
-        env = _git_env_with_ssh(scope="myproj", ssh_host_dir=tmp_path, ssh_key_name="my_custom_key")
-
-        assert str(key) in env["GIT_SSH_COMMAND"]
+        assert "GIT_SSH_COMMAND" not in env or "IdentityFile=none" not in env["GIT_SSH_COMMAND"]

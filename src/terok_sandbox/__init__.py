@@ -50,8 +50,20 @@ from .commands import (
 )
 from .config import CONTAINER_RUNTIME_DIR, SandboxConfig
 from .config_stack import ConfigScope, ConfigStack
-from .credentials.db import CredentialDB
-from .credentials.ssh import SSHManager, generate_keypair, update_ssh_keys_json
+from .credentials.db import CredentialDB, SSHKeyRecord, SSHKeyRow
+from .credentials.ssh import SSHInitResult, SSHManager
+from .credentials.ssh_keypair import (
+    DEFAULT_RSA_BITS,
+    ExportResult,
+    GeneratedKeypair,
+    ImportResult,
+    KeypairMismatchError,
+    PasswordProtectedKeyError,
+    export_ssh_keypair,
+    generate_keypair,
+    import_ssh_keypair,
+    parse_openssh_keypair,
+)
 from .doctor import CheckVerdict, DoctorCheck, sandbox_doctor_checks
 from .gate.lifecycle import GateServerManager, GateServerStatus
 from .gate.mirror import GateStalenessInfo, GitGate
@@ -400,6 +412,8 @@ __all__ = [
     "PHANTOM_CREDENTIALS_MARKER",
     # Credential DB
     "CredentialDB",
+    "SSHKeyRecord",
+    "SSHKeyRow",
     # Vault
     "VaultStatus",
     "VaultUnreachableError",
@@ -437,9 +451,18 @@ __all__ = [
     "DoctorCheck",
     "sandbox_doctor_checks",
     # SSH
+    "DEFAULT_RSA_BITS",
+    "ExportResult",
+    "GeneratedKeypair",
+    "ImportResult",
+    "KeypairMismatchError",
+    "PasswordProtectedKeyError",
+    "SSHInitResult",
     "SSHManager",
+    "export_ssh_keypair",
     "generate_keypair",
-    "update_ssh_keys_json",
+    "import_ssh_keypair",
+    "parse_openssh_keypair",
     # Port registry
     "PORT_RANGE",
     "PortRegistry",
