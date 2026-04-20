@@ -1,13 +1,13 @@
-module terok_socket 1.1;
+module terok_socket 1.0;
 
-# Targeted SELinux policy for terok service sockets and verdict-dispatch.
+# Targeted SELinux policy for terok service sockets.
 #
 # Defines ``terok_socket_t`` — a custom type that terok host services
 # apply to their Unix sockets via ``setsockcreatecon()`` so that
 # rootless Podman containers (``container_t``) can connect *without*
 # granting container_t broad connectto on unconfined_t sockets.
 #
-# Three narrowly scoped rules:
+# Two narrowly scoped rules:
 #
 # 1. ``unconfined_t`` (the typical Fedora workstation user + their
 #    systemd --user services) may create/bind/listen/accept/IO on
@@ -25,19 +25,6 @@ module terok_socket 1.1;
 #    compromised container cannot set up a malicious listener that
 #    wears this label.
 #
-# 3. ``unconfined_t → container_runtime_t`` transitions with
-#    ``nnp_transition`` / ``nosuid_transition``.  The D-Bus clearance
-#    hub (``terok-dbus``, a systemd --user service) shells out to
-#    ``terok-shield allow|deny``, which fork+execs ``podman unshare``
-#    to apply nft elements in the container's netns.  podman is
-#    labelled ``container_runtime_exec_t``, so the exec triggers a
-#    domain transition into ``container_runtime_t``.  systemd user
-#    services inherit ``no_new_privs`` from the user manager on
-#    Fedora, and SELinux refuses cross-domain transitions when NNP is
-#    set unless this permission is explicit.  Without the allow,
-#    every verdict click produces a ``process2 nnp_transition`` AVC
-#    and the operator gets ``Allow failed`` on every click.
-#
 # Written in checkmodule-native module syntax (no refpolicy ``m4``
 # macros), so the build path is ``checkmodule -M -m`` →
 # ``semodule_package`` → ``semodule -i``.
@@ -47,14 +34,12 @@ module terok_socket 1.1;
 
 require {
     type container_t;
-    type container_runtime_t;
     type unconfined_t;
     class unix_stream_socket {
         create bind listen accept
         read write getattr getopt setopt shutdown
         connectto
     };
-    class process2 { nnp_transition nosuid_transition };
 }
 
 type terok_socket_t;
@@ -66,8 +51,3 @@ allow unconfined_t terok_socket_t:unix_stream_socket {
 };
 
 allow container_t terok_socket_t:unix_stream_socket connectto;
-
-allow unconfined_t container_runtime_t:process2 {
-    nnp_transition
-    nosuid_transition
-};
