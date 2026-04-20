@@ -27,6 +27,7 @@ from terok_sandbox.shield import (
     block,
     check_environment,
     down,
+    install_shield_bridge,
     make_shield,
     pre_start,
     run_setup,
@@ -35,6 +36,7 @@ from terok_sandbox.shield import (
     shield_watch_session,
     state,
     status,
+    uninstall_shield_bridge,
     up,
 )
 from tests.constants import (
@@ -368,3 +370,27 @@ def test_shield_watch_session_delegates_to_run_watch(mock_run_watch: MagicMock) 
     shield_watch_session("task-ctr", MOCK_TASK_DIR)
 
     mock_run_watch.assert_called_once_with(MOCK_TASK_DIR / "shield", "task-ctr")
+
+
+@patch("terok_shield.hooks.install.install_bridge_hooks")
+@patch("terok_shield.hooks.reader_install.install_reader_resource")
+def test_install_shield_bridge_routes_through_shield_helpers(
+    mock_install_reader: MagicMock, mock_install_hooks: MagicMock
+) -> None:
+    """``install_shield_bridge`` writes the reader resource and registers the hook pair."""
+    dest = MOCK_BASE / "share" / "nflog-reader.py"
+
+    install_shield_bridge(dest)
+
+    mock_install_reader.assert_called_once_with(dest)
+    mock_install_hooks.assert_called_once()
+    kwargs = mock_install_hooks.call_args.kwargs
+    assert kwargs["hook_entrypoint"].name == "terok-shield-hook"
+
+
+@patch("terok_shield.hooks.install.uninstall_bridge_hooks")
+def test_uninstall_shield_bridge_removes_hook_pair(mock_uninstall: MagicMock) -> None:
+    """``uninstall_shield_bridge`` removes only the bridge hook pair, no reader file."""
+    uninstall_shield_bridge()
+    mock_uninstall.assert_called_once()
+    assert mock_uninstall.call_args.kwargs["hooks_dir"].name == "hooks.d"
