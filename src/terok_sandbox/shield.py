@@ -25,6 +25,9 @@ from terok_shield import (
     setup_global_hooks,
     system_hooks_dir,
 )
+from terok_shield.container import (
+    resolve_state_dir as resolve_container_state_dir,  # noqa: F401 — re-exported
+)
 
 from .config import SandboxConfig
 
