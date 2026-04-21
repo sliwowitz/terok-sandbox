@@ -127,6 +127,28 @@ are safe to remove when their names no longer match the current set.
 """
 
 
+# ---------- Helpers ----------
+
+
+def _run_systemctl_capturing(argv: list[str]) -> None:
+    """Run a systemctl command, raising with captured stderr on failure.
+
+    ``subprocess.run(check=True, capture_output=True)`` swallows the
+    captured stderr inside ``CalledProcessError`` — its ``str()`` only
+    includes exit status, so failures read as "command returned 1" with
+    no hint of ``Failed to connect to bus`` or ``Unit X not loaded``.
+    Re-raise as ``SystemExit`` with stderr attached so ``terok setup``'s
+    error row points the operator at the real cause.
+    """
+    try:
+        subprocess.run(argv, check=True, capture_output=True, timeout=10)
+    except subprocess.CalledProcessError as exc:
+        stderr = (exc.stderr or b"").decode("utf-8", errors="replace").strip()
+        raise SystemExit(
+            f"{' '.join(argv)} failed (exit {exc.returncode}){': ' + stderr if stderr else ''}"
+        ) from exc
+
+
 # ---------- Manager ----------
 
 
@@ -376,26 +398,13 @@ class VaultManager:
             (unit_dir / template_name).write_text(content, encoding="utf-8")
 
         self._cfg.vault_socket_path.parent.mkdir(parents=True, exist_ok=True)
-        subprocess.run(
-            ["systemctl", "--user", "daemon-reload"], check=True, timeout=10, capture_output=True
-        )
-        # Capture the "Created symlink ..." notice systemd prints to stderr — it
-        # interleaves ugly-looking noise into the caller's progress output
-        # otherwise.  Callers that care about the enable result can look at the
-        # subsequent reachability probe.
-        subprocess.run(
-            ["systemctl", "--user", "enable", "--now", enable_unit],
-            check=True,
-            timeout=10,
-            capture_output=True,
-        )
+        # Capture the "Created symlink ..." notice systemd prints to stderr —
+        # it interleaves into the caller's progress output otherwise.  Any
+        # failure is surfaced with stderr attached via _run_systemctl_capturing.
+        _run_systemctl_capturing(["systemctl", "--user", "daemon-reload"])
+        _run_systemctl_capturing(["systemctl", "--user", "enable", "--now", enable_unit])
         # Restart to apply updated unit configuration if socket was already active.
-        subprocess.run(
-            ["systemctl", "--user", "restart", enable_unit],
-            check=True,
-            timeout=10,
-            capture_output=True,
-        )
+        _run_systemctl_capturing(["systemctl", "--user", "restart", enable_unit])
 
     def _stop_all_units(self) -> None:
         """Stop and disable all proxy units across both transport modes."""

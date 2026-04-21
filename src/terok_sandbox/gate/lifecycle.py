@@ -90,6 +90,28 @@ class GateServerStatus:
     """Detected transport: ``"tcp"``, ``"socket"``, or ``None`` if not running."""
 
 
+# ---------- Helpers ----------
+
+
+def _run_systemctl_capturing(argv: list[str]) -> None:
+    """Run a systemctl command, raising with captured stderr on failure.
+
+    ``subprocess.run(check=True, capture_output=True)`` swallows the
+    captured stderr inside ``CalledProcessError`` — its ``str()`` only
+    includes exit status, so failures read as "command returned 1" with
+    no hint of ``Failed to connect to bus`` or ``Unit X not loaded``.
+    Re-raise as ``SystemExit`` with stderr attached so ``terok setup``'s
+    error row points the operator at the real cause.
+    """
+    try:
+        subprocess.run(argv, check=True, capture_output=True, timeout=10)
+    except subprocess.CalledProcessError as exc:
+        stderr = (exc.stderr or b"").decode("utf-8", errors="replace").strip()
+        raise SystemExit(
+            f"{' '.join(argv)} failed (exit {exc.returncode}){': ' + stderr if stderr else ''}"
+        ) from exc
+
+
 # ---------- Manager ----------
 
 
@@ -307,18 +329,12 @@ class GateServerManager:
             content = render_template(template_path, variables)
             (unit_dir / template_name).write_text(content, encoding="utf-8")
 
-        subprocess.run(
-            ["systemctl", "--user", "daemon-reload"], check=True, timeout=10, capture_output=True
-        )
         # Capture the "Created symlink ..." notice — otherwise it interleaves
-        # with `terok setup`'s progressive stage output.  A failed enable is
-        # surfaced via the caller's subsequent reachability probe.
-        subprocess.run(
-            ["systemctl", "--user", "enable", "--now", enable_unit],
-            check=True,
-            timeout=10,
-            capture_output=True,
-        )
+        # with `terok setup`'s progressive stage output.  A failure on either
+        # call is surfaced by re-raising with stderr attached, since
+        # CalledProcessError's default message omits captured output.
+        _run_systemctl_capturing(["systemctl", "--user", "daemon-reload"])
+        _run_systemctl_capturing(["systemctl", "--user", "enable", "--now", enable_unit])
 
     def _stop_all_units(self) -> None:
         """Stop and disable all gate units across both transport modes."""
