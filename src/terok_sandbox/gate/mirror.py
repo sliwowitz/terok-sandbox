@@ -65,10 +65,15 @@ logger = logging.getLogger(__name__)
 
 
 class GateSyncResult(TypedDict):
-    """Result of a full gate sync operation."""
+    """Result of a full gate sync operation.
+
+    ``upstream_url`` is ``None`` when the gate is initialised without a
+    remote — a local-only mirror that the container can push to but that
+    never fetches external commits.
+    """
 
     path: str
-    upstream_url: str
+    upstream_url: str | None
     created: bool
     success: bool
     updated_branches: list[str]
@@ -198,19 +203,17 @@ class GitGate:
         branches: list[str] | None = None,
         force_reinit: bool = False,
     ) -> GateSyncResult:
-        """Sync the host-side git mirror gate.
+        """Sync the host-side git mirror gate from upstream.
 
-        - Uses SSH configuration via GIT_SSH_COMMAND.
-        - If gate doesn't exist (or *force_reinit*), performs a fresh ``git clone --mirror``.
-        - Always runs the sync logic afterward for consistent side effects.
+        With an upstream configured, clones (or fetches) from it using the
+        project's SSH setup.  Without one, initialises a bare repo in place
+        and returns a no-op sync — the gate then serves as a local-only
+        remote that the container can push to, giving the agent somewhere
+        to stage commits even when there is nothing external to mirror.
 
-        Returns:
-            Dict with keys: path, upstream_url, created (bool), success,
-            updated_branches, errors.
+        A remoteless gate that already exists is a proper no-op: nothing
+        re-initialises, and the returned branch list is empty.
         """
-        if not self._upstream_url:
-            raise SystemExit("Project has no git.upstream_url configured")
-
         self._validate_gate()
 
         gate_dir = self._gate_path
@@ -228,8 +231,25 @@ class GitGate:
             gate_exists = False
 
         if not gate_exists:
-            _clone_gate_mirror(self._upstream_url, gate_dir, env)
+            if self._upstream_url:
+                _clone_gate_mirror(self._upstream_url, gate_dir, env)
+            else:
+                _init_remoteless_gate(gate_dir)
             created = True
+
+        # A remoteless gate has nothing to fetch — skip ``git remote update``
+        # (which would fail on a repo with no origin) and the clone-cache
+        # refresh (there is no bare mirror to track).
+        if not self._upstream_url:
+            return {
+                "path": str(gate_dir),
+                "upstream_url": None,
+                "created": created,
+                "success": True,
+                "updated_branches": [],
+                "errors": [],
+                "cache_refreshed": False,
+            }
 
         sync_result = self.sync_branches(branches)
 
@@ -622,6 +642,28 @@ def _clone_gate_mirror(upstream_url: str, gate_dir: Path, env: dict) -> None:
         raise SystemExit("git not found on host; please install git")
     except subprocess.CalledProcessError as e:
         raise SystemExit(f"git clone --mirror failed: {e}")
+
+
+def _init_remoteless_gate(gate_dir: Path) -> None:
+    """Initialise an empty bare repo at *gate_dir* with no configured remote.
+
+    Used for projects without an upstream: the container can still push to
+    the gate (it behaves like any other bare repo), but there is nothing
+    for the host to fetch.
+    """
+    gate_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        subprocess.run(
+            ["git", "init", "--bare", str(gate_dir)],
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+    except FileNotFoundError:
+        raise SystemExit("git not found on host; please install git")
+    except subprocess.CalledProcessError as e:
+        raise SystemExit(f"git init --bare failed: {e.stderr or e}")
 
 
 def _get_upstream_head(upstream_url: str, branch: str, env: dict) -> dict | None:

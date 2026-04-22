@@ -18,6 +18,7 @@ from terok_sandbox.gate.mirror import (
     _count_commits_range,  # noqa: PLC2701
     _get_gate_branch_head,  # noqa: PLC2701
     _get_upstream_head,  # noqa: PLC2701
+    _init_remoteless_gate,  # noqa: PLC2701
 )
 
 
@@ -32,11 +33,6 @@ def _proc(rc: int = 0, stdout: str = "", stderr: str = "") -> subprocess.Complet
 
 class TestGitGateSyncGuards:
     """sync() validates inputs before touching the filesystem."""
-
-    def test_no_upstream_url_raises_systemexit(self, tmp_path: Path) -> None:
-        gate = GitGate(scope="proj", gate_path=tmp_path / "g.git", upstream_url=None)
-        with pytest.raises(SystemExit, match="upstream_url"):
-            gate.sync()
 
     def test_validate_gate_callback_invoked_before_clone(self, tmp_path: Path) -> None:
         """The injected validation callback fires before any subprocess work."""
@@ -60,6 +56,99 @@ class TestGitGateSyncGuards:
         ):
             gate.sync()
         assert called == ["proj"]
+
+
+# ---------------------------------------------------------------------------
+# GitGate.sync — remoteless gate (no upstream_url configured)
+# ---------------------------------------------------------------------------
+
+
+class TestGitGateSyncRemoteless:
+    """sync() on a remoteless gate initialises a bare repo and returns a no-op."""
+
+    def test_fresh_gate_with_no_upstream_inits_bare_repo(self, tmp_path: Path) -> None:
+        """First sync on a missing gate without upstream runs ``git init --bare``."""
+        gate_path = tmp_path / "remoteless.git"
+        gate = GitGate(scope="scratch", gate_path=gate_path, upstream_url=None)
+
+        # Do not mock subprocess — we want the real ``git init --bare`` to
+        # produce a real bare repo so later reads (git commands) succeed.
+        result = gate.sync()
+
+        assert result["upstream_url"] is None
+        assert result["created"] is True
+        assert result["success"] is True
+        assert result["updated_branches"] == []
+        assert result["errors"] == []
+        assert result["cache_refreshed"] is False
+
+        # Sanity: ``git init --bare`` produces at least a HEAD file.
+        assert (gate_path / "HEAD").is_file()
+
+    def test_existing_remoteless_gate_is_noop(self, tmp_path: Path) -> None:
+        """Second sync on an existing remoteless gate does not re-initialise."""
+        gate_path = tmp_path / "remoteless.git"
+        gate = GitGate(scope="scratch", gate_path=gate_path, upstream_url=None)
+
+        first = gate.sync()
+        assert first["created"] is True
+
+        with patch("terok_sandbox.gate.mirror._init_remoteless_gate") as mock_init:
+            second = gate.sync()
+        mock_init.assert_not_called()
+        assert second["created"] is False
+        assert second["success"] is True
+        assert second["updated_branches"] == []
+
+    def test_force_reinit_reruns_init_bare(self, tmp_path: Path) -> None:
+        """``force_reinit=True`` wipes and re-initialises a remoteless gate."""
+        gate_path = tmp_path / "remoteless.git"
+        gate = GitGate(scope="scratch", gate_path=gate_path, upstream_url=None)
+        gate.sync()
+
+        result = gate.sync(force_reinit=True)
+        assert result["created"] is True
+        assert (gate_path / "HEAD").is_file()
+
+    def test_remoteless_sync_skips_clone_cache_refresh(self, tmp_path: Path) -> None:
+        """A remoteless gate has nothing to seed a clone cache from."""
+        gate = GitGate(
+            scope="scratch",
+            gate_path=tmp_path / "remoteless.git",
+            upstream_url=None,
+            clone_cache_base=tmp_path / "cache",
+        )
+        with patch.object(gate, "_refresh_clone_cache") as mock_refresh:
+            result = gate.sync()
+        mock_refresh.assert_not_called()
+        assert result["cache_refreshed"] is False
+
+
+# ---------------------------------------------------------------------------
+# _init_remoteless_gate helper
+# ---------------------------------------------------------------------------
+
+
+class TestInitRemotelessGate:
+    """The lower-level helper that backs the remoteless-gate path."""
+
+    def test_creates_bare_repo_at_requested_path(self, tmp_path: Path) -> None:
+        gate_dir = tmp_path / "g.git"
+        _init_remoteless_gate(gate_dir)
+        assert (gate_dir / "HEAD").is_file()
+        # Bare repos have a ``config`` file marking ``bare = true``.
+        config = (gate_dir / "config").read_text()
+        assert "bare = true" in config
+
+    def test_missing_git_raises_actionable_hint(self, tmp_path: Path) -> None:
+        with (
+            patch(
+                "terok_sandbox.gate.mirror.subprocess.run",
+                side_effect=FileNotFoundError("git"),
+            ),
+            pytest.raises(SystemExit, match="git not found"),
+        ):
+            _init_remoteless_gate(tmp_path / "g.git")
 
 
 # ---------------------------------------------------------------------------
