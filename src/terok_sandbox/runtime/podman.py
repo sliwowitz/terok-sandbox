@@ -934,6 +934,9 @@ class PodmanRuntime:
 # ── stream_initial_logs internals ─────────────────────────────────────────
 
 
+_REAPED_FLAG = "_terok_reaped"
+
+
 def _reap_logs_proc(proc: subprocess.Popen | None) -> None:
     """Terminate, wait, and close the ``podman logs`` child if still alive.
 
@@ -941,9 +944,19 @@ def _reap_logs_proc(proc: subprocess.Popen | None) -> None:
     podman child never leaks as a zombie and its stdout pipe never
     leaks as an open file descriptor.  Safe to call with ``None`` or
     with a child that has already exited.
+
+    Idempotent: on a slow host the thread's ``finally`` and the main
+    thread's fallback can both reach this function.  A sentinel
+    attribute on the process marks it as already reaped so the
+    second call short-circuits without double-terminating or
+    double-closing the pipe.
     """
-    if proc is None:
+    if proc is None or proc.__dict__.get(_REAPED_FLAG, False):
         return
+    # Writing via ``__dict__`` (not ``setattr``) so MagicMock's auto-
+    # attribute magic doesn't treat the flag as a pre-existing truthy
+    # mock on the very first call.
+    proc.__dict__[_REAPED_FLAG] = True
     try:
         if proc.poll() is None:
             proc.terminate()
