@@ -33,6 +33,17 @@ from terok_shield.container import (
 
 from .config import SandboxConfig
 
+# The file names below mirror what ``setup_global_hooks`` writes — a small
+# coupling surface kept local so the uninstaller does not need to import
+# private helpers from ``terok_shield.hooks.install``.
+_HOOK_FILES = (
+    HOOK_ENTRYPOINT_NAME,
+    "terok-shield-createRuntime.json",
+    "terok-shield-poststop.json",
+    "terok-shield-bridge-createRuntime.json",
+    "terok-shield-bridge-poststop.json",
+)
+
 # DANGEROUS TRANSITIONAL OVERRIDE — will be removed once terok-shield
 # supports all target podman versions (see terok-shield#71, #101).
 _BYPASS_WARNING = (
@@ -218,6 +229,48 @@ def setup_hooks_direct(*, root: bool = False) -> None:
         target = Path(USER_HOOKS_DIR).expanduser()
         setup_global_hooks(target)
         ensure_containers_conf_hooks_dir(target)
+
+
+def run_uninstall(*, root: bool = False, user: bool = False) -> None:
+    """Remove the global OCI hooks that ``run_setup`` installs.
+
+    Mirrors the flag contract of :func:`run_setup` — exactly one of
+    ``root`` or ``user`` must be true.  Missing files are tolerated so
+    the uninstaller is idempotent and safe to invoke when nothing has
+    been installed yet.
+    """
+    if not root and not user:
+        raise ValueError("run_uninstall requires either root=True or user=True")
+    uninstall_hooks_direct(root=root)
+
+
+def uninstall_hooks_direct(*, root: bool = False) -> None:
+    """Delete shield hook files from the user or system hooks directory.
+
+    Uses sudo for the system directory (matching the install path in
+    :func:`setup_hooks_direct`) so the Python process stays unprivileged.
+    Bridge hook files are removed when present so a plain
+    ``shield uninstall-hooks`` leaves no residue from an earlier
+    ``terok setup`` that registered the D-Bus bridge.
+    """
+    target = system_hooks_dir() if root else Path(USER_HOOKS_DIR).expanduser()
+    if root:
+        _remove_hook_files_via_sudo(target)
+    else:
+        for name in _HOOK_FILES:
+            (target / name).unlink(missing_ok=True)
+
+
+def _remove_hook_files_via_sudo(target_dir: Path) -> None:
+    """Remove hook files from a root-owned directory via ``sudo rm -f``.
+
+    Paired with the ``sudo cp`` path in ``setup_hooks_direct`` — keeps
+    the process itself unprivileged while still managing system dirs.
+    """
+    import subprocess
+
+    paths = [str(target_dir / name) for name in _HOOK_FILES]
+    subprocess.run(["sudo", "rm", "-f", *paths], check=True)  # noqa: S603, S607
 
 
 def install_shield_bridge(reader_dest: Path | None = None) -> None:
