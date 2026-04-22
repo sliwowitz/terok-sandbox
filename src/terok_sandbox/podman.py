@@ -1,20 +1,15 @@
 # SPDX-FileCopyrightText: 2026 Jiri Vyskocil
 # SPDX-License-Identifier: Apache-2.0
 
-"""Podman container introspection for terok-aware callers.
+"""Podman container introspection — cached metadata lookup by container ID.
 
-Exposes a small public surface — :class:`ContainerInfo` +
-:class:`PodmanInspector` — so components that want to turn a short
-container ID into richer metadata (name, running state, OCI
-annotations) don't have to shell out to ``podman inspect`` themselves.
-The clearance notifier uses this together with terok's own task
-metadata to render "Task: project/task_id" bodies instead of raw IDs.
+Exposes :class:`ContainerInfo` (the facts ``podman inspect`` returns
+that are worth caching) and :class:`PodmanInspector` (the ID → info
+callable, with cache + bounded timeout + soft-fail).
 
-Annotation keys are deliberately NOT interpreted here — we return the
-full ``annotations`` dict and let callers pick the ones they know.
-Keeps sandbox free of terok-specific knowledge (``ai.terok.task`` etc.
-are owned by terok) while still centralising the podman subprocess
-pattern, timeout policy, and cache strategy.
+The annotations dict is returned as-is.  Sandbox doesn't interpret
+keys; callers that know their own annotation namespace pluck out
+what they need.
 """
 
 from __future__ import annotations
