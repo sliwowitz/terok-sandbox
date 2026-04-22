@@ -16,8 +16,11 @@ from unittest.mock import patch
 import pytest
 
 from terok_sandbox.commands import (
+    _handle_gate_install,
+    _handle_gate_uninstall,
     _handle_sandbox_setup,
     _handle_sandbox_uninstall,
+    _handle_shield_uninstall,
 )
 
 # ── Fixtures ──────────────────────────────────────────────────────────────
@@ -122,3 +125,98 @@ class TestSandboxUninstall:
         for key in ("shield_uninstall", "vault_uninstall", "gate_uninstall"):
             if key != skipped_spy_key:
                 assert phase_spies[key].called, f"{key} should still run"
+
+
+# ── Gate install/uninstall handlers (aggregator phase primitives) ────────
+
+
+class TestHandleGateInstall:
+    """Gate install handler — refuses hosts without systemd-user."""
+
+    def test_installs_when_systemd_available(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        from terok_sandbox.gate.lifecycle import GateServerManager
+
+        with (
+            patch.object(GateServerManager, "is_systemd_available", return_value=True),
+            patch.object(GateServerManager, "install_systemd_units") as install,
+        ):
+            _handle_gate_install()
+        install.assert_called_once()
+        assert "installed" in capsys.readouterr().out.lower()
+
+    def test_refuses_when_systemd_unavailable(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        from terok_sandbox.gate.lifecycle import GateServerManager
+
+        with patch.object(GateServerManager, "is_systemd_available", return_value=False):
+            with pytest.raises(SystemExit) as exc:
+                _handle_gate_install()
+        assert exc.value.code == 1
+        assert "systemd" in capsys.readouterr().out.lower()
+
+
+class TestHandleGateUninstall:
+    """Gate uninstall handler — tolerates both daemon-started and systemd-installed state."""
+
+    def test_stops_daemon_when_running_as_daemon(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        from terok_sandbox.gate.lifecycle import GateServerManager, GateServerStatus
+
+        status = GateServerStatus(mode="daemon", running=True, port=9418)
+        with (
+            patch.object(GateServerManager, "get_status", return_value=status),
+            patch.object(GateServerManager, "stop_daemon") as stop,
+            patch.object(GateServerManager, "is_systemd_available", return_value=False),
+        ):
+            _handle_gate_uninstall()
+        stop.assert_called_once()
+        assert "removed" in capsys.readouterr().out.lower()
+
+    def test_uninstalls_systemd_units_when_available(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        from terok_sandbox.gate.lifecycle import GateServerManager, GateServerStatus
+
+        status = GateServerStatus(mode="systemd", running=False, port=9418)
+        with (
+            patch.object(GateServerManager, "get_status", return_value=status),
+            patch.object(GateServerManager, "is_systemd_available", return_value=True),
+            patch.object(GateServerManager, "uninstall_systemd_units") as un,
+        ):
+            _handle_gate_uninstall()
+        un.assert_called_once()
+
+
+# ── Shield uninstall CLI flag validation ─────────────────────────────────
+
+
+class TestHandleShieldUninstall:
+    """The ``shield uninstall-hooks`` handler's user/root flag contract."""
+
+    def test_missing_flags_exits_with_usage_hint(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        with pytest.raises(SystemExit) as exc:
+            _handle_shield_uninstall()
+        msg = str(exc.value)
+        assert "--root" in msg and "--user" in msg
+
+    def test_user_flag_invokes_library_uninstall(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        with patch("terok_sandbox.shield.run_uninstall") as mock_run:
+            _handle_shield_uninstall(user=True)
+        mock_run.assert_called_once_with(root=False, user=True)
+        assert "user" in capsys.readouterr().out
+
+    def test_root_flag_invokes_library_uninstall(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        with patch("terok_sandbox.shield.run_uninstall") as mock_run:
+            _handle_shield_uninstall(root=True)
+        mock_run.assert_called_once_with(root=True, user=False)
+        assert "system" in capsys.readouterr().out
