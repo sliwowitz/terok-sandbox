@@ -934,6 +934,19 @@ class PodmanRuntime:
 # ── stream_initial_logs internals ─────────────────────────────────────────
 
 
+class _Reaper:
+    """One-shot reap guard attached to a ``Popen`` via ``__dict__.setdefault``."""
+
+    __slots__ = ("lock", "done")
+
+    def __init__(self) -> None:
+        self.lock = threading.Lock()
+        self.done = False
+
+
+_REAPER_KEY = "_terok_reaper"
+
+
 def _reap_logs_proc(proc: subprocess.Popen | None) -> None:
     """Terminate, wait, and close the ``podman logs`` child if still alive.
 
@@ -941,9 +954,23 @@ def _reap_logs_proc(proc: subprocess.Popen | None) -> None:
     podman child never leaks as a zombie and its stdout pipe never
     leaks as an open file descriptor.  Safe to call with ``None`` or
     with a child that has already exited.
+
+    Idempotent and thread-safe under two callers racing through (reader
+    thread's ``finally`` and the main thread's fallback): a per-process
+    :class:`_Reaper` guard claims ownership under a short lock, then
+    releases it so the winner can run the terminate/wait/close sequence
+    unsynchronised — a wedged reader mustn't stall the main thread's
+    fallback.  Writing via ``__dict__`` (not ``setattr``) keeps
+    MagicMock-typed procs in tests from auto-creating a truthy flag on
+    the very first call.
     """
     if proc is None:
         return
+    reaper: _Reaper = proc.__dict__.setdefault(_REAPER_KEY, _Reaper())
+    with reaper.lock:
+        if reaper.done:
+            return
+        reaper.done = True
     try:
         if proc.poll() is None:
             proc.terminate()

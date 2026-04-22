@@ -19,6 +19,7 @@ import os
 import shlex
 import signal
 import subprocess
+import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -521,6 +522,16 @@ class VaultManager:
         else:
             cmd.append(f"--ssh-signer-socket-path={self._cfg.ssh_signer_socket_path}")
 
+        # Under Nix (and other setups where ``sys.executable`` is a wrapper
+        # that normally rewrites the env on startup) spawning ``python -m
+        # terok_sandbox.vault`` from a running terok_sandbox process bypasses
+        # that wrapper, and the vault daemon can't find its own package on
+        # the import path.  Passing the parent's ``sys.path`` through as
+        # ``PYTHONPATH`` lets the subprocess resolve the same install this
+        # process is running from.  See terok-ai/terok-shield#242 by
+        # Franz Pöschel — same fix pattern, different spawn site.
+        env = {**os.environ, "PYTHONPATH": os.pathsep.join(sys.path)}
+
         # Fork into background so the vault survives shell exit.
         # stderr=PIPE only for the startup-failure detection window.
         proc = subprocess.Popen(
@@ -528,6 +539,7 @@ class VaultManager:
             stdout=subprocess.DEVNULL,
             stderr=subprocess.PIPE,
             start_new_session=True,
+            env=env,
         )
 
         broker_ok, signer_ok, broker_detail, signer_detail = self._wait_for_daemon_ready()
