@@ -122,6 +122,7 @@ from .runtime import (
     PortReservation,
 )
 from .sandbox import READY_MARKER, LifecycleHooks, RunSpec, Sandbox, Sharing, VolumeSpec
+from .setup_stamp import SetupVerdict, clear_stamp, needs_setup, stamp_path, write_stamp
 from .shield import (
     EnvironmentCheck,
     NftNotFoundError,
@@ -354,6 +355,12 @@ __all__ = [
     "SERVICES_TCP_OPTOUT_YAML",
     "SandboxConfigView",
     "gate_use_personal_ssh_default",
+    # Setup stamp (epic #685 phase 1 — TUI's cheap "needs_setup" probe)
+    "SetupVerdict",
+    "clear_stamp",
+    "needs_setup",
+    "stamp_path",
+    "write_stamp",
     # Lifecycle managers
     "VaultManager",
     "GateServerManager",

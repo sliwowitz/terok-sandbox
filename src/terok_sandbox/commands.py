@@ -107,6 +107,13 @@ def _handle_sandbox_setup(
     skip it silently.  Exits non-zero if any mandatory phase fails —
     the clearance phase is optional by design.
 
+    On success (every attempted phase reached its end), writes
+    ``setup.stamp`` with the currently-installed package versions —
+    the TUI's startup probe reads it to decide whether to nudge the
+    user toward setup.  Phases skipped via ``--no-*`` are the user's
+    explicit choice and don't block stamping; only an actual failure
+    holds the stamp back.
+
     Args:
         root: Install shield hooks system-wide (requires sudo); vault
             and gate stay per-user.
@@ -115,6 +122,8 @@ def _handle_sandbox_setup(
             layered config — passed through so terok's config stays
             the single source of truth for paths.
     """
+    from .setup_stamp import write_stamp
+
     if cfg is None:
         cfg = SandboxConfig()
 
@@ -134,6 +143,9 @@ def _handle_sandbox_setup(
 
     if failed:
         raise SystemExit(1)
+
+    stamp = write_stamp()
+    print(f"→ setup stamp written: {stamp}")
 
 
 def _handle_sandbox_uninstall(
@@ -158,6 +170,8 @@ def _handle_sandbox_uninstall(
     removes what it can instead of leaving orphans behind.  Exits
     non-zero only after every phase has had its attempt.
     """
+    from .setup_stamp import clear_stamp
+
     failed = False
     if not no_clearance:
         print("→ clearance uninstall")
@@ -171,6 +185,8 @@ def _handle_sandbox_uninstall(
     if not no_shield:
         print("→ shield uninstall-hooks")
         failed |= _try_phase(lambda: _handle_shield_uninstall(user=not root, root=root))
+    if clear_stamp():
+        print("→ setup stamp removed")
     if failed:
         raise SystemExit(1)
 
