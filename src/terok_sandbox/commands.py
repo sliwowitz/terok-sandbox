@@ -18,12 +18,18 @@ import sys
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, NamedTuple
 
+from ._setup import (
+    run_clearance_install_phase,
+    run_gate_install_phase,
+    run_prereq_report,
+    run_shield_install_phase,
+    run_vault_install_phase,
+)
 from ._util import sanitize_tty
+from .config import SandboxConfig
 
 if TYPE_CHECKING:
     from collections.abc import Callable
-
-    from .config import SandboxConfig
 
 
 class KeyRow(NamedTuple):
@@ -87,17 +93,47 @@ def _handle_sandbox_setup(
     no_shield: bool = False,
     no_vault: bool = False,
     no_gate: bool = False,
+    no_clearance: bool = False,
+    cfg: SandboxConfig | None = None,
 ) -> None:
-    """Install shield hooks, vault, and gate as one idempotent bootstrap."""
+    """Install shield + vault + gate + clearance in one idempotent bootstrap.
+
+    Runs a prereq report first (host binaries, firewall binaries, SELinux
+    — report-only, never blocks).  Then each service phase does the full
+    stop → uninstall → install → verify cycle so a re-run after a pipx
+    upgrade guarantees the running units pick up the new code, not just
+    the rewritten on-disk files.  Clearance (hub + verdict + notifier)
+    is installed when ``terok_clearance`` is importable; headless hosts
+    skip it silently.  Exits non-zero if any mandatory phase fails —
+    the clearance phase is optional by design.
+
+    Args:
+        root: Install shield hooks system-wide (requires sudo); vault
+            and gate stay per-user.
+        no_shield / no_vault / no_gate / no_clearance: Skip the named phase.
+        cfg: Optional :class:`SandboxConfig` override.  Defaults to the
+            layered config — passed through so terok's config stays
+            the single source of truth for paths.
+    """
+    if cfg is None:
+        cfg = SandboxConfig()
+
+    run_prereq_report(cfg)
+    print()
+    print("Services:")
+
+    failed = False
     if not no_shield:
-        print("→ shield install-hooks")
-        _handle_shield_setup(user=not root, root=root)
+        failed |= not run_shield_install_phase(root=root).ok
     if not no_vault:
-        print("→ vault install")
-        _handle_vault_install()
+        failed |= not run_vault_install_phase(cfg).ok
     if not no_gate:
-        print("→ gate install")
-        _handle_gate_install()
+        failed |= not run_gate_install_phase(cfg).ok
+    if not no_clearance:
+        failed |= not run_clearance_install_phase().ok
+
+    if failed:
+        raise SystemExit(1)
 
 
 def _handle_sandbox_uninstall(
@@ -106,13 +142,16 @@ def _handle_sandbox_uninstall(
     no_shield: bool = False,
     no_vault: bool = False,
     no_gate: bool = False,
+    no_clearance: bool = False,
 ) -> None:
     """Tear down the stack in reverse install order.
 
     A running container can lose its gate and vault without immediate
     blast, but losing shield hooks mid-flight is the most disruptive —
     shield goes last so live containers stay firewalled as long as
-    possible.
+    possible.  Clearance (hub + verdict + notifier) is torn down first
+    because its only connection is to the hub's varlink socket; it
+    has no dependants.
 
     Best-effort across phases: a failing phase reports the error and
     the next phase runs anyway, so a partial-install teardown still
@@ -120,6 +159,9 @@ def _handle_sandbox_uninstall(
     non-zero only after every phase has had its attempt.
     """
     failed = False
+    if not no_clearance:
+        print("→ clearance uninstall")
+        failed |= _try_phase(_handle_clearance_uninstall)
     if not no_gate:
         print("→ gate uninstall")
         failed |= _try_phase(_handle_gate_uninstall)
@@ -131,6 +173,21 @@ def _handle_sandbox_uninstall(
         failed |= _try_phase(lambda: _handle_shield_uninstall(user=not root, root=root))
     if failed:
         raise SystemExit(1)
+
+
+def _handle_clearance_uninstall() -> None:
+    """Delegate clearance teardown to ``terok_clearance``; soft-skip when absent."""
+    try:
+        from terok_clearance.runtime.installer import (
+            uninstall_notifier_service,
+            uninstall_service,
+        )
+    except ImportError:
+        print("  terok_clearance not installed — nothing to remove.")
+        return
+    uninstall_notifier_service()
+    uninstall_service()
+    print("Clearance hub + verdict + notifier removed.")
 
 
 def _try_phase(phase: Callable[[], None]) -> bool:
@@ -185,6 +242,11 @@ SETUP_COMMANDS: tuple[CommandDef, ...] = (
             ArgDef(name="--no-shield", action="store_true", help="Skip shield install"),
             ArgDef(name="--no-vault", action="store_true", help="Skip vault install"),
             ArgDef(name="--no-gate", action="store_true", help="Skip gate install"),
+            ArgDef(
+                name="--no-clearance",
+                action="store_true",
+                help="Skip clearance hub/verdict/notifier install",
+            ),
         ),
     ),
     CommandDef(
@@ -200,6 +262,11 @@ SETUP_COMMANDS: tuple[CommandDef, ...] = (
             ArgDef(name="--no-shield", action="store_true", help="Skip shield uninstall"),
             ArgDef(name="--no-vault", action="store_true", help="Skip vault uninstall"),
             ArgDef(name="--no-gate", action="store_true", help="Skip gate uninstall"),
+            ArgDef(
+                name="--no-clearance",
+                action="store_true",
+                help="Skip clearance hub/verdict/notifier uninstall",
+            ),
         ),
     ),
 )
