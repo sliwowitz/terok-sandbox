@@ -124,33 +124,21 @@ def test_stamp_corrupt_when_schema_version_mismatch() -> None:
     assert needs_setup() is SetupVerdict.STAMP_CORRUPT
 
 
-def test_stamp_corrupt_when_root_is_not_an_object() -> None:
-    """A stamp whose root JSON value is e.g. an array surfaces as ``STAMP_CORRUPT``.
-
-    Defends against hand-edited stamps where the user accidentally
-    replaced the object with a list or scalar.  Without this branch
-    the root would fall through to ``raw.get(...)`` and raise
-    ``AttributeError`` outside the caught set.
-    """
+@pytest.mark.parametrize(
+    "content",
+    [
+        pytest.param(json.dumps([1, 2, 3]), id="root-is-array"),
+        pytest.param(
+            json.dumps({"version": 1, "completed_at": "x", "packages": "oops"}),
+            id="packages-is-string",
+        ),
+    ],
+)
+def test_stamp_corrupt_when_shape_is_wrong(content: str) -> None:
+    """A wrong-shape stamp surfaces as ``STAMP_CORRUPT`` instead of crashing the read."""
     path = stamp_path()
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps([1, 2, 3]), encoding="utf-8")
-    assert needs_setup() is SetupVerdict.STAMP_CORRUPT
-
-
-def test_stamp_corrupt_when_packages_is_not_an_object() -> None:
-    """A stamp where ``packages`` is e.g. a string surfaces as ``STAMP_CORRUPT``.
-
-    Mirrors the root-shape guard one level down — a malformed
-    ``packages`` field would otherwise blow up inside the comparison
-    pipeline with a confusing TypeError.
-    """
-    path = stamp_path()
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(
-        json.dumps({"version": 1, "completed_at": "x", "packages": "oops"}),
-        encoding="utf-8",
-    )
+    path.write_text(content, encoding="utf-8")
     assert needs_setup() is SetupVerdict.STAMP_CORRUPT
 
 
@@ -208,20 +196,13 @@ def test_installed_versions_includes_at_least_terok_sandbox() -> None:
 
 
 def test_compare_versions_falls_back_to_string_compare_for_invalid_version() -> None:
-    """A non-PEP-440 stamp string falls back to plain string comparison.
-
-    Hand-edited stamps with weird version strings shouldn't crash
-    ``needs_setup`` — they should just compare lexicographically and
-    end up in some defined verdict.  This guards the ``InvalidVersion``
-    branch in :func:`_compare_versions`.
-    """
+    """Non-PEP-440 stamp strings fall back to lexicographic compare instead of crashing."""
     from terok_sandbox.setup_stamp import _compare_versions
 
-    # Both sides invalid — pure string compare.
     assert _compare_versions("not-a-version", "not-a-version") == 0
     assert _compare_versions("zzz", "aaa") == 1
-    # One side invalid — same fallback.
-    assert _compare_versions("0.0.10", "not-a-version") == -1  # "0" < "n"
+    # Mixed: "0" < "n" — lexicographic, since the valid side can't be compared to an invalid one.
+    assert _compare_versions("0.0.10", "not-a-version") == -1
 
 
 # ── stamp location respects umbrella root ─────────────────────────────

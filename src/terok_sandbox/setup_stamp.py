@@ -47,6 +47,8 @@ from enum import Enum
 from importlib.metadata import PackageNotFoundError, version as _meta_version
 from pathlib import Path
 
+from packaging.version import InvalidVersion, Version
+
 from .paths import namespace_state_dir
 
 # ── Public API ────────────────────────────────────────────────────────
@@ -219,8 +221,6 @@ def _compare_versions(a: str, b: str) -> int:
     keeps ``needs_setup`` from blowing up on a hand-edited stamp with
     a non-PEP-440 version string.
     """
-    from packaging.version import InvalidVersion, Version
-
     try:
         va, vb = Version(a), Version(b)
     except InvalidVersion:
