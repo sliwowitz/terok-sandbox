@@ -137,3 +137,84 @@ class TestDBLifecycle:
         mode = db._conn.execute("PRAGMA journal_mode").fetchone()[0]
         assert mode == "wal"
         db.close()
+
+
+class TestSchemaMigration:
+    """Verify legacy v0 rows (OpenSSH PEM + hex fingerprint) migrate cleanly."""
+
+    def test_v0_to_v1_rewrites_private_and_fingerprint(self, tmp_path: Path) -> None:
+        """A DB built with the old schema gets re-encoded on the next open.
+
+        The old shape stored OpenSSH PEM in a ``private_pem`` column with
+        64-char hex fingerprints.  The new shape stores PKCS#8 DER in
+        ``private_der`` with ``SHA256:<base64>`` fingerprints.  Opening a
+        legacy DB through :class:`CredentialDB` must transparently convert
+        every row and bump ``PRAGMA user_version`` so subsequent opens skip
+        the work.
+        """
+        import hashlib
+        import sqlite3
+
+        from cryptography.hazmat.primitives.asymmetric import ed25519
+        from cryptography.hazmat.primitives.serialization import (
+            Encoding,
+            NoEncryption,
+            PrivateFormat,
+            PublicFormat,
+            load_der_private_key,
+        )
+
+        db_path = tmp_path / "legacy.db"
+        priv = ed25519.Ed25519PrivateKey.generate()
+        pem = priv.private_bytes(Encoding.PEM, PrivateFormat.OpenSSH, NoEncryption())
+        pub_wire = priv.public_key().public_bytes(Encoding.OpenSSH, PublicFormat.OpenSSH)
+        import base64
+
+        pub_blob = base64.b64decode(pub_wire.decode("ascii").split()[1])
+        hex_fp = hashlib.sha256(pub_blob).hexdigest()
+
+        # Hand-build the v0 schema with a row that mirrors what the old code wrote.
+        conn = sqlite3.connect(str(db_path))
+        conn.executescript("""
+            CREATE TABLE ssh_keys (
+                id           INTEGER PRIMARY KEY AUTOINCREMENT,
+                key_type     TEXT    NOT NULL,
+                private_pem  BLOB    NOT NULL,
+                public_blob  BLOB    NOT NULL,
+                comment      TEXT    NOT NULL DEFAULT '',
+                fingerprint  TEXT    NOT NULL UNIQUE,
+                created_at   TEXT    NOT NULL DEFAULT (datetime('now'))
+            );
+        """)
+        conn.execute(
+            "INSERT INTO ssh_keys (key_type, private_pem, public_blob, fingerprint)"
+            " VALUES (?, ?, ?, ?)",
+            ("ed25519", pem, pub_blob, hex_fp),
+        )
+        conn.commit()
+        conn.close()
+
+        # Opening through the high-level API triggers migration.
+        db = CredentialDB(db_path)
+        try:
+            cols = {r[1] for r in db._conn.execute("PRAGMA table_info(ssh_keys)").fetchall()}
+            assert "private_der" in cols
+            assert "private_pem" not in cols
+            (fp,) = db._conn.execute("SELECT fingerprint FROM ssh_keys").fetchone()
+            assert fp.startswith("SHA256:")
+            (der_blob,) = db._conn.execute("SELECT private_der FROM ssh_keys").fetchone()
+            # Decode round-trips: the migrated bytes still produce the same key.
+            reloaded = load_der_private_key(bytes(der_blob), password=None)
+            assert isinstance(reloaded, ed25519.Ed25519PrivateKey)
+            (version,) = db._conn.execute("PRAGMA user_version").fetchone()
+            assert version == 1
+        finally:
+            db.close()
+
+        # Re-opening the same DB is a pure no-op.
+        db2 = CredentialDB(db_path)
+        try:
+            (version,) = db2._conn.execute("PRAGMA user_version").fetchone()
+            assert version == 1
+        finally:
+            db2.close()

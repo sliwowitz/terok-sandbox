@@ -119,7 +119,7 @@ class _TokenDB:
         from ..credentials.db import SSHKeyRecord
 
         rows = self._conn.execute(
-            "SELECT k.id, k.key_type, k.private_pem, k.public_blob,"
+            "SELECT k.id, k.key_type, k.private_der, k.public_blob,"
             " k.comment, k.fingerprint"
             " FROM ssh_keys k"
             " JOIN ssh_key_assignments a ON a.key_id = k.id"
