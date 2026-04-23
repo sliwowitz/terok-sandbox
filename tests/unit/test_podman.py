@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: 2026 Jiri Vyskocil
 # SPDX-License-Identifier: Apache-2.0
 
-"""Tests for :class:`PodmanInspector` + :class:`ContainerInfo`."""
+"""Tests for :class:`PodmanInspector` + :func:`create_container_inspector`."""
 
 from __future__ import annotations
 
@@ -9,8 +9,9 @@ import subprocess
 from unittest.mock import MagicMock, patch
 
 import pytest
+from terok_clearance import ContainerInfo, ContainerInspector
 
-from terok_sandbox.podman import ContainerInfo, PodmanInspector, _from_inspect
+from terok_sandbox.podman import PodmanInspector, _from_inspect, create_container_inspector
 
 _CONTAINER_ID = "fa0905d97a1c"
 
@@ -191,3 +192,19 @@ class TestPodmanInspector:
             info = PodmanInspector()(_CONTAINER_ID)
         with pytest.raises(TypeError):
             info.annotations["ai.terok.project"] = "hijacked"  # type: ignore[index]
+
+
+class TestCreateContainerInspector:
+    """Runtime-neutral factory — clearance's notifier reaches through it."""
+
+    def test_returns_podman_inspector_today(self) -> None:
+        """Only ``PodmanInspector`` is wired in today; the factory reflects that."""
+        assert isinstance(create_container_inspector(), PodmanInspector)
+
+    def test_satisfies_clearance_protocol(self) -> None:
+        """Return value ducks-in as a :class:`terok_clearance.ContainerInspector`."""
+        assert isinstance(create_container_inspector(), ContainerInspector)
+
+    def test_returns_fresh_instances(self) -> None:
+        """Each call hands back a fresh inspector so per-instance caches don't leak."""
+        assert create_container_inspector() is not create_container_inspector()

@@ -28,6 +28,10 @@ python = ">=3.12,<4.0"
 # same sys.path env shim lands in sandbox + shield together; the
 # release script flips this back to the shield wheel URL pre-merge.
 terok-shield = {url = "https://github.com/terok-ai/terok-shield/releases/download/v0.6.29/terok_shield-0.6.29-py3-none-any.whl"}
+# DEV-TIME BRANCH PIN — follows terok-clearance's feat/notifier-migration
+# which hosts the ContainerInspector protocol + ContainerInfo data type
+# this package now imports.  Release script flips to the wheel URL.
+terok-clearance = {git = "https://github.com/sliwowitz/terok-dbus.git", branch = "feat/notifier-migration"}
 platformdirs = ">=4.9.6"
 aiohttp = ">=3.9"
 cryptography = ">=46.0.7"

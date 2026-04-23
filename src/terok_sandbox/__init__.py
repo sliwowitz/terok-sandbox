@@ -81,7 +81,7 @@ from .paths import (
     port_registry_dir,
     vault_root,
 )
-from .podman import ContainerInfo, PodmanInspector
+from .podman import PodmanInspector, create_container_inspector
 
 # -- Port registry -----------------------------------------------------------
 from .port_registry import (
@@ -350,9 +350,13 @@ __all__ = [
     "NullRuntime",
     "PodmanRuntime",
     "PortReservation",
-    # Podman inspector (container metadata lookup for terok-aware callers)
-    "ContainerInfo",
+    # Container introspection — concrete podman implementation + the
+    # runtime-neutral factory clearance's notifier reaches for.  The
+    # ``ContainerInfo`` / ``ContainerInspector`` abstraction itself
+    # lives in terok-clearance; sandbox only ships the implementation
+    # and the pick-by-runtime factory.
     "PodmanInspector",
+    "create_container_inspector",
     # Gate server
     "GateServerStatus",
     "check_units_outdated",

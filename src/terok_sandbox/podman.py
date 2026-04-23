@@ -1,15 +1,18 @@
 # SPDX-FileCopyrightText: 2026 Jiri Vyskocil
 # SPDX-License-Identifier: Apache-2.0
 
-"""Podman container introspection — cached metadata lookup by container ID.
+"""Podman implementation of :class:`terok_clearance.ContainerInspector`.
 
-Exposes :class:`ContainerInfo` (the facts ``podman inspect`` returns
-that are worth caching) and :class:`PodmanInspector` (the ID → info
-callable, with cache + bounded timeout + soft-fail).
+Exposes :class:`PodmanInspector` (ID → :class:`ContainerInfo`, with
+cache + bounded timeout + soft-fail) and :func:`create_container_inspector`
+(runtime-neutral factory — picks an inspector that matches whatever
+container runtime sandbox is configured for).
 
-The annotations dict is returned as-is.  Sandbox doesn't interpret
-keys; callers that know their own annotation namespace pluck out
-what they need.
+The data type :class:`ContainerInfo` lives in terok-clearance because
+every clearance consumer reads it; keeping it there avoids forcing
+clearance to import back up from sandbox just to name the result of
+an inspection.  Sandbox owns the runtime-aware *production* of those
+values; clearance owns the *shape*.
 """
 
 from __future__ import annotations
@@ -18,12 +21,10 @@ import json
 import logging
 import shutil
 import subprocess  # nosec B404 — podman is a trusted host binary
-from collections.abc import Mapping
-from dataclasses import dataclass, field
 from types import MappingProxyType
 from typing import Any
 
-_EMPTY_ANNOTATIONS: Mapping[str, str] = MappingProxyType({})
+from terok_clearance import ContainerInfo, ContainerInspector
 
 _log = logging.getLogger(__name__)
 
@@ -32,37 +33,6 @@ _log = logging.getLogger(__name__)
 #: event loop waiting for metadata that's ultimately best-effort
 #: cosmetic (the ID fallback is always good enough).
 _INSPECT_TIMEOUT_S = 5
-
-
-@dataclass(frozen=True)
-class ContainerInfo:
-    """What ``podman inspect`` tells us about one container.
-
-    Empty instance (``ContainerInfo()``) represents "not found" or
-    "lookup failed" — callers should treat missing fields as
-    best-effort and fall back to the raw container ID when they
-    don't have a better label.
-    """
-
-    container_id: str = ""
-    """The short ID podman reported back, or empty on failure."""
-
-    name: str = ""
-    """The container's name without podman's leading ``/`` prefix."""
-
-    state: str = ""
-    """Lifecycle state: ``running``, ``exited``, ``created``, etc.  Empty when unknown."""
-
-    annotations: Mapping[str, str] = field(default_factory=lambda: _EMPTY_ANNOTATIONS)
-    """Every OCI annotation podman recorded for this container.
-
-    Exposed as a read-only :class:`Mapping` — cached instances are
-    shared across ``PodmanInspector`` callers, so mutating the
-    underlying dict would poison future lookups.  Build with
-    :class:`types.MappingProxyType` at construction time; callers
-    (terok's task-aware resolver, anything else that cares) pluck
-    out the keys they know about.
-    """
 
 
 class PodmanInspector:
@@ -172,3 +142,16 @@ def _from_inspect(container_id: str, records: Any) -> ContainerInfo:
             }
         ),
     )
+
+
+def create_container_inspector() -> ContainerInspector:
+    """Return a :class:`ContainerInspector` matched to the active runtime.
+
+    The runtime-neutral entry point for anyone (notifier, TUI, future
+    diagnostic tools) who needs container introspection without
+    knowing which backend sandbox is driving.  Today sandbox runs on
+    podman and the factory hands back a :class:`PodmanInspector`;
+    when a second backend ships (krun, containerd, anything else),
+    this is the single switch-site that grows to pick the right one.
+    """
+    return PodmanInspector()
