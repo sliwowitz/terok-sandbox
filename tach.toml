@@ -185,6 +185,17 @@ depends_on = []
 [[modules]]
 path = "terok_sandbox.commands"
 layer = "surface"
+depends_on = [
+    "terok_sandbox._setup",
+]
+
+# Sandbox-wide setup orchestration — phase runner invoked by the
+# aggregator in commands.py.  Surface layer because it produces the
+# operator-facing install output and reaches across shield / vault /
+# gate / clearance.
+[[modules]]
+path = "terok_sandbox._setup"
+layer = "surface"
 depends_on = []
 
 # CLI entry point — same-layer dep on commands
