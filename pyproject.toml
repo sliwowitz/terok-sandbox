@@ -36,6 +36,11 @@ platformdirs = ">=4.9.6"
 aiohttp = ">=3.9"
 cryptography = ">=46.0.7"
 pydantic = ">=2.9"
+# PEP 440 version comparison — used by setup_stamp to detect post-update /
+# post-downgrade verdicts.  String comparison would mis-order ``0.0.10`` vs
+# ``0.0.9`` (the textbook case), which is exactly the situation the stamp
+# primitive needs to flag.
+packaging = ">=24"
 
 [tool.poetry.group.dev.dependencies]
 ruff = ">=0.15.10"

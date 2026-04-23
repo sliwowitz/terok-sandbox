@@ -53,6 +53,13 @@ path = "terok_sandbox.port_registry"
 layer = "foundation"
 depends_on = ["terok_sandbox.paths"]
 
+# Setup-stamp primitive — JSON marker + version comparison; reads tracked
+# package versions via importlib.metadata, writes under namespace_state_dir.
+[[modules]]
+path = "terok_sandbox.setup_stamp"
+layer = "foundation"
+depends_on = ["terok_sandbox.paths"]
+
 # Configuration dataclass — same-layer dep on paths + port_registry,
 # plus credentials.db for the scope-name guard reused by per-scope
 # socket paths.

@@ -124,6 +124,36 @@ def test_stamp_corrupt_when_schema_version_mismatch() -> None:
     assert needs_setup() is SetupVerdict.STAMP_CORRUPT
 
 
+def test_stamp_corrupt_when_root_is_not_an_object() -> None:
+    """A stamp whose root JSON value is e.g. an array surfaces as ``STAMP_CORRUPT``.
+
+    Defends against hand-edited stamps where the user accidentally
+    replaced the object with a list or scalar.  Without this branch
+    the root would fall through to ``raw.get(...)`` and raise
+    ``AttributeError`` outside the caught set.
+    """
+    path = stamp_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps([1, 2, 3]), encoding="utf-8")
+    assert needs_setup() is SetupVerdict.STAMP_CORRUPT
+
+
+def test_stamp_corrupt_when_packages_is_not_an_object() -> None:
+    """A stamp where ``packages`` is e.g. a string surfaces as ``STAMP_CORRUPT``.
+
+    Mirrors the root-shape guard one level down — a malformed
+    ``packages`` field would otherwise blow up inside the comparison
+    pipeline with a confusing TypeError.
+    """
+    path = stamp_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps({"version": 1, "completed_at": "x", "packages": "oops"}),
+        encoding="utf-8",
+    )
+    assert needs_setup() is SetupVerdict.STAMP_CORRUPT
+
+
 # ── write_stamp / clear_stamp ─────────────────────────────────────────
 
 
@@ -156,6 +186,42 @@ def test_clear_stamp_removes_file_returns_true(monkeypatch) -> None:
 def test_clear_stamp_no_op_when_absent_returns_false() -> None:
     """``clear_stamp`` is idempotent — no file means no-op + False."""
     assert clear_stamp() is False
+
+
+# ── _compare_versions fallback ────────────────────────────────────────
+
+
+def test_installed_versions_includes_at_least_terok_sandbox() -> None:
+    """The default reader walks the tracked-package list via ``importlib.metadata``.
+
+    Run against the real install — the test harness has terok-sandbox
+    installed, so its version must show up.  Other tracked packages
+    (terok, terok-executor, etc.) may or may not be present in a
+    sandbox-only environment; we don't assert on them.
+    """
+    from terok_sandbox.setup_stamp import _installed_versions
+
+    versions = _installed_versions()
+    assert "terok-sandbox" in versions
+    # Any present version must be a non-empty string.
+    assert all(isinstance(v, str) and v for v in versions.values())
+
+
+def test_compare_versions_falls_back_to_string_compare_for_invalid_version() -> None:
+    """A non-PEP-440 stamp string falls back to plain string comparison.
+
+    Hand-edited stamps with weird version strings shouldn't crash
+    ``needs_setup`` — they should just compare lexicographically and
+    end up in some defined verdict.  This guards the ``InvalidVersion``
+    branch in :func:`_compare_versions`.
+    """
+    from terok_sandbox.setup_stamp import _compare_versions
+
+    # Both sides invalid — pure string compare.
+    assert _compare_versions("not-a-version", "not-a-version") == 0
+    assert _compare_versions("zzz", "aaa") == 1
+    # One side invalid — same fallback.
+    assert _compare_versions("0.0.10", "not-a-version") == -1  # "0" < "n"
 
 
 # ── stamp location respects umbrella root ─────────────────────────────

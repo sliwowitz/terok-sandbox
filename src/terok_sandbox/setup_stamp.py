@@ -140,13 +140,17 @@ def write_stamp() -> Path:
 def clear_stamp() -> bool:
     """Remove the stamp file if present.  Returns True if a file was removed.
 
-    Used by ``terok uninstall`` and by tests that want to simulate a
-    fresh-install state without nuking the rest of the state tree.
+    EAFP rather than ``is_file`` + ``unlink``: keeps the function
+    race-safe under a (rare) concurrent ``terok uninstall`` instead of
+    leaking a ``FileNotFoundError`` between the existence check and the
+    unlink.  Used by ``terok uninstall`` and by tests that want to
+    simulate a fresh-install state without nuking the rest of the
+    state tree.
     """
-    path = stamp_path()
-    if not path.is_file():
+    try:
+        stamp_path().unlink()
+    except FileNotFoundError:
         return False
-    path.unlink()
     return True
 
 
