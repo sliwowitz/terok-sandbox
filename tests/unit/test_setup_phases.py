@@ -16,11 +16,9 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from terok_sandbox._setup import (
-    Marker,
     SelinuxStatus,
     _enable_and_restart_user_unit,
     _reinstall_systemd_service,
-    _stage,
     _stop_and_uninstall,
     run_clearance_install_phase,
     run_gate_install_phase,
@@ -49,27 +47,9 @@ def bare_cfg() -> SandboxConfig:
 
 
 # ── Stage primitive ──────────────────────────────────────────────────
-
-
-class TestStage:
-    """The ``_stage`` helper is the one place unit output formatting lives."""
-
-    def test_writes_label_marker_and_detail(self, capsys: pytest.CaptureFixture[str]) -> None:
-        _stage("Vault", Marker.OK, "systemd, tcp, reachable")
-        out = capsys.readouterr().out
-        assert "Vault" in out
-        assert " ok " in out
-        assert "(systemd, tcp, reachable)" in out
-
-    def test_blank_detail_emits_no_parens(self, capsys: pytest.CaptureFixture[str]) -> None:
-        _stage("Shield hooks", Marker.OK)
-        assert "()" not in capsys.readouterr().out
-
-    def test_label_padded_to_consistent_column(self, capsys: pytest.CaptureFixture[str]) -> None:
-        _stage("x", Marker.OK, "a")
-        _stage("a_longer_label", Marker.OK, "b")
-        lines = capsys.readouterr().out.splitlines()
-        assert lines[0].index(" ok ") == lines[1].index(" ok ")
+# Formatter tests live in ``test_stage.py`` where the renderer does —
+# ``_setup`` only composes stage lines, so testing the same formatting
+# rules here was a duplication trap.
 
 
 # ── Prereq report ────────────────────────────────────────────────────

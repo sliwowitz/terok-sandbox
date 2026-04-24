@@ -26,6 +26,7 @@ from __future__ import annotations
 import os
 import sys
 from enum import StrEnum
+from types import TracebackType
 
 # Label column width: widest shipped label is ``"Clearance notifier"``
 # (18 chars); 21 leaves 3 chars of gutter before the marker.  Recompute
@@ -91,6 +92,93 @@ def stage_end(marker: Marker, detail: str = "") -> None:
     """
     suffix = f" ({detail})" if detail else ""
     print(f" {_render_marker(marker)}{suffix}")
+
+
+class StageLine:
+    """Context-managed progressive stage line.
+
+    Couples :func:`stage_begin` and :func:`stage_end` at one call site
+    so the begin/end pairing is structurally visible — a missing or
+    misplaced ``end`` becomes impossible rather than a bug waiting to
+    happen.
+
+    Use like::
+
+        with stage_line("Vault") as s:
+            do_work()  # slow; label shows immediately
+            s.ok("systemd, socket, reachable")  # marker + detail
+
+    Set the marker via :meth:`ok`, :meth:`warn`, :meth:`fail`,
+    :meth:`missing`, or :meth:`skip`; only the most recent call wins
+    (the single-line output has room for one marker).  The caller can
+    ``return`` early — the context manager's ``__exit__`` still runs
+    and emits whatever marker was last set.
+
+    Exception paths are ergonomic: if an exception escapes the ``with``
+    block without any marker having been set, the line is completed as
+    ``FAIL (<exception>)`` and the exception continues propagating.
+    If :meth:`fail` was already called, that explicit marker/detail
+    wins — the caller's message survives and the exception still
+    propagates.  A block that exits without any marker set *and*
+    without an exception is a caller bug — the line is completed as
+    ``FAIL (no marker set)`` to make the omission loud rather than
+    leaving the label column dangling mid-line.
+    """
+
+    def __init__(self, label: str) -> None:
+        """Capture *label*; deferred rendering until :meth:`__enter__`."""
+        self._label = label
+        self._marker: Marker | None = None
+        self._detail = ""
+
+    def __enter__(self) -> StageLine:
+        """Emit the padded label column without a trailing newline."""
+        stage_begin(self._label)
+        return self
+
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        tb: TracebackType | None,
+    ) -> bool:
+        """Emit the stored marker; auto-FAIL on uncaught exception or missing marker."""
+        if self._marker is not None:
+            stage_end(self._marker, self._detail)
+        elif exc is not None:
+            stage_end(Marker.FAIL, str(exc))
+        else:
+            stage_end(Marker.FAIL, "no marker set")
+        return False  # never suppress exceptions
+
+    def ok(self, detail: str = "") -> None:
+        """Mark the line as ``ok`` with optional detail."""
+        self._marker, self._detail = Marker.OK, detail
+
+    def warn(self, detail: str = "") -> None:
+        """Mark the line as ``WARN`` with optional detail."""
+        self._marker, self._detail = Marker.WARN, detail
+
+    def fail(self, detail: str = "") -> None:
+        """Mark the line as ``FAIL`` with optional detail."""
+        self._marker, self._detail = Marker.FAIL, detail
+
+    def missing(self, detail: str = "") -> None:
+        """Mark the line as ``MISSING`` with optional detail."""
+        self._marker, self._detail = Marker.MISSING, detail
+
+    def skip(self, detail: str = "") -> None:
+        """Mark the line as ``skip`` with optional detail."""
+        self._marker, self._detail = Marker.SKIP, detail
+
+
+def stage_line(label: str) -> StageLine:
+    """Return a :class:`StageLine` context manager for progressive rendering.
+
+    Thin factory so the call site reads ``with stage_line("Vault") as
+    s:`` rather than the class name.
+    """
+    return StageLine(label)
 
 
 def supports_color() -> bool:

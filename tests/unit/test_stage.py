@@ -18,6 +18,7 @@ from terok_sandbox._stage import (
     stage,
     stage_begin,
     stage_end,
+    stage_line,
     yellow,
 )
 
@@ -146,3 +147,106 @@ class TestBannerColour:
 def test_stage_width_fits_widest_shipped_label() -> None:
     """Sanity: ``"Clearance notifier"`` (18 chars) fits the configured gutter."""
     assert len("Clearance notifier") <= STAGE_WIDTH
+
+
+class TestStageLine:
+    """Context manager: progressive rendering coupled to one call site."""
+
+    def test_label_flushes_before_body_runs(
+        self, plain: None, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """The label reaches stdout as soon as the ``with`` block begins."""
+        with stage_line("Vault") as s:
+            # Before the body completes, only the label should be on stdout.
+            mid = capsys.readouterr().out
+            assert "Vault" in mid
+            assert "\n" not in mid
+            s.ok("reachable")
+        final = capsys.readouterr().out
+        assert "ok" in final and "(reachable)" in final
+
+    def test_ok_emits_single_line_matching_stage(
+        self, plain: None, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """``with stage_line(L) as s: s.ok(D)`` ≡ ``stage(L, Marker.OK, D)``."""
+        with stage_line("Vault") as s:
+            s.ok("reachable")
+        via_ctx = capsys.readouterr().out
+
+        stage("Vault", Marker.OK, "reachable")
+        via_call = capsys.readouterr().out
+
+        assert via_ctx == via_call
+
+    @pytest.mark.parametrize(
+        ("method", "expected_token"),
+        [("fail", "FAIL"), ("warn", "WARN"), ("missing", "MISSING"), ("skip", "skip")],
+    )
+    def test_setter_methods_pick_matching_marker(
+        self,
+        plain: None,
+        capsys: pytest.CaptureFixture[str],
+        method: str,
+        expected_token: str,
+    ) -> None:
+        """Each setter writes its marker's string token."""
+        with stage_line("X") as s:
+            getattr(s, method)("detail")
+        assert f" {expected_token} " in " " + capsys.readouterr().out + " "
+
+    def test_last_setter_wins_on_same_line(
+        self, plain: None, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """A tentative ``ok`` overridden by a later ``fail`` renders only the fail."""
+        with stage_line("X") as s:
+            s.ok("optimistic")
+            s.fail("actual error")
+        out = capsys.readouterr().out
+        assert "ok" not in out and "(optimistic)" not in out
+        assert "FAIL" in out and "(actual error)" in out
+
+    def test_unhandled_exception_auto_fails_and_propagates(
+        self, plain: None, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """An exception escaping the block completes the line FAIL and re-raises."""
+        with pytest.raises(RuntimeError, match="boom"):
+            with stage_line("X"):
+                raise RuntimeError("boom")
+        out = capsys.readouterr().out
+        assert "FAIL" in out and "(boom)" in out
+
+    def test_explicit_fail_survives_when_exception_also_propagates(
+        self, plain: None, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """Caller's explicit ``fail()`` wins even when an exception re-raises past ``with``."""
+        with pytest.raises(RuntimeError):
+            with stage_line("X") as s:
+                s.fail("caller-set message")
+                raise RuntimeError("noisy stack")
+        out = capsys.readouterr().out
+        assert "(caller-set message)" in out
+        assert "(noisy stack)" not in out
+
+    def test_no_marker_no_exception_is_a_loud_fail(
+        self, plain: None, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """A block that forgets to set a marker completes with a diagnostic FAIL."""
+        with stage_line("X"):
+            pass
+        out = capsys.readouterr().out
+        assert "FAIL" in out and "no marker set" in out
+
+    def test_early_return_still_emits_the_line(
+        self, plain: None, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """``return`` from inside the block triggers ``__exit__`` with the stored marker."""
+
+        def do() -> bool:
+            with stage_line("X") as s:
+                s.ok("done")
+                return True
+            return False  # type: ignore[unreachable]  # kept for assertion clarity
+
+        assert do() is True
+        out = capsys.readouterr().out
+        assert "ok" in out and "(done)" in out
