@@ -138,9 +138,9 @@ class StageLine:
 
     def __exit__(
         self,
-        exc_type: type[BaseException] | None,
+        _exc_type: type[BaseException] | None,
         exc: BaseException | None,
-        tb: TracebackType | None,
+        _tb: TracebackType | None,
     ) -> bool:
         """Emit the stored marker; auto-FAIL on uncaught exception or missing marker."""
         if self._marker is not None:
