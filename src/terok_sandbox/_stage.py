@@ -114,15 +114,20 @@ class StageLine:
     ``return`` early — the context manager's ``__exit__`` still runs
     and emits whatever marker was last set.
 
-    Exception paths are ergonomic: if an exception escapes the ``with``
-    block without any marker having been set, the line is completed as
-    ``FAIL (<exception>)`` and the exception continues propagating.
-    If :meth:`fail` was already called, that explicit marker/detail
-    wins — the caller's message survives and the exception still
-    propagates.  A block that exits without any marker set *and*
-    without an exception is a caller bug — the line is completed as
-    ``FAIL (no marker set)`` to make the omission loud rather than
-    leaving the label column dangling mid-line.
+    Exception paths: if an exception escapes the ``with`` block the
+    line is always completed as ``FAIL (<exception>)`` — an uncaught
+    exception dominates any marker the caller set earlier.  This
+    catches the "optimistic early marker" bug where a caller writes
+    ``s.ok("reachable")`` before a final check that turns out to
+    raise; without this precedence rule the log would misleadingly
+    read ``ok`` while the actual run failed.  Callers that want their
+    own message in the log should catch the exception, call
+    :meth:`fail` with the wanted detail, and return normally — that
+    path emits the caller's message with no exception to contend with.
+    A block that exits with no marker set *and* no exception is a
+    caller bug; the line is completed as ``FAIL (no marker set)`` to
+    make the omission loud rather than leaving the label column
+    dangling mid-line.
     """
 
     def __init__(self, label: str) -> None:
@@ -142,11 +147,11 @@ class StageLine:
         exc: BaseException | None,
         _tb: TracebackType | None,
     ) -> bool:
-        """Emit the stored marker; auto-FAIL on uncaught exception or missing marker."""
-        if self._marker is not None:
-            stage_end(self._marker, self._detail)
-        elif exc is not None:
+        """Emit the line: exception (if any) wins over stored marker; never suppresses."""
+        if exc is not None:
             stage_end(Marker.FAIL, str(exc))
+        elif self._marker is not None:
+            stage_end(self._marker, self._detail)
         else:
             stage_end(Marker.FAIL, "no marker set")
         return False  # never suppress exceptions

@@ -13,12 +13,14 @@ import terok_sandbox._stage as _stage_module
 from terok_sandbox._stage import (
     STAGE_WIDTH,
     Marker,
+    _detect_colour,
     bold,
     red,
     stage,
     stage_begin,
     stage_end,
     stage_line,
+    supports_color,
     yellow,
 )
 
@@ -149,6 +151,36 @@ def test_stage_width_fits_widest_shipped_label() -> None:
     assert len("Clearance notifier") <= STAGE_WIDTH
 
 
+class TestColourDetection:
+    """Verify the NO_COLOR / FORCE_COLOR / isatty precedence in :func:`_detect_colour`."""
+
+    def test_no_color_env_disables_colour(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """``NO_COLOR`` always wins — per the no-color.org contract."""
+        monkeypatch.setenv("NO_COLOR", "1")
+        monkeypatch.setenv("FORCE_COLOR", "1")  # ignored in NO_COLOR's presence
+        assert _detect_colour() is False
+
+    def test_force_color_opts_back_in_even_without_tty(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """``FORCE_COLOR`` beats the isatty probe when set to anything non-``"0"``."""
+        monkeypatch.delenv("NO_COLOR", raising=False)
+        monkeypatch.setenv("FORCE_COLOR", "1")
+        assert _detect_colour() is True
+
+    def test_force_color_zero_is_ignored(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """``FORCE_COLOR=0`` is the documented opt-out; isatty decides."""
+        monkeypatch.delenv("NO_COLOR", raising=False)
+        monkeypatch.setenv("FORCE_COLOR", "0")
+        # sys.stdout under pytest is a capturing stream — not a TTY.
+        assert _detect_colour() is False
+
+
+def test_supports_color_returns_cached_module_value() -> None:
+    """``supports_color()`` returns the snapshot captured at import time."""
+    assert supports_color() is _stage_module._COLOUR_ON
+
+
 class TestStageLine:
     """Context manager: progressive rendering coupled to one call site."""
 
@@ -215,17 +247,39 @@ class TestStageLine:
         out = capsys.readouterr().out
         assert "FAIL" in out and "(boom)" in out
 
-    def test_explicit_fail_survives_when_exception_also_propagates(
+    def test_uncaught_exception_overrides_earlier_ok(
         self, plain: None, capsys: pytest.CaptureFixture[str]
     ) -> None:
-        """Caller's explicit ``fail()`` wins even when an exception re-raises past ``with``."""
-        with pytest.raises(RuntimeError):
+        """An optimistic ``.ok()`` set before a raise is replaced by the exception's FAIL.
+
+        Stops the "looks-good-then-raises" bug from rendering a
+        misleading ok line — the exception's detail wins because the
+        optimism turned out to be wrong.
+        """
+        with pytest.raises(RuntimeError, match="actually bad"):
             with stage_line("X") as s:
-                s.fail("caller-set message")
-                raise RuntimeError("noisy stack")
+                s.ok("looks good")
+                raise RuntimeError("actually bad")
         out = capsys.readouterr().out
-        assert "(caller-set message)" in out
-        assert "(noisy stack)" not in out
+        assert "ok" not in out and "(looks good)" not in out
+        assert "FAIL" in out and "(actually bad)" in out
+
+    def test_caller_fail_without_raise_keeps_caller_message(
+        self, plain: None, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """When the caller catches + ``.fail()``s + returns, the caller message wins.
+
+        Complement to :meth:`test_uncaught_exception_overrides_earlier_ok` —
+        showing the only way to put a caller-authored message in the
+        log is to keep the exception out of the ``with`` block.
+        """
+        with stage_line("X") as s:
+            try:
+                raise RuntimeError("noisy stack")
+            except RuntimeError as exc:
+                s.fail(f"install: {exc}")
+        out = capsys.readouterr().out
+        assert "(install: noisy stack)" in out
 
     def test_no_marker_no_exception_is_a_loud_fail(
         self, plain: None, capsys: pytest.CaptureFixture[str]
