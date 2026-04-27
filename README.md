@@ -111,13 +111,6 @@ For most users this dependency is pulled in transitively by
 `terok-executor` or `terok`.  Install it directly only when building
 a custom orchestrator on top of the sandbox API.
 
-## Documentation
-
-- **[User Guide](https://terok-ai.github.io/terok-sandbox/)** —
-  setup, vault, gate, and shield walkthroughs
-- **[Developer Guide](https://terok-ai.github.io/terok-sandbox/developer/)** —
-  architecture, package layout, conventions
-
 ## License
 
 Apache-2.0 — see [LICENSES/Apache-2.0.txt](LICENSES/Apache-2.0.txt).
