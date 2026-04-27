@@ -5,10 +5,10 @@
 
 Collaborators:
 
-- :mod:`~.db` — SQLite credential store (provider secrets, SSH keys, phantom
+- [`db`][db] — SQLite credential store (provider secrets, SSH keys, phantom
   token registry).
-- :mod:`~.ssh` — :class:`~.ssh.SSHManager`, the per-scope key provisioning
+- [`ssh`][ssh] — [`SSHManager`][ssh.SSHManager], the per-scope key provisioning
   entry point.
-- :mod:`~.ssh_keypair` — generation, import, and export of OpenSSH keypairs
+- [`ssh_keypair`][ssh_keypair] — generation, import, and export of OpenSSH keypairs
   against the credential DB.
 """

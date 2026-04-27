@@ -5,11 +5,11 @@
 
 Collaborators:
 
-- :mod:`~.server` — standalone HTTP server wrapping ``git http-backend``
+- [`server`][server] — standalone HTTP server wrapping ``git http-backend``
   with per-task token auth.  Zero terok imports; runs as a separate process.
-- :mod:`~.lifecycle` — host-side systemd socket activation and daemon
+- [`lifecycle`][lifecycle] — host-side systemd socket activation and daemon
   fallback for the gate server.
-- :mod:`~.tokens` — per-task token CRUD (create, revoke, file I/O).
-- :mod:`~.mirror` — host-side bare git mirror (clone, sync, staleness
+- [`tokens`][tokens] — per-task token CRUD (create, revoke, file I/O).
+- [`mirror`][mirror] — host-side bare git mirror (clone, sync, staleness
   detection vs upstream).
 """

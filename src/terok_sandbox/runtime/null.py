@@ -1,14 +1,14 @@
 # SPDX-FileCopyrightText: 2026 Jiri Vyskocil
 # SPDX-License-Identifier: Apache-2.0
 
-"""Null backend for :class:`.protocol.ContainerRuntime`.
+"""Null backend for [`.protocol.ContainerRuntime`][].
 
 Runs no subprocesses — useful for tests and dry-run modes.  Every handle
 operation returns a safe default (``None``, ``False``, ``[]``, empty
-strings).  :meth:`NullRuntime.exec` returns an empty success.
+strings).  [`NullRuntime.exec`][] returns an empty success.
 
-State fixtures can be injected via :meth:`NullRuntime.set_container_state`
-and :meth:`NullRuntime.add_image` when tests need a specific shape.
+State fixtures can be injected via [`NullRuntime.set_container_state`][]
+and [`NullRuntime.add_image`][] when tests need a specific shape.
 """
 
 from __future__ import annotations
@@ -81,7 +81,7 @@ class NullPortReservation:
 
 
 class NullContainer:
-    """Container handle that reads from a :class:`NullRuntime`'s fixtures."""
+    """Container handle that reads from a [`NullRuntime`][]'s fixtures."""
 
     def __init__(self, name: str, *, runtime: NullRuntime) -> None:
         self.name = name
@@ -141,7 +141,7 @@ class NullContainer:
         return ["null-exec", self.name, *command]
 
     def logs(self, *, follow: bool = False, tail: int | None = None) -> LogStream:
-        """Return an empty :class:`NullLogStream`."""
+        """Return an empty [`NullLogStream`][]."""
         return NullLogStream()
 
     def stream_initial_logs(
@@ -154,7 +154,7 @@ class NullContainer:
 
 
 class NullImage:
-    """Image handle backed by :class:`NullRuntime` fixtures."""
+    """Image handle backed by [`NullRuntime`][] fixtures."""
 
     def __init__(self, ref: str, *, runtime: NullRuntime) -> None:
         self.ref = ref
@@ -219,11 +219,11 @@ class NullImage:
 
 
 class NullRuntime:
-    """Stub :class:`ContainerRuntime` for tests and dry-run modes.
+    """Stub [`ContainerRuntime`][] for tests and dry-run modes.
 
     All state lives in dictionaries on the runtime instance.  Tests
-    pre-populate fixtures via the :meth:`set_container_state`,
-    :meth:`add_image`, etc. helpers.
+    pre-populate fixtures via the [`set_container_state`][],
+    [`add_image`][], etc. helpers.
     """
 
     def __init__(self) -> None:
@@ -254,11 +254,11 @@ class NullRuntime:
         self._container_rw_sizes[name] = bytes_
 
     def set_exit_code(self, name: str, code: int) -> None:
-        """Record the exit code :meth:`Container.wait` will return for *name*."""
+        """Record the exit code [`Container.wait`][] will return for *name*."""
         self._container_exit_codes[name] = code
 
     def set_ready_result(self, name: str, ready: bool) -> None:
-        """Record the outcome :meth:`Container.stream_initial_logs` returns."""
+        """Record the outcome [`Container.stream_initial_logs`][] returns."""
         self._ready_results[name] = ready
 
     def add_image(
@@ -290,13 +290,13 @@ class NullRuntime:
         cmd: tuple[str, ...],
         result: ExecResult,
     ) -> None:
-        """Pre-register the result :meth:`exec` returns for exact *cmd*."""
+        """Pre-register the result [`exec`][] returns for exact *cmd*."""
         self._exec_results[(container_name, cmd)] = result
 
     # -- Protocol surface ---------------------------------------------------
 
     def container(self, name: str) -> Container:
-        """Return a :class:`NullContainer` handle."""
+        """Return a [`NullContainer`][] handle."""
         return NullContainer(name, runtime=self)
 
     def containers_with_prefix(self, prefix: str) -> list[Container]:
@@ -308,7 +308,7 @@ class NullRuntime:
         ]
 
     def image(self, ref: str) -> Image:
-        """Return a :class:`NullImage` handle."""
+        """Return a [`NullImage`][] handle."""
         return NullImage(ref, runtime=self)
 
     def images(self, *, dangling_only: bool = False) -> list[Image]:

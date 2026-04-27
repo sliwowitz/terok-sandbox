@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: 2026 Jiri Vyskocil
 # SPDX-License-Identifier: Apache-2.0
 
-"""Tests for :class:`CredentialDB` SSH key + assignment methods."""
+"""Tests for [`CredentialDB`][] SSH key + assignment methods."""
 
 from __future__ import annotations
 

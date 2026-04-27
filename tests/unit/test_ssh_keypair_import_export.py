@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: 2026 Jiri Vyskocil
 # SPDX-License-Identifier: Apache-2.0
 
-"""Tests for :mod:`terok_sandbox.credentials.ssh_keypair` — generate, import, export."""
+"""Tests for [`terok_sandbox.credentials.ssh_keypair`][] — generate, import, export."""
 
 from __future__ import annotations
 
@@ -77,7 +77,7 @@ class TestGenerate:
 
 
 class TestImport:
-    """Verify :func:`import_ssh_keypair` end-to-end behaviour."""
+    """Verify [`import_ssh_keypair`][] end-to-end behaviour."""
 
     def test_round_trip_with_public_file(
         self, db: CredentialDB, disk_keypair: tuple[Path, Path]
@@ -178,8 +178,8 @@ class TestPasswordProtected:
         """Passphrase-protected private keys cannot be imported (yet).
 
         cryptography.load_ssh_private_key raises ``TypeError`` when fed a
-        passphrase-protected key without a password; :func:`import_ssh_keypair`
-        catches that and re-raises :class:`PasswordProtectedKeyError` with an
+        passphrase-protected key without a password; [`import_ssh_keypair`][]
+        catches that and re-raises [`PasswordProtectedKeyError`][] with an
         actionable hint.  We mock the decoder directly to stay independent
         of optional runtime dependencies (like ``bcrypt``).
         """
@@ -201,7 +201,7 @@ class TestPasswordProtected:
 
 
 class TestExport:
-    """Verify :func:`export_ssh_keypair` O_EXCL + permission semantics."""
+    """Verify [`export_ssh_keypair`][] O_EXCL + permission semantics."""
 
     def test_writes_both_files_with_permissions(
         self, db: CredentialDB, disk_keypair: tuple[Path, Path], tmp_path: Path
@@ -416,7 +416,7 @@ class TestCommentGuard:
 
 
 class TestPublicLine:
-    """Verify :func:`public_line_of` covers both algos and rejects unknowns."""
+    """Verify [`public_line_of`][] covers both algos and rejects unknowns."""
 
     def test_ed25519_line_format(self) -> None:
         """Line starts with ``ssh-ed25519`` and ends with the comment."""
@@ -456,7 +456,7 @@ class TestPublicLine:
 
 
 def _record_from(kp, *, id: int):
-    """Build an :class:`SSHKeyRecord` from a :class:`GeneratedKeypair`."""
+    """Build an [`SSHKeyRecord`][] from a [`GeneratedKeypair`][]."""
     from terok_sandbox.credentials.db import SSHKeyRecord
 
     return SSHKeyRecord(
@@ -470,7 +470,7 @@ def _record_from(kp, *, id: int):
 
 
 class TestParseErrors:
-    """Verify :func:`parse_openssh_keypair` failure modes."""
+    """Verify [`parse_openssh_keypair`][] failure modes."""
 
     def test_malformed_pub_line_raises(self, tmp_path: Path) -> None:
         """A ``.pub`` file with fewer than two whitespace-separated fields is rejected."""

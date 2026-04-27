@@ -6,10 +6,10 @@
 The DB is the canonical home for SSH keys.  This module moves material in
 and out of that form:
 
-- :func:`generate_keypair` creates a fresh keypair in memory.
-- :func:`import_ssh_keypair` reads an existing OpenSSH keypair from files
+- [`generate_keypair`][] creates a fresh keypair in memory.
+- [`import_ssh_keypair`][] reads an existing OpenSSH keypair from files
   and registers it against a scope.
-- :func:`export_ssh_keypair` writes a scope's key back to an OpenSSH file
+- [`export_ssh_keypair`][] writes a scope's key back to an OpenSSH file
   pair for handing to tools that cannot use the SSH agent.
 
 Internally, private keys live in the DB as unencrypted PKCS#8 DER — the
@@ -17,8 +17,8 @@ single, opaque binary form the signer loads directly via
 ``load_der_private_key``.  Import converts any supported inbound PEM to
 that form at the boundary, and export re-armors it as OpenSSH PEM.
 
-All flows share one vocabulary: the :class:`GeneratedKeypair` dataclass is
-the portable in-memory form, and :func:`fingerprint_of` defines the
+All flows share one vocabulary: the [`GeneratedKeypair`][] dataclass is
+the portable in-memory form, and [`fingerprint_of`][] defines the
 cross-call dedup key — the standard OpenSSH ``SHA256:<base64>`` fingerprint
 of the SSH wire-format public blob.
 """
@@ -56,7 +56,7 @@ PUBLIC_KEY_MODE = 0o644
 _PASSPHRASE_HINT = re.compile(r"(encrypted|password|passphrase)", re.IGNORECASE)
 """Message substrings cryptography uses when a private key is passphrase-protected.
 
-Detection drives :class:`PasswordProtectedKeyError` translation so malformed
+Detection drives [`PasswordProtectedKeyError`][] translation so malformed
 non-protected PEMs keep bubbling up as plain ``ValueError``.
 """
 
@@ -111,7 +111,7 @@ class ImportResult:
 
 @dataclasses.dataclass(frozen=True, slots=True)
 class ExportResult:
-    """Paths written by :func:`export_ssh_keypair`."""
+    """Paths written by [`export_ssh_keypair`][]."""
 
     key_id: int
     fingerprint: str
@@ -165,7 +165,7 @@ def generate_keypair(key_type: str, *, comment: str) -> GeneratedKeypair:
         key_type: ``"ed25519"`` or ``"rsa"``.
         comment: Comment to embed in the public line.  Surfaces in
             ``ssh-add -L`` output and drives the signer's ``tk-main:``
-            promotion heuristic.  Rejected with :class:`UnsafeCommentError`
+            promotion heuristic.  Rejected with [`UnsafeCommentError`][]
             if it contains control characters or exceeds the length limit.
     """
     _require_safe_comment(comment)
@@ -203,8 +203,8 @@ def import_ssh_keypair(
 
     The public key is optional; when omitted it is derived from the private
     key.  When both are given they must match — fingerprint mismatch raises
-    :class:`KeypairMismatchError`.  Password-protected private keys raise
-    :class:`PasswordProtectedKeyError`; the library stays diagnostic-only,
+    [`KeypairMismatchError`][].  Password-protected private keys raise
+    [`PasswordProtectedKeyError`][]; the library stays diagnostic-only,
     so callers own the remediation hint they render to the user.
     """
     priv_bytes = priv_path.read_bytes()
@@ -240,9 +240,9 @@ def parse_openssh_keypair(
     *,
     comment_override: str | None = None,
 ) -> GeneratedKeypair:
-    """Parse raw OpenSSH bytes into the canonical :class:`GeneratedKeypair` form.
+    """Parse raw OpenSSH bytes into the canonical [`GeneratedKeypair`][] form.
 
-    Passphrase-protected keys raise :class:`PasswordProtectedKeyError`.
+    Passphrase-protected keys raise [`PasswordProtectedKeyError`][].
     Cryptography signals that condition with either ``TypeError`` ("Password
     was not given but private key is encrypted" on older releases) or
     ``ValueError`` (newer releases), depending on version — we catch both
