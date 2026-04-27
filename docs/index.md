@@ -62,14 +62,20 @@ a custom orchestrator on top of the sandbox API.
 ## Quick start
 
 ```python
-from terok_sandbox import Sandbox, SandboxConfig
+from pathlib import Path
 
-config = SandboxConfig.from_env()
-sandbox = Sandbox(config)
-container = sandbox.run(
-    image="terok-l1-cli:ubuntu-24.04",
-    name="task-001",
-    workspace="/var/lib/myapp/task-001",
+from terok_sandbox import RunSpec, Sandbox, SandboxConfig
+
+sandbox = Sandbox(SandboxConfig())
+sandbox.run(
+    RunSpec(
+        container_name="task-001",
+        image="terok-l1-cli:ubuntu-24.04",
+        env={},
+        volumes=(),
+        command=(),
+        task_dir=Path("/var/lib/myapp/task-001"),
+    )
 )
 ```
 

@@ -69,7 +69,7 @@ from terok_sandbox import (
     GateServerManager, TokenStore, GitGate,
     start_daemon, stop_daemon, create_token,
     # Shield adapter
-    Shield, ShieldConfig, ShieldState, make_shield,
+    ShieldState, make_shield,
     # Setup / teardown
     sandbox_setup, sandbox_uninstall, needs_setup,
 )
