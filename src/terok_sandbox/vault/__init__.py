@@ -10,10 +10,10 @@ requests upstream.
 
 Two protocol faces:
 
-- :mod:`~.token_broker` — HTTP reverse proxy that swaps phantom tokens for
+- [`token_broker`][terok_sandbox.vault.token_broker] — HTTP reverse proxy that swaps phantom tokens for
   real API credentials (Anthropic, Mistral, GitHub, etc.).
-- :mod:`~.ssh_signer` — SSH agent protocol handler that signs git data
+- [`ssh_signer`][terok_sandbox.vault.ssh_signer] — SSH agent protocol handler that signs git data
   with host-side private keys.
 
-Both faces run in a single daemon process managed by :mod:`~.lifecycle`.
+Both faces run in a single daemon process managed by [`lifecycle`][terok_sandbox.vault.lifecycle].
 """
