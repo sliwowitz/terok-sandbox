@@ -228,6 +228,34 @@ class TestSandbox:
                 override=("api.foo.com",),
             )
 
+    def test_shield_refresh_delegates(self) -> None:
+        """shield_refresh maps the runtime and threads every tier to ShieldManager.refresh."""
+        from terok_shield import ShieldRuntime
+
+        with patch("terok_sandbox.integrations.shield.ShieldManager") as Mgr:
+            s = Sandbox()
+            s.shield_refresh(
+                "ctr",
+                Path("/tmp/task"),
+                runtime="krun",
+                security_deny=("api.anthropic.com",),
+                provider_allow=("telemetry.example",),
+                project_allow=("github.com",),
+                override=("api.foo.com",),
+            )
+            Mgr.assert_called_once_with(
+                Path("/tmp/task"),
+                s.config,
+                runtime=ShieldRuntime.KRUN,
+            )
+            Mgr.return_value.refresh.assert_called_once_with(
+                "ctr",
+                security_deny=("api.anthropic.com",),
+                provider_allow=("telemetry.example",),
+                project_allow=("github.com",),
+                override=("api.foo.com",),
+            )
+
     def test_build_cmd_threads_projection_from_runspec(self) -> None:
         """A RunSpec's egress projection reaches pre_start_args during command assembly."""
         spec = _make_spec(

@@ -563,6 +563,41 @@ class Sandbox:
             override=override,
         )
 
+    def shield_refresh(
+        self,
+        container: str,
+        task_dir: Path,
+        *,
+        runtime: str | None = None,
+        security_deny: tuple[str, ...] = (),
+        provider_allow: tuple[str, ...] = (),
+        project_allow: tuple[str, ...] = (),
+        override: tuple[str, ...] = (),
+    ) -> None:
+        """Recompute an existing container's shield policy bundle before a restart.
+
+        Same tier data and *runtime* mapping as
+        [`pre_start_args`][terok_sandbox.Sandbox.pre_start_args], but for a
+        container that already exists: no podman args are produced — shield
+        rewrites the bundle and its pre-applied artifacts so the next
+        ``podman start`` enforces *current* policy instead of the bundle
+        frozen at creation (see
+        [`ShieldManager.refresh`][terok_sandbox.ShieldManager.refresh]).
+        """
+        from .integrations.shield import ShieldManager, ShieldRuntime
+
+        ShieldManager(
+            task_dir,
+            self._cfg,
+            runtime=ShieldRuntime.from_runtime_name(runtime),
+        ).refresh(
+            container,
+            security_deny=security_deny,
+            provider_allow=provider_allow,
+            project_allow=project_allow,
+            override=override,
+        )
+
     def shield_down(self, container: str, container_id: str, task_dir: Path) -> None:
         """Remove shield rules for a container (allow all egress).
 
