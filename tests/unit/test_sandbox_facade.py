@@ -51,6 +51,11 @@ class TestRunSpec:
         assert spec.gpus is None
         assert spec.extra_args == ()
 
+    def test_positional_construction_is_refused(self) -> None:
+        """kw_only: a new field can never silently re-bind a positional argument."""
+        with pytest.raises(TypeError):
+            RunSpec("test-ctr", "alpine:latest")  # type: ignore[misc]
+
     def test_security_defaults(self) -> None:
         """New security fields default to permissive-but-safe values."""
         spec = _make_spec()

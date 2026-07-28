@@ -221,9 +221,16 @@ class VolumeSpec:
         return f"{self.host_path}:{self.container_path}:{opts}"
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, kw_only=True)
 class RunSpec:
-    """Everything needed for a single ``podman run`` invocation."""
+    """Everything needed for a single ``podman run`` invocation.
+
+    Keyword-only by construction: the spec grows a field whenever a launch
+    knob appears (the egress tiers below are the latest), and positional
+    construction would silently re-bind every argument after the insertion
+    point.  Every field is named at the call site, so field order is free
+    to stay semantic.
+    """
 
     container_name: str
     """Unique container name."""
