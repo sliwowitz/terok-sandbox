@@ -19,6 +19,7 @@ from terok_sandbox.vault.daemon.token_broker import (
     _KEY_CLIENT,
     _KEY_ROUTES,
     _KEY_TOKEN_DB,
+    _WEBSOCKET_HEARTBEAT,
     _WEBSOCKET_INTERNAL_ERROR,
     _WEBSOCKET_MAX_MSG_SIZE,
     _build_app,
@@ -975,6 +976,110 @@ class TestForwardingPath:
 
         await upstream_server.close()
 
+    async def test_response_body_and_encoding_pass_through_undecoded(self, _forwarding_env) -> None:
+        """The broker forwards the upstream body verbatim, keeping Content-Encoding.
+
+        Regression: the broker used to auto-decompress every upstream response and
+        strip ``Content-Encoding``, so any codec its own aiohttp build couldn't
+        decode (``zstd``/``br``, depending on the host's optional libraries) raised
+        mid-stream instead of reaching the agent — the observed ``Can not decode
+        content-encoding: zstandard (zstd)``. A transparent byte-pipe never touches
+        the body, so the codec set installed on the host is irrelevant and the agent,
+        which advertised the codec via ``Accept-Encoding``, decodes it itself.
+        """
+        import gzip as _gzip
+
+        from aiohttp import web as _web
+        from aiohttp.test_utils import TestClient, TestServer
+
+        payload = b'{"hello":"world"}' * 64
+        compressed = _gzip.compress(payload)
+
+        async def _gzipped(_request: _web.Request) -> _web.Response:
+            return _web.Response(
+                body=compressed,
+                headers={"Content-Encoding": "gzip", "Content-Type": "application/json"},
+            )
+
+        upstream_app = _web.Application()
+        upstream_app.router.add_route("*", "/{tail:.*}", _gzipped)
+        upstream_server = TestServer(upstream_app)
+        await upstream_server.start_server()
+
+        _, tmp_path, tokens = _forwarding_env
+        routes = tmp_path / "routes.json"
+        routes.write_text(
+            json.dumps({"claude": {"upstream": f"http://127.0.0.1:{upstream_server.port}"}})
+        )
+
+        broker_app = _build_app(str(tmp_path / "test.db"), str(routes))
+        async with TestClient(TestServer(broker_app)) as client:
+            # auto_decompress=False lets us inspect exactly what crossed the broker.
+            resp = await client.get(
+                "/v1/messages",
+                headers={"Authorization": f"Bearer {tokens['claude']}"},
+                auto_decompress=False,
+            )
+            assert resp.status == 200
+            assert resp.headers.get("Content-Encoding") == "gzip"
+            raw = await resp.read()
+            assert raw == compressed  # forwarded byte-for-byte, never decoded
+            assert _gzip.decompress(raw) == payload
+
+        await upstream_server.close()
+
+    async def test_websocket_upstream_handshake_drops_client_extensions(
+        self, tmp_path: Path
+    ) -> None:
+        """The upstream WS handshake must not carry the client's ``Sec-WebSocket-*``.
+
+        Regression: the broker forwarded the agent's handshake headers verbatim, so a
+        client-offered ``permessage-deflate`` reached the upstream. When the upstream
+        then negotiated compression, the broker — which never requested it — received
+        compressed frames it couldn't decode and tore the session down, surfacing to
+        the agent as "websocket closed by server before response.completed". aiohttp
+        runs its own upstream handshake, so those headers must be dropped.
+        """
+        from aiohttp import web as _web
+        from aiohttp.test_utils import TestClient, TestServer
+
+        async def _ws_echo(request: _web.Request) -> _web.WebSocketResponse:
+            # Report what the *upstream* leg's handshake actually carried.
+            seen_ext = request.headers.get("Sec-WebSocket-Extensions", "")
+            ws = _web.WebSocketResponse()
+            await ws.prepare(request)
+            await ws.send_json({"ext": seen_ext})
+            await ws.close()
+            return ws
+
+        upstream_app = _web.Application()
+        upstream_app.router.add_route("*", "/{tail:.*}", _ws_echo)
+        upstream_server = TestServer(upstream_app)
+        await upstream_server.start_server()
+
+        db = CredentialDB(tmp_path / "test.db", passphrase="test")
+        db.store_credential("default", "codex", {"type": "oauth", "access_token": "sk-real"})
+        codex_token = db.create_token("proj", "t1", "default", "codex")
+        db.close()
+
+        routes = tmp_path / "routes.json"
+        routes.write_text(
+            json.dumps({"codex": {"upstream": f"http://127.0.0.1:{upstream_server.port}"}})
+        )
+
+        broker_app = _build_app(str(tmp_path / "test.db"), str(routes))
+        async with TestClient(TestServer(broker_app)) as client:
+            # compress=15 makes the client offer permessage-deflate to the broker.
+            async with client.ws_connect(
+                "/v1/realtime",
+                headers={"Authorization": f"Bearer {codex_token}"},
+                compress=15,
+            ) as ws:
+                reported = await ws.receive_json()
+
+        await upstream_server.close()
+        assert "permessage-deflate" not in reported["ext"]
+
     async def test_query_string_preserved(self, _forwarding_env) -> None:
         """Query string is preserved in the upstream request."""
         from aiohttp.test_utils import TestClient, TestServer
@@ -1148,7 +1253,13 @@ class TestWebsocketProxy:
         return SimpleNamespace(type=frame_type, data=data)
 
     async def test_client_frames_are_forwarded_to_upstream(self, monkeypatch) -> None:
-        """Text, binary, ping, pong, and close frames from the client are relayed."""
+        """Only TEXT/BINARY cross the bridge; PING/PONG/CLOSE are handled per-hop.
+
+        Control frames are scoped to a single connection (aiohttp answers them via
+        ``autoping`` and the ``heartbeat`` keepalive), so the bridge must not relay
+        them — forwarding a client PING to the upstream, or vice versa, breaks the
+        RFC 6455 ping/pong contract on each leg.
+        """
         client_ws = self._FakeWebSocket(
             [
                 self._msg(WSMsgType.TEXT, "hello"),
@@ -1183,16 +1294,21 @@ class TestWebsocketProxy:
         assert response is client_ws
         assert ws_connect_kwargs["max_msg_size"] == _WEBSOCKET_MAX_MSG_SIZE
         assert response_kwargs["max_msg_size"] == _WEBSOCKET_MAX_MSG_SIZE
+        # Both legs ping on the same cadence; neither relays the peer's control frames.
+        assert ws_connect_kwargs["heartbeat"] == _WEBSOCKET_HEARTBEAT
+        assert response_kwargs["heartbeat"] == _WEBSOCKET_HEARTBEAT
         assert upstream_ws.sent == [
             ("text", "hello"),
             ("bytes", b"\x01"),
-            ("ping", b"ping"),
-            ("pong", b"pong"),
-            ("close", 1000),
         ]
 
     async def test_upstream_frames_are_forwarded_to_client(self, monkeypatch) -> None:
-        """Text, binary, ping, pong, and close frames from upstream are relayed."""
+        """Only TEXT/BINARY from upstream reach the client; control frames stay per-hop.
+
+        The bridge ignores the upstream's PING/PONG/CLOSE frames; once the upstream
+        stops yielding, ``_proxy_websocket`` closes the client leg itself, propagating
+        the upstream's close code.
+        """
         client_ws = self._FakeWebSocket([], wait_forever=True)
         upstream_ws = self._FakeWebSocket(
             [
@@ -1226,9 +1342,7 @@ class TestWebsocketProxy:
         assert client_ws.sent == [
             ("text", "hello"),
             ("bytes", b"\x02"),
-            ("ping", b"ping"),
-            ("pong", b"pong"),
-            ("close", 1001),
+            ("close", 1001),  # broker-initiated close, propagating upstream's code
         ]
 
     async def test_upstream_connection_failure_returns_502(self) -> None:
