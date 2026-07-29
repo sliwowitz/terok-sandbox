@@ -51,10 +51,36 @@ class TestRunSpec:
         assert spec.gpus is None
         assert spec.extra_args == ()
 
+    def test_positional_construction_is_refused(self) -> None:
+        """kw_only: a new field can never silently re-bind a positional argument."""
+        with pytest.raises(TypeError):
+            RunSpec("test-ctr", "alpine:latest")  # type: ignore[misc]
+
     def test_security_defaults(self) -> None:
         """New security fields default to permissive-but-safe values."""
         spec = _make_spec()
         assert spec.unrestricted is True
+
+    def test_egress_projection_defaults_empty(self) -> None:
+        """The generated-tier fields default to empty tuples (no projection)."""
+        spec = _make_spec()
+        assert spec.security_deny == ()
+        assert spec.provider_allow == ()
+        assert spec.project_allow == ()
+        assert spec.override == ()
+
+    def test_egress_projection_carries_through(self) -> None:
+        """Every generated tier survives the frozen dataclass round-trip."""
+        spec = _make_spec(
+            security_deny=("api.anthropic.com",),
+            provider_allow=("telemetry.example",),
+            project_allow=("github.com",),
+            override=("api.foo.com",),
+        )
+        assert spec.security_deny == ("api.anthropic.com",)
+        assert spec.project_allow == ("github.com",)
+        assert spec.override == ("api.foo.com",)
+        assert spec.provider_allow == ("telemetry.example",)
 
     def test_deprecated_gpu_enabled_alias_maps_to_gpus(self) -> None:
         """``gpu_enabled=True`` still works but warns and folds into ``gpus``."""
@@ -164,8 +190,8 @@ class TestSandbox:
     def test_shield_down_delegates(self) -> None:
         with patch("terok_sandbox.integrations.shield.ShieldManager") as Mgr:
             s = Sandbox()
-            s.shield_down("ctr", "ctr-uuid", Path("/tmp/task"))
-            Mgr.assert_called_once_with(Path("/tmp/task"), s.config)
+            s.shield_down("ctr", "ctr-uuid", MOCK_TASK_DIR)
+            Mgr.assert_called_once_with(MOCK_TASK_DIR, s.config)
             Mgr.return_value.down.assert_called_once_with("ctr", "ctr-uuid")
 
     def test_pre_start_args_delegates(self) -> None:
@@ -174,15 +200,86 @@ class TestSandbox:
         with patch("terok_sandbox.integrations.shield.ShieldManager") as Mgr:
             Mgr.return_value.pre_start.return_value = ["--hook"]
             s = Sandbox()
-            result = s.pre_start_args("ctr", Path("/tmp/task"))
+            result = s.pre_start_args("ctr", MOCK_TASK_DIR)
             assert result == ["--hook"]
             Mgr.assert_called_once_with(
-                Path("/tmp/task"),
+                MOCK_TASK_DIR,
                 s.config,
                 runtime=ShieldRuntime.DEFAULT,
                 loopback_ports_override=None,
             )
-            Mgr.return_value.pre_start.assert_called_once_with("ctr")
+            Mgr.return_value.pre_start.assert_called_once_with(
+                "ctr", security_deny=(), provider_allow=(), project_allow=(), override=()
+            )
+
+    def test_pre_start_args_threads_egress_projection(self) -> None:
+        """Every generated tier reaches ShieldManager.pre_start verbatim."""
+        with patch("terok_sandbox.integrations.shield.ShieldManager") as Mgr:
+            Mgr.return_value.pre_start.return_value = ["--hook"]
+            s = Sandbox()
+            s.pre_start_args(
+                "ctr",
+                MOCK_TASK_DIR,
+                security_deny=("api.anthropic.com", "api.openai.com"),
+                provider_allow=("telemetry.example",),
+                project_allow=("github.com",),
+                override=("api.foo.com",),
+            )
+            Mgr.return_value.pre_start.assert_called_once_with(
+                "ctr",
+                security_deny=("api.anthropic.com", "api.openai.com"),
+                provider_allow=("telemetry.example",),
+                project_allow=("github.com",),
+                override=("api.foo.com",),
+            )
+
+    def test_shield_refresh_delegates(self) -> None:
+        """shield_refresh maps the runtime and threads every tier to ShieldManager.refresh."""
+        from terok_shield import ShieldRuntime
+
+        with patch("terok_sandbox.integrations.shield.ShieldManager") as Mgr:
+            s = Sandbox()
+            s.shield_refresh(
+                "ctr",
+                MOCK_TASK_DIR,
+                runtime="krun",
+                security_deny=("api.anthropic.com",),
+                provider_allow=("telemetry.example",),
+                project_allow=("github.com",),
+                override=("api.foo.com",),
+            )
+            Mgr.assert_called_once_with(
+                MOCK_TASK_DIR,
+                s.config,
+                runtime=ShieldRuntime.KRUN,
+            )
+            Mgr.return_value.refresh.assert_called_once_with(
+                "ctr",
+                security_deny=("api.anthropic.com",),
+                provider_allow=("telemetry.example",),
+                project_allow=("github.com",),
+                override=("api.foo.com",),
+            )
+
+    def test_build_cmd_threads_projection_from_runspec(self) -> None:
+        """A RunSpec's egress projection reaches pre_start_args during command assembly."""
+        spec = _make_spec(
+            security_deny=("api.anthropic.com",),
+            provider_allow=("telemetry.example",),
+            project_allow=("github.com",),
+            override=("api.foo.com",),
+        )
+        s = Sandbox()
+        with patch.object(Sandbox, "pre_start_args", return_value=["--hook"]) as psa:
+            cmd = s._build_cmd(spec)
+        assert "--hook" in cmd
+        _, kwargs = psa.call_args
+        # All four tiers, not just the roster-derived pair: dropping either
+        # authored tier on the way to pre_start_args is the same defect.
+        assert kwargs["security_deny"] == ("api.anthropic.com",)
+        assert kwargs["provider_allow"] == ("telemetry.example",)
+        assert kwargs["project_allow"] == ("github.com",)
+        assert kwargs["override"] == ("api.foo.com",)
 
     def test_pre_start_args_maps_krun_runtime_to_shield_enum(self) -> None:
         """``runtime="krun"`` flows through as ``ShieldRuntime.KRUN``."""
@@ -191,9 +288,9 @@ class TestSandbox:
         with patch("terok_sandbox.integrations.shield.ShieldManager") as Mgr:
             Mgr.return_value.pre_start.return_value = ["--hook"]
             s = Sandbox()
-            s.pre_start_args("ctr", Path("/tmp/task"), runtime="krun")
+            s.pre_start_args("ctr", MOCK_TASK_DIR, runtime="krun")
             Mgr.assert_called_once_with(
-                Path("/tmp/task"),
+                MOCK_TASK_DIR,
                 s.config,
                 runtime=ShieldRuntime.KRUN,
                 loopback_ports_override=None,

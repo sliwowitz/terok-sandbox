@@ -238,6 +238,69 @@ def test_manager_pre_start_threads_runtime_into_shield() -> None:
         assert manager.shield.config.runtime is ShieldRuntime.KRUN
 
 
+def test_pre_start_threads_egress_projection_into_shield() -> None:
+    """ShieldManager.pre_start passes the roster projection through to Shield.pre_start."""
+    mock_shield = make_mock_shield(pre_start_args=["--hook"])
+    manager = ShieldManager(MOCK_TASK_DIR, SandboxConfig())
+    with patch.object(ShieldManager, "shield", new=mock_shield):
+        result = manager.pre_start(
+            "ctr",
+            security_deny=("api.anthropic.com",),
+            provider_allow=("telemetry.example",),
+            project_allow=("github.com",),
+            override=("api.foo.com",),
+        )
+    assert result == ["--hook"]
+    mock_shield.pre_start.assert_called_once_with(
+        "ctr",
+        security_deny=("api.anthropic.com",),
+        provider_allow=("telemetry.example",),
+        project_allow=("github.com",),
+        override=("api.foo.com",),
+    )
+
+
+def test_pre_start_defaults_projection_to_empty() -> None:
+    """With no projection, both generated tiers pass through as empty tuples."""
+    mock_shield = make_mock_shield(pre_start_args=["--hook"])
+    manager = ShieldManager(MOCK_TASK_DIR, SandboxConfig())
+    with patch.object(ShieldManager, "shield", new=mock_shield):
+        manager.pre_start("ctr")
+    mock_shield.pre_start.assert_called_once_with(
+        "ctr", security_deny=(), provider_allow=(), project_allow=(), override=()
+    )
+
+
+def test_refresh_threads_tiers_into_shield() -> None:
+    """ShieldManager.refresh passes the recomputed tiers through to Shield.refresh."""
+    mock_shield = make_mock_shield()
+    manager = ShieldManager(MOCK_TASK_DIR, SandboxConfig())
+    with patch.object(ShieldManager, "shield", new=mock_shield):
+        manager.refresh(
+            "ctr",
+            security_deny=("api.anthropic.com",),
+            provider_allow=("telemetry.example",),
+            project_allow=("github.com",),
+            override=("api.foo.com",),
+        )
+    mock_shield.refresh.assert_called_once_with(
+        "ctr",
+        security_deny=("api.anthropic.com",),
+        provider_allow=("telemetry.example",),
+        project_allow=("github.com",),
+        override=("api.foo.com",),
+    )
+
+
+def test_bypass_refresh_is_noop_with_warning() -> None:
+    """Bypass mode makes ``ShieldManager.refresh`` a loud no-op, like pre_start."""
+    mock_shield = MagicMock(spec=Shield)
+    manager = ShieldManager(MOCK_TASK_DIR, SandboxConfig(shield_bypass=True))
+    with patch.object(ShieldManager, "shield", new=mock_shield), pytest.warns(UserWarning):
+        manager.refresh("ctr")
+    mock_shield.refresh.assert_not_called()
+
+
 def test_status_defaults() -> None:
     """Status reflects the default configured shield state."""
     assert ShieldManager(MOCK_TASK_DIR, SandboxConfig()).status() == {
