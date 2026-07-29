@@ -7,15 +7,86 @@ from __future__ import annotations
 
 import pytest
 
+import terok_sandbox.doctor as _doctor
 from terok_sandbox.doctor import (
     CheckVerdict,
     DoctorCheck,
+    _kernel_keyring_quota,
     _make_shield_check,
     _make_ssh_signer_check,
     _make_token_broker_check,
     _make_vault_unlocked_check,
+    make_kernel_keyring_quota_check,
     sandbox_doctor_checks,
 )
+
+
+class _FakeKeyUsers:
+    """Stand-in for ``Path("/proc/key-users")`` returning canned text."""
+
+    def __init__(self, text: str) -> None:
+        self._text = text
+
+    def read_text(self, encoding: str = "utf-8") -> str:
+        return self._text
+
+
+_KEY_USERS_SAMPLE = " 1000:    19 19/19 19/200 264/20000\n    0:    14 14/14 14/200 154/20000\n"
+
+
+class TestKernelKeyringQuota:
+    """The per-uid kernel-keyring quota gauge (reads ``/proc/key-users``)."""
+
+    def _patch(self, monkeypatch: pytest.MonkeyPatch, *, text: str | None, uid: int = 1000) -> None:
+        monkeypatch.setattr(_doctor.os, "geteuid", lambda: uid)
+        if text is None:
+            monkeypatch.setattr(
+                _doctor,
+                "Path",
+                lambda _p: _FakeMissing(),  # type: ignore[arg-type,return-value]
+            )
+        else:
+            monkeypatch.setattr(_doctor, "Path", lambda _p: _FakeKeyUsers(text))
+
+    def test_parses_this_uids_line(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        self._patch(monkeypatch, text=_KEY_USERS_SAMPLE)
+        assert _kernel_keyring_quota() == (19, 200, 264, 20000)
+
+    def test_none_when_no_line_for_uid(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        self._patch(monkeypatch, text=_KEY_USERS_SAMPLE, uid=4242)
+        assert _kernel_keyring_quota() is None
+
+    def test_none_when_file_absent(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        self._patch(monkeypatch, text=None)
+        assert _kernel_keyring_quota() is None
+
+    def test_ok_far_below_the_limit(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(_doctor, "_kernel_keyring_quota", lambda: (19, 200, 264, 20000))
+        verdict = make_kernel_keyring_quota_check().evaluate(0, "", "")
+        assert verdict.severity == "ok"
+
+    def test_warns_when_keys_near_full(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(_doctor, "_kernel_keyring_quota", lambda: (195, 200, 264, 20000))
+        verdict = make_kernel_keyring_quota_check().evaluate(0, "", "")
+        assert verdict.severity == "warn"
+        assert "195/200 keys" in verdict.detail
+        assert "kernel-keyring" in verdict.detail  # the docs link
+
+    def test_warns_when_bytes_near_full(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(_doctor, "_kernel_keyring_quota", lambda: (19, 200, 19900, 20000))
+        assert make_kernel_keyring_quota_check().evaluate(0, "", "").severity == "warn"
+
+    def test_ok_when_quota_unaccounted(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(_doctor, "_kernel_keyring_quota", lambda: None)
+        assert make_kernel_keyring_quota_check().evaluate(0, "", "").severity == "ok"
+
+
+class _FakeMissing:
+    """``/proc/key-users`` absent — ``read_text`` raises like the real file would."""
+
+    def read_text(self, encoding: str = "utf-8") -> str:
+        raise OSError("No such file or directory")
+
 
 TOKEN_BROKER_PORT = 18731
 SSH_SIGNER_PORT = 18732

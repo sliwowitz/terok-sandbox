@@ -14,8 +14,10 @@ container (vault token broker TCP, SSH signer TCP) and shield firewall state.
 
 from __future__ import annotations
 
+import os
 from collections.abc import Callable
 from dataclasses import dataclass
+from pathlib import Path
 
 # ---------------------------------------------------------------------------
 # Shared protocol types — imported by terok-executor and terok
@@ -212,6 +214,87 @@ def make_recovery_acknowledged_check() -> DoctorCheck:
             " an off-host store (password manager / paper safe), and confirm"
             " when prompted; or run `terok-sandbox vault passphrase acknowledge`"
             " after capturing the value via `--echo-passphrase`."
+        ),
+    )
+
+
+#: Public docs page explaining the per-container keyring leak → EDQUOT.
+_KEYRING_DOC_URL = "https://terok-ai.github.io/terok/kernel-keyring/"
+
+#: Warn once the per-uid kernel keyring's key-count *or* byte quota is at
+#: least this full.  A healthy host sits far below the edge, where a
+#: warning would only be noise.
+_KEYRING_QUOTA_WARN_AT = 0.95
+
+
+def _kernel_keyring_quota() -> tuple[int, int, int, int] | None:
+    """Return ``(keys_used, keys_max, bytes_used, bytes_max)`` for this uid.
+
+    Read from ``/proc/key-users`` — the kernel's own per-uid quota
+    accounting.  ``None`` when the file is absent (non-Linux, no
+    ``CONFIG_KEYS``) or carries no line for the effective uid, so there
+    is nothing to account here.
+    """
+    try:
+        rows = Path("/proc/key-users").read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return None
+    prefix = f"{os.geteuid()}:"
+    for row in rows:
+        if row.lstrip().startswith(prefix):
+            # <uid>:  <usage> <nkeys>/<nikeys> <qnkeys>/<maxkeys> <qnbytes>/<maxbytes>
+            fields = row.split()
+            try:
+                keys_used, keys_max = (int(n) for n in fields[3].split("/"))
+                bytes_used, bytes_max = (int(n) for n in fields[4].split("/"))
+            except (IndexError, ValueError):
+                return None
+            return keys_used, keys_max, bytes_used, bytes_max
+    return None
+
+
+def make_kernel_keyring_quota_check() -> DoctorCheck:
+    """Warn when the per-uid kernel keyring is nearly full.
+
+    The OCI runtime creates a session keyring per container and does not
+    reliably reclaim it, so a host that cycles many agent containers
+    drifts toward the per-uid key quota (200 keys by default) and then
+    fails to launch new ones with a misleading "Disk quota exceeded".
+    This surfaces the pressure a step before it bites — and only near
+    the edge (``_KEYRING_QUOTA_WARN_AT``), since a healthy host sits far
+    below it and a warning there is noise.
+
+    Host-level like
+    [`make_recovery_acknowledged_check`][terok_sandbox.doctor.make_recovery_acknowledged_check]:
+    the quota is per-uid, not per-container, so it renders exactly once.
+    """
+
+    def _eval(_rc: int, _stdout: str, _stderr: str) -> CheckVerdict:
+        quota = _kernel_keyring_quota()
+        if quota is None:
+            return CheckVerdict("ok", "per-uid keyring quota not accounted on this host")
+        keys_used, keys_max, bytes_used, bytes_max = quota
+        key_frac = keys_used / keys_max if keys_max else 0.0
+        byte_frac = bytes_used / bytes_max if bytes_max else 0.0
+        if max(key_frac, byte_frac) >= _KEYRING_QUOTA_WARN_AT:
+            return CheckVerdict(
+                "warn",
+                f"kernel keyring {round(max(key_frac, byte_frac) * 100)}% full"
+                f" ({keys_used}/{keys_max} keys) — leaked per-container keyrings can block"
+                f" new containers with 'Disk quota exceeded'; see {_KEYRING_DOC_URL}",
+            )
+        return CheckVerdict("ok", f"{keys_used}/{keys_max} keys used (per-uid quota)")
+
+    return DoctorCheck(
+        category="host",
+        label="Kernel keyring quota",
+        probe_cmd=[],
+        evaluate=_eval,
+        host_side=True,
+        fix_description=(
+            "Restart the host to reclaim leaked container keyrings, or set"
+            " `[containers] keyring = false` in containers.conf to stop the leak"
+            f" ({_KEYRING_DOC_URL})."
         ),
     )
 

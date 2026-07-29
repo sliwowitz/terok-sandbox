@@ -105,6 +105,7 @@ _LAZY: dict[str, str] = {
     # Doctor
     "CheckVerdict": "doctor:CheckVerdict",
     "DoctorCheck": "doctor:DoctorCheck",
+    "make_kernel_keyring_quota_check": "doctor:make_kernel_keyring_quota_check",
     "sandbox_doctor_checks": "doctor:sandbox_doctor_checks",
     # Git gate
     "AppliedOp": "gate.mirror:AppliedOp",
@@ -286,7 +287,12 @@ if TYPE_CHECKING:
         respawn_supervisor,
         supervisor_liveness,
     )
-    from .doctor import CheckVerdict, DoctorCheck, sandbox_doctor_checks
+    from .doctor import (
+        CheckVerdict,
+        DoctorCheck,
+        make_kernel_keyring_quota_check,
+        sandbox_doctor_checks,
+    )
     from .gate.hooks import PUSH_MARKER_FILENAME
     from .gate.mirror import (
         AppliedOp,
@@ -500,6 +506,7 @@ __all__ = [
     # Doctor (container health checks)
     "CheckVerdict",
     "DoctorCheck",
+    "make_kernel_keyring_quota_check",
     "sandbox_doctor_checks",
     # Container diagnostics (on-host supervisor/sidecar artifact paths)
     "ContainerDiagnostics",

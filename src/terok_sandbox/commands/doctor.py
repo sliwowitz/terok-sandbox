@@ -32,7 +32,11 @@ def _handle_doctor(*, cfg: SandboxConfig | None = None) -> None:
     run from inside the container.
     """
     from ..config import SandboxConfig
-    from ..doctor import make_recovery_acknowledged_check, sandbox_doctor_checks
+    from ..doctor import (
+        make_kernel_keyring_quota_check,
+        make_recovery_acknowledged_check,
+        sandbox_doctor_checks,
+    )
     from ..launch import make_stray_sidecar_check
     from ..supervisor.janitor import make_orphan_supervisor_check
 
@@ -50,6 +54,7 @@ def _handle_doctor(*, cfg: SandboxConfig | None = None) -> None:
             desired_shield_state=None,  # standalone mode — no task context
         ),
         make_recovery_acknowledged_check(),
+        make_kernel_keyring_quota_check(),
         make_stray_sidecar_check(cfg),
         make_orphan_supervisor_check(),
     ]
