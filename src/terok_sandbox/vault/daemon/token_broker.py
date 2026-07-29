@@ -44,6 +44,7 @@ from aiohttp import (
     ClientResponse,
     ClientSession,
     ClientTimeout,
+    ClientWebSocketResponse,
     ServerDisconnectedError,
     TCPConnector,
     WSMsgType,
@@ -73,6 +74,12 @@ _KEY_AUDIT = web.AppKey("audit", AuditWriter)
 _IDEMPOTENT_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
 _WEBSOCKET_MAX_MSG_SIZE = 16 * 1024 * 1024
 _WEBSOCKET_INTERNAL_ERROR = 1011
+_WEBSOCKET_NORMAL_CLOSURE = 1000
+#: Ping interval (seconds) for both proxy legs.  Each hop runs its own keepalive —
+#: aiohttp auto-answers inbound pings and tracks pong replies to its own pings per
+#: connection — so control frames are never bridged across the two legs, which would
+#: violate the RFC 6455 rule that ping/pong are scoped to a single connection.
+_WEBSOCKET_HEARTBEAT = 30
 
 #: Idle read timeout (seconds) for a proxied upstream response — the gap between
 #: reads (for a stream, between chunks; for a unary response, the wait for the
@@ -354,6 +361,31 @@ def _requested_websocket_protocols(request: web.Request) -> list[str]:
     return protocols
 
 
+async def _pump_websocket_frames(
+    source: web.WebSocketResponse | ClientWebSocketResponse,
+    sink: web.WebSocketResponse | ClientWebSocketResponse,
+) -> None:
+    """Forward data frames from *source* to *sink* until *source* closes.
+
+    Only TEXT/BINARY frames cross the bridge.  PING/PONG are control frames scoped to
+    one connection: each leg answers its own inbound pings and tracks its own liveness
+    (``autoping`` + ``heartbeat`` on both), so forwarding them across hops would be
+    wrong.  A CLOSE ends the async iteration, which unblocks the ``asyncio.wait`` in
+    [`_proxy_websocket`][terok_sandbox.vault.daemon.token_broker._proxy_websocket].
+    An ERROR frame is re-raised so that same caller logs it and tears the peer leg
+    down via the 1011 path — aiohttp's iterator yields ERROR as a normal message
+    (it stops only on CLOSE), so ignoring it would drop the failure silently.
+    """
+    async for msg in source:
+        if msg.type is WSMsgType.TEXT:
+            await sink.send_str(msg.data)
+        elif msg.type is WSMsgType.BINARY:
+            await sink.send_bytes(msg.data)
+        elif msg.type is WSMsgType.ERROR:
+            exc = msg.data if isinstance(msg.data, BaseException) else None
+            raise exc or ConnectionError("upstream websocket error frame")
+
+
 async def _proxy_websocket(
     request: web.Request,
     *,
@@ -362,59 +394,43 @@ async def _proxy_websocket(
     headers: dict[str, str],
     provider: str,
 ) -> web.StreamResponse:
-    """Bridge a client websocket to the upstream websocket with auth injection."""
+    """Bridge a client websocket to the upstream websocket with auth injection.
+
+    The upstream handshake is aiohttp's own: it regenerates ``Sec-WebSocket-Key`` /
+    ``-Version`` and sets the subprotocol from *protocols*, so the client's
+    ``Sec-WebSocket-*`` headers — crucially its ``permessage-deflate`` extension
+    offer — must not be forwarded, or the upstream could negotiate a compression the
+    broker never requested and can't decode (a mid-stream protocol-error close).
+    """
     protocols = _requested_websocket_protocols(request)
+    # Drop the client's handshake-scoped headers; keep the injected auth and the rest.
+    upstream_headers = {
+        k: v for k, v in headers.items() if not k.lower().startswith("sec-websocket-")
+    }
     client_ws: web.WebSocketResponse | None = None
     try:
         async with session.ws_connect(
             upstream_url,
-            headers=headers,
+            headers=upstream_headers,
             protocols=protocols,
-            autoping=False,
-            autoclose=False,
-            heartbeat=30,
+            heartbeat=_WEBSOCKET_HEARTBEAT,
             max_msg_size=_WEBSOCKET_MAX_MSG_SIZE,
         ) as upstream_ws:
             response_protocols = [upstream_ws.protocol] if upstream_ws.protocol else []
             client_ws = web.WebSocketResponse(
                 protocols=response_protocols,
-                autoping=False,
-                autoclose=False,
+                heartbeat=_WEBSOCKET_HEARTBEAT,
                 max_msg_size=_WEBSOCKET_MAX_MSG_SIZE,
+                # The agent leg is always localhost (Unix socket / loopback), so
+                # negotiating permessage-deflate here would only spend CPU compressing
+                # over a hop with no bandwidth cost.
+                compress=False,
             )
             await client_ws.prepare(request)
 
-            async def _client_to_upstream() -> None:
-                async for msg in client_ws:
-                    if msg.type is WSMsgType.TEXT:
-                        await upstream_ws.send_str(msg.data)
-                    elif msg.type is WSMsgType.BINARY:
-                        await upstream_ws.send_bytes(msg.data)
-                    elif msg.type is WSMsgType.PING:
-                        await upstream_ws.ping(msg.data)
-                    elif msg.type is WSMsgType.PONG:
-                        await upstream_ws.pong(msg.data)
-                    else:
-                        await upstream_ws.close()
-                        return
-
-            async def _upstream_to_client() -> None:
-                async for msg in upstream_ws:
-                    if msg.type is WSMsgType.TEXT:
-                        await client_ws.send_str(msg.data)
-                    elif msg.type is WSMsgType.BINARY:
-                        await client_ws.send_bytes(msg.data)
-                    elif msg.type is WSMsgType.PING:
-                        await client_ws.ping(msg.data)
-                    elif msg.type is WSMsgType.PONG:
-                        await client_ws.pong(msg.data)
-                    else:
-                        await client_ws.close(code=upstream_ws.close_code or 1000)
-                        return
-
             tasks = {
-                asyncio.create_task(_client_to_upstream()),
-                asyncio.create_task(_upstream_to_client()),
+                asyncio.create_task(_pump_websocket_frames(client_ws, upstream_ws)),
+                asyncio.create_task(_pump_websocket_frames(upstream_ws, client_ws)),
             }
             done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
             for task in pending:
@@ -423,7 +439,7 @@ async def _proxy_websocket(
             for task in done:
                 task.result()
             if not client_ws.closed:
-                await client_ws.close(code=upstream_ws.close_code or 1000)
+                await client_ws.close(code=upstream_ws.close_code or _WEBSOCKET_NORMAL_CLOSURE)
             return client_ws
     except Exception as exc:
         _logger.error("Upstream websocket to %s failed: %s", provider, exc)
@@ -480,15 +496,19 @@ async def _audit_request(
 
 # Headers the broker never relays to the client:
 #  * hop-by-hop (``_HOP_BY_HOP_HEADERS``) — per RFC 7230 a proxy must not forward them;
-#  * content-length / content-encoding — body framing aiohttp regenerates for the
-#    re-streamed (already decompressed) body, so the upstream's would mislead;
+#  * content-length — the broker re-frames the streamed body (aiohttp emits it
+#    chunked), so the upstream's length would mislead;
 #  * location — redirects are resolved by the broker (see ``_resolve_redirect``),
 #    never by the socket-pinned client, so a relayed Location would only dead-end.
+# ``content-encoding`` is deliberately *not* withheld: the broker forwards the
+# upstream body byte-for-byte without decoding it (``auto_decompress=False`` on the
+# forwarding requests), so the agent — which advertised the codec via
+# ``Accept-Encoding`` — decodes it itself.  This keeps the broker a transparent
+# byte-pipe that needs no optional codec library (brotli/zstd) and can never fail on
+# an encoding its own aiohttp build happens not to support.
 # Everything else — ETag, Link (``gh --paginate`` follows it), X-RateLimit-*,
 # Content-Type — is relayed verbatim so the client sees the provider's real response.
-_WITHHELD_RESPONSE_HEADERS = _HOP_BY_HOP_HEADERS | frozenset(
-    {"content-length", "content-encoding", "location"}
-)
+_WITHHELD_RESPONSE_HEADERS = _HOP_BY_HOP_HEADERS | frozenset({"content-length", "location"})
 
 # A few provider endpoints (GitHub Actions logs/artifacts, release assets, repo
 # tarballs) answer with a 3xx to a self-authenticating storage URL on a *different*
@@ -552,12 +572,19 @@ async def _resolve_redirect(
     """
     target = urljoin(base_url, location)
     follow_headers = {
-        name: request.headers[name] for name in ("accept", "user-agent") if name in request.headers
+        name: request.headers[name]
+        for name in ("accept", "accept-encoding", "user-agent")
+        if name in request.headers
     }
     async with session.get(
         target,
         headers=follow_headers,
         allow_redirects=True,
+        # Stream the redirect target undecoded, like the primary path, and forward the
+        # client's Accept-Encoding verbatim — skip_auto_headers stops aiohttp injecting
+        # its own default when the client sent none.
+        auto_decompress=False,
+        skip_auto_headers=("Accept-Encoding",),
         timeout=ClientTimeout(connect=10, sock_read=_UPSTREAM_READ_TIMEOUT),
     ) as final:
         return await _stream_upstream(request, final, token_info=token_info, started_at=started_at)
@@ -690,6 +717,14 @@ async def _handle_request(request: web.Request) -> web.StreamResponse:
                 headers=headers,
                 data=body,
                 allow_redirects=False,
+                # Forward the body undecoded (see ``_WITHHELD_RESPONSE_HEADERS``): the
+                # agent advertised the codec and decodes it, so the broker needs no
+                # brotli/zstd library and never chokes on an encoding it can't decode.
+                # skip_auto_headers keeps aiohttp from injecting its own default
+                # Accept-Encoding when the client sent none, so the upstream only ever
+                # compresses with a codec the client actually asked for.
+                auto_decompress=False,
+                skip_auto_headers=("Accept-Encoding",),
                 timeout=ClientTimeout(connect=10, sock_read=_UPSTREAM_READ_TIMEOUT),
             ) as upstream:
                 connection_established = True

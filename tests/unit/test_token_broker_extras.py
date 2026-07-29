@@ -342,7 +342,7 @@ class TestHandleRequestApiKeyEdges:
         captured: dict = {}
 
         class _Session:
-            def request(self, method, url, *, headers, data, allow_redirects, timeout):
+            def request(self, method, url, *, headers, **_kwargs):
                 captured["headers"] = headers
 
                 # Return a context manager mimicking aiohttp's session.request().
