@@ -372,12 +372,18 @@ async def _pump_websocket_frames(
     (``autoping`` + ``heartbeat`` on both), so forwarding them across hops would be
     wrong.  A CLOSE ends the async iteration, which unblocks the ``asyncio.wait`` in
     [`_proxy_websocket`][terok_sandbox.vault.daemon.token_broker._proxy_websocket].
+    An ERROR frame is re-raised so that same caller logs it and tears the peer leg
+    down via the 1011 path — aiohttp's iterator yields ERROR as a normal message
+    (it stops only on CLOSE), so ignoring it would drop the failure silently.
     """
     async for msg in source:
         if msg.type is WSMsgType.TEXT:
             await sink.send_str(msg.data)
         elif msg.type is WSMsgType.BINARY:
             await sink.send_bytes(msg.data)
+        elif msg.type is WSMsgType.ERROR:
+            exc = msg.data if isinstance(msg.data, BaseException) else None
+            raise exc or ConnectionError("upstream websocket error frame")
 
 
 async def _proxy_websocket(
@@ -566,13 +572,19 @@ async def _resolve_redirect(
     """
     target = urljoin(base_url, location)
     follow_headers = {
-        name: request.headers[name] for name in ("accept", "user-agent") if name in request.headers
+        name: request.headers[name]
+        for name in ("accept", "accept-encoding", "user-agent")
+        if name in request.headers
     }
     async with session.get(
         target,
         headers=follow_headers,
         allow_redirects=True,
-        auto_decompress=False,  # stream the redirect target undecoded, like the primary path
+        # Stream the redirect target undecoded, like the primary path, and forward the
+        # client's Accept-Encoding verbatim — skip_auto_headers stops aiohttp injecting
+        # its own default when the client sent none.
+        auto_decompress=False,
+        skip_auto_headers=("Accept-Encoding",),
         timeout=ClientTimeout(connect=10, sock_read=_UPSTREAM_READ_TIMEOUT),
     ) as final:
         return await _stream_upstream(request, final, token_info=token_info, started_at=started_at)
@@ -708,7 +720,11 @@ async def _handle_request(request: web.Request) -> web.StreamResponse:
                 # Forward the body undecoded (see ``_WITHHELD_RESPONSE_HEADERS``): the
                 # agent advertised the codec and decodes it, so the broker needs no
                 # brotli/zstd library and never chokes on an encoding it can't decode.
+                # skip_auto_headers keeps aiohttp from injecting its own default
+                # Accept-Encoding when the client sent none, so the upstream only ever
+                # compresses with a codec the client actually asked for.
                 auto_decompress=False,
+                skip_auto_headers=("Accept-Encoding",),
                 timeout=ClientTimeout(connect=10, sock_read=_UPSTREAM_READ_TIMEOUT),
             ) as upstream:
                 connection_established = True

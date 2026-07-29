@@ -1080,6 +1080,55 @@ class TestForwardingPath:
         await upstream_server.close()
         assert "permessage-deflate" not in reported["ext"]
 
+    async def test_accept_encoding_forwarded_verbatim_not_defaulted(self, _forwarding_env) -> None:
+        """The upstream sees exactly the client's Accept-Encoding — never aiohttp's default.
+
+        Regression: `auto_decompress=False` is only transparent if the upstream negotiates
+        the codec set the *agent* offered. aiohttp injects a default Accept-Encoding
+        (incl. br/zstd when those libs are present) whenever the caller omits one;
+        `skip_auto_headers` suppresses that, so the upstream can never pick an encoding the
+        client did not ask for and hand the broker back bytes the client can't decode.
+        """
+        from aiohttp import web as _web
+        from aiohttp.test_utils import TestClient, TestServer
+
+        async def _echo_ae(request: _web.Request) -> _web.Response:
+            return _web.json_response({"ae": request.headers.get("Accept-Encoding", "<absent>")})
+
+        upstream_app = _web.Application()
+        upstream_app.router.add_route("*", "/{tail:.*}", _echo_ae)
+        upstream_server = TestServer(upstream_app)
+        await upstream_server.start_server()
+
+        _, tmp_path, tokens = _forwarding_env
+        routes = tmp_path / "routes.json"
+        routes.write_text(
+            json.dumps({"claude": {"upstream": f"http://127.0.0.1:{upstream_server.port}"}})
+        )
+
+        broker_app = _build_app(str(tmp_path / "test.db"), str(routes))
+        async with TestClient(TestServer(broker_app)) as client:
+            # Client omits Accept-Encoding (skip_auto_headers keeps the *test* client from
+            # adding one to the broker) -> the broker must not add one upstream either.
+            resp = await client.get(
+                "/v1/messages",
+                headers={"Authorization": f"Bearer {tokens['claude']}"},
+                skip_auto_headers=["Accept-Encoding"],
+            )
+            assert (await resp.json())["ae"] == "<absent>"
+
+            # Client sends an explicit codec -> forwarded verbatim.
+            resp2 = await client.get(
+                "/v1/messages",
+                headers={
+                    "Authorization": f"Bearer {tokens['claude']}",
+                    "Accept-Encoding": "zstd",
+                },
+            )
+            assert (await resp2.json())["ae"] == "zstd"
+
+        await upstream_server.close()
+
     async def test_query_string_preserved(self, _forwarding_env) -> None:
         """Query string is preserved in the upstream request."""
         from aiohttp.test_utils import TestClient, TestServer
@@ -1369,6 +1418,40 @@ class TestWebsocketProxy:
 
         assert response.status == 502
         assert response.text == "Upstream websocket failed"
+
+    async def test_upstream_error_frame_closes_client_with_1011(self, monkeypatch) -> None:
+        """An upstream ERROR frame tears the bridge down via the logged 1011 path.
+
+        aiohttp yields `WSMsgType.ERROR` as a normal message (its async iterator stops
+        only on CLOSE), so the pump re-raises it into `_proxy_websocket`'s except path.
+        Without that, the failure would be swallowed and the client closed with a bland
+        normal-closure code and no log line.
+        """
+        client_ws = self._FakeWebSocket([], wait_forever=True)
+        upstream_ws = self._FakeWebSocket(
+            [self._msg(WSMsgType.ERROR, RuntimeError("boom"))],
+            protocol="realtime",
+        )
+
+        class _Session:
+            def ws_connect(self, *_args: object, **_kwargs: object):
+                return TestWebsocketProxy._WebSocketContext(upstream_ws)
+
+        monkeypatch.setattr(
+            "terok_sandbox.vault.daemon.token_broker.web.WebSocketResponse",
+            lambda **_kwargs: client_ws,
+        )
+
+        response = await _proxy_websocket(
+            SimpleNamespace(headers=CIMultiDict()),
+            session=_Session(),
+            upstream_url="ws://upstream.example/realtime",
+            headers={},
+            provider="codex",
+        )
+
+        assert response is client_ws
+        assert ("close", _WEBSOCKET_INTERNAL_ERROR) in client_ws.sent
 
     async def test_post_upgrade_failure_closes_websocket(self, monkeypatch) -> None:
         """Once upgraded, errors close the websocket instead of returning HTTP."""
