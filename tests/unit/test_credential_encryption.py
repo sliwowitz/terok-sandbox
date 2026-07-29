@@ -1001,6 +1001,22 @@ class TestProvisionPassphrase:
         assert pw == _PASSPHRASE
         assert source == "kernel-keyring"
 
+    def test_kernel_keyring_mode_raises_when_store_fails(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A minted value the kernel keyring refuses to cache fails loudly."""
+        import terok_sandbox.vault.store.kernel_keyring as _kk
+        from terok_sandbox.commands import _provision_passphrase
+
+        cfg = _make_cfg(tmp_path)
+        _patch_dev_tty(monkeypatch)
+        _scripted_tty_prompt(monkeypatch, "")  # empty entry → mint
+        monkeypatch.setattr(_kk, "store", lambda _pw: False)
+        with pytest.raises(RuntimeError, match="kernel keyring is unavailable"):
+            _provision_passphrase(cfg, mode=PassphraseTier.KERNEL_KEYRING)
+
     def test_keyring_mode_uses_existing_keyring_entry(
         self,
         tmp_path: Path,
@@ -1599,6 +1615,21 @@ class TestProvisionSessionPassphrase:
         assert result.written is True
         assert cache["pw"] == _PASSPHRASE
 
+    def test_raises_when_kernel_keyring_store_fails(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A host where the kernel keyring can't cache fails loudly, pointing at durable tiers."""
+        import terok_sandbox.vault.store.kernel_keyring as _kk
+        from terok_sandbox.commands import provision_session_passphrase
+
+        # No durable tier present (use_keyring=False, no sealed file) and no
+        # DB, so the no-cache guard passes and validation is skipped — the
+        # write itself is what fails.
+        cfg = _make_cfg(tmp_path)
+        monkeypatch.setattr(_kk, "store", lambda _pw: False)
+        with pytest.raises(RuntimeError, match="kernel keyring is unavailable"):
+            provision_session_passphrase(cfg, "brand-new-key")
+
 
 class TestVaultUnlockLock:
     """``terok-sandbox vault unlock`` / ``vault lock`` CLI handlers."""
@@ -1962,6 +1993,19 @@ class TestVaultUnlockLock:
         monkeypatch.setattr("terok_sandbox.config.SandboxConfig", lambda: cfg)
         _handle_vault_lock(force=True)  # cfg omitted → default-construction branch
 
+    def test_purge_raises_when_kernel_keyring_forget_fails(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A cache present but un-clearable must abort loudly — it may still auto-unlock."""
+        import terok_sandbox.vault.store.kernel_keyring as _kk
+        from terok_sandbox.commands.vault import purge_passphrase_tiers
+
+        cfg = _make_cfg(tmp_path)  # use_keyring=False → only the kernel-keyring branch runs
+        monkeypatch.setattr(_kk, "load", lambda: "x")
+        monkeypatch.setattr(_kk, "forget", lambda: False)
+        with pytest.raises(SystemExit, match="failed to clear the kernel-keyring cache"):
+            purge_passphrase_tiers(cfg)
+
 
 class TestVaultSeal:
     """``terok-sandbox vault seal`` CLI handler.
@@ -2214,6 +2258,40 @@ class TestVaultToKeyring:
         store.assert_called_once_with("current-pw")
         assert cache["pw"] is None
         assert "use_keyring: true" in user_config.read_text()
+
+    def test_removes_sealed_systemd_creds_file(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Moving to keyring clears the outranking sealed systemd-creds credential."""
+        from unittest.mock import MagicMock
+
+        from terok_sandbox import config as _config
+        from terok_sandbox.commands import handle_vault_to_keyring
+
+        cfg = _make_cfg(tmp_path)
+        _ack_recovery(cfg)
+        # A sealed credential resolves the current passphrase (source =
+        # systemd-creds, not keyring), so the move proceeds and must
+        # remove the stale sealed file afterwards.
+        cfg.vault_systemd_creds_file.parent.mkdir(parents=True, exist_ok=True)
+        cfg.vault_systemd_creds_file.write_bytes(b"sealed-blob")
+        monkeypatch.setattr(
+            "terok_sandbox.vault.store.systemd_creds.unseal", lambda _path: "current-pw"
+        )
+        user_config = tmp_path / "config.yml"
+        user_config.write_text("credentials: {}\n")
+        monkeypatch.setattr(
+            "terok_sandbox.paths.config_file_paths", lambda: [("user", user_config)]
+        )
+        _config._credentials_section.cache_clear()
+        monkeypatch.setattr(
+            "terok_sandbox.vault.store.encryption.store_passphrase_in_keyring",
+            MagicMock(return_value=True),
+        )
+
+        handle_vault_to_keyring(cfg=cfg)
+
+        assert not cfg.vault_systemd_creds_file.exists()
 
     def test_noop_when_already_in_keyring(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -2579,6 +2657,18 @@ class TestProvisionPassphraseTier:
         result = provision_passphrase_tier(cfg, tier="kernel-keyring", passphrase=_PASSPHRASE)
         assert result.generated is False
         assert cache["pw"] == _PASSPHRASE
+
+    def test_kernel_keyring_unavailable_raises(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A host where the kernel keyring can't cache refuses loudly instead of losing the mint."""
+        import terok_sandbox.vault.store.kernel_keyring as _kk
+        from terok_sandbox.commands import provision_passphrase_tier
+
+        cfg = _make_cfg(tmp_path)
+        monkeypatch.setattr(_kk, "store", lambda _pw: False)
+        with pytest.raises(RuntimeError, match="kernel keyring is unavailable"):
+            provision_passphrase_tier(cfg, tier="kernel-keyring")
 
     def test_keyring_stores_and_persists_mode_choice(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch

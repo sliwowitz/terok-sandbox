@@ -512,6 +512,29 @@ class TestRewriteTier:
         assert "vault passphrase seal" in rewrite.detail
         assert not cfg.vault_systemd_creds_file.exists()
 
+    def test_kernel_keyring_rewrite_success(self, tmp_path: Path) -> None:
+        """A cacheable host lands the new value on the volatile tier."""
+        cfg = _cfg(tmp_path)
+
+        rewrite = _rewrite_tier(cfg, PassphraseTier.KERNEL_KEYRING, NEW)
+
+        assert rewrite.ok and rewrite.detail == "kernel-keyring cache rewritten"
+        assert _KERNEL_CACHE["pw"] == NEW
+
+    def test_kernel_keyring_rewrite_failure_purges_stale_cache(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """An uncacheable host must not keep the OLD value cached — the stale cache is cleared."""
+        cfg = _cfg(tmp_path)
+        _write_kernel_keyring_cache(cfg, OLD)
+        monkeypatch.setattr(_kk, "store", lambda _pw: False)
+
+        rewrite = _rewrite_tier(cfg, PassphraseTier.KERNEL_KEYRING, NEW)
+
+        assert not rewrite.ok
+        assert "cannot cache" in rewrite.detail and "stale cache cleared" in rewrite.detail
+        assert _KERNEL_CACHE["pw"] is None  # forget() ran
+
     def test_keyring_rewrite_success(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         """A keyring backend that takes the write reports a plain success."""
         cfg = _cfg(tmp_path, use_keyring=True)

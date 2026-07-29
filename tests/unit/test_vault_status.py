@@ -54,6 +54,15 @@ class TestProbePassphraseChain:
         assert chain[2].present is True
         assert "cached in the user keyring" in chain[2].detail
 
+    def test_kernel_keyring_unusable_when_facility_missing(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A host without the keyring facility reports it as unusable, naming the reason."""
+        monkeypatch.setattr(_kk, "unavailable_reason", lambda: "no libkeyutils")
+        chain = probe_passphrase_chain()
+        assert chain[2].source == "kernel-keyring"
+        assert "unusable here: no libkeyutils" in chain[2].detail
+
     def test_kernel_keyring_absent_when_empty(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr(_kk, "is_cached", lambda: False)
         chain = probe_passphrase_chain()

@@ -17,6 +17,7 @@ inert in the seccomp sandbox.
 from __future__ import annotations
 
 import ctypes
+import ctypes.util
 
 import pytest
 
@@ -263,6 +264,68 @@ def test_is_cached_false_when_library_unavailable(monkeypatch: pytest.MonkeyPatc
 
     monkeypatch.setattr(kernel_keyring, "_load_library", _raise)
     assert kernel_keyring.is_cached() is False
+
+
+def test_forget_reports_failure_when_unlink_fails(
+    fake_lib: FakeKeyutils, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A present key whose unlink is refused must report failure, not success."""
+    kernel_keyring.store("pw")
+    monkeypatch.setattr(fake_lib, "keyctl_unlink", lambda _serial, _ring: -1)
+    assert kernel_keyring.forget() is False
+
+
+def test_load_returns_none_when_read_reports_no_length(
+    fake_lib: FakeKeyutils, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    kernel_keyring.store("pw")
+    monkeypatch.setattr(fake_lib, "keyctl_read", lambda _s, _b, _l: 0)
+    assert kernel_keyring.load() is None
+
+
+def test_load_returns_none_when_second_read_fails(
+    fake_lib: FakeKeyutils, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    kernel_keyring.store("pw")
+    # First pass (buf is None) sizes the payload; the fill pass then fails.
+    monkeypatch.setattr(fake_lib, "keyctl_read", lambda _s, buf, _l: 8 if buf is None else 0)
+    assert kernel_keyring.load() is None
+
+
+def test_unavailable_reason_reports_non_enosys_errno(monkeypatch: pytest.MonkeyPatch) -> None:
+    lib = FakeKeyutils()
+    monkeypatch.setattr(lib, "keyctl_get_keyring_ID", lambda _r, _c: (ctypes.set_errno(13), -1)[1])
+    monkeypatch.setattr(kernel_keyring, "_load_library", lambda: lib)
+    reason = kernel_keyring.unavailable_reason()
+    assert reason is not None
+    assert "user keyring unreachable" in reason
+
+
+def test_load_library_reports_unloadable(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A soname that won't load degrades to unavailable, not a crash."""
+    kernel_keyring._load_library.cache_clear()
+    monkeypatch.setattr(ctypes.util, "find_library", lambda _n: "libkeyutils.so.1")
+
+    def _boom(*_a: object, **_k: object) -> object:
+        raise OSError("cannot open shared object")
+
+    monkeypatch.setattr(ctypes, "CDLL", _boom)
+    reason = kernel_keyring.unavailable_reason()
+    kernel_keyring._load_library.cache_clear()
+    assert reason is not None
+    assert "not loadable" in reason
+
+
+def test_load_library_reports_missing_symbol(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A wrong/incompatible libkeyutils (missing an expected symbol) degrades too."""
+    kernel_keyring._load_library.cache_clear()
+    monkeypatch.setattr(ctypes.util, "find_library", lambda _n: "libkeyutils.so.1")
+    # A bare object has no ``add_key`` — binding its restype raises AttributeError.
+    monkeypatch.setattr(ctypes, "CDLL", lambda *_a, **_k: object())
+    reason = kernel_keyring.unavailable_reason()
+    kernel_keyring._load_library.cache_clear()
+    assert reason is not None
+    assert "missing expected symbol" in reason
 
 
 def test_forget_reports_failure_on_lookup_error(monkeypatch: pytest.MonkeyPatch) -> None:

@@ -192,7 +192,7 @@ def provision_passphrase_tier(
 
     # Every member of PROVISIONABLE_TIERS is handled above; a new one
     # reaching here should fail loudly, not silently land in the keyring.
-    raise ValueError(f"unhandled provisionable tier: {tier!r}")
+    raise ValueError(f"unhandled provisionable tier: {tier!r}")  # pragma: no cover
 
 
 def credentials_provisioned(cfg: SandboxConfig | None = None) -> bool:
