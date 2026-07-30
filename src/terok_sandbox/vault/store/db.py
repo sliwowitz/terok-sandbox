@@ -784,6 +784,7 @@ def open_credential_db_with_source(
     from .encryption import resolve_passphrase_with_source  # noqa: PLC0415
 
     passphrase, source = resolve_passphrase_with_source(
+        credentials_db=db_path,
         systemd_creds_file=systemd_creds_file,
         use_keyring=use_keyring,
         passphrase_command=passphrase_command,

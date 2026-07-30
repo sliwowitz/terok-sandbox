@@ -167,10 +167,10 @@ def _isolate_credential_keyring(monkeypatch: pytest.MonkeyPatch) -> None:
     import terok_sandbox.vault.store.encryption as _enc
     import terok_sandbox.vault.store.kernel_keyring as _kk
 
-    monkeypatch.setattr(_kk, "load", lambda: None)
-    monkeypatch.setattr(_kk, "store", lambda _pw: True)
-    monkeypatch.setattr(_kk, "forget", lambda: True)
-    monkeypatch.setattr(_kk, "is_cached", lambda: False)
+    monkeypatch.setattr(_kk, "load", lambda _db=None: None)
+    monkeypatch.setattr(_kk, "store", lambda _pw, _db=None: True)
+    monkeypatch.setattr(_kk, "forget", lambda _db=None: True)
+    monkeypatch.setattr(_kk, "is_cached", lambda _db=None: False)
     monkeypatch.setattr(_kk, "unavailable_reason", lambda: None)
     monkeypatch.setattr(_enc, "load_passphrase_from_keyring", lambda: "test")
     monkeypatch.setattr(_enc, "store_passphrase_in_keyring", lambda _pw: True)

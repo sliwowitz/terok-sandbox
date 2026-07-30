@@ -134,7 +134,7 @@ def provision_session_passphrase(
         # deliberately before the write so a bad value never lands.
         CredentialDB(cfg.db_path, passphrase=passphrase).close()
         validated = True
-    if not kernel_keyring.store(passphrase):
+    if not kernel_keyring.store(passphrase, cfg.db_path):
         raise RuntimeError(
             "the kernel keyring is unavailable here"
             f" ({kernel_keyring.unavailable_reason() or 'add_key failed'});"
@@ -220,8 +220,8 @@ def purge_passphrase_tiers(cfg: SandboxConfig) -> None:
     from ..vault.store import kernel_keyring
     from ..vault.store.encryption import forget_passphrase_in_keyring, load_passphrase_from_keyring
 
-    if kernel_keyring.load() is not None:
-        if kernel_keyring.forget():
+    if kernel_keyring.load(cfg.db_path) is not None:
+        if kernel_keyring.forget(cfg.db_path):
             print("→ cleared kernel-keyring cache")
         else:
             raise SystemExit(
@@ -407,7 +407,7 @@ def handle_vault_seal(*, cfg: SandboxConfig | None = None, key: str = "auto") ->
     # does).
     from ..vault.store import kernel_keyring
 
-    if kernel_keyring.load() is not None and kernel_keyring.forget():
+    if kernel_keyring.load(cfg.db_path) is not None and kernel_keyring.forget(cfg.db_path):
         print("→ cleared now-redundant kernel-keyring cache")
 
     print(
@@ -475,7 +475,7 @@ def handle_vault_to_keyring(*, cfg: SandboxConfig | None = None) -> None:
     # kernel-keyring cache is cleared too so nothing stale lingers.
     from ..vault.store import kernel_keyring
 
-    if kernel_keyring.load() is not None and kernel_keyring.forget():
+    if kernel_keyring.load(cfg.db_path) is not None and kernel_keyring.forget(cfg.db_path):
         print("→ cleared kernel-keyring cache")
     if cfg.vault_systemd_creds_file.exists():
         cfg.vault_systemd_creds_file.unlink()
@@ -761,6 +761,7 @@ def change_passphrase(
     present = [
         row.source
         for row in probe_passphrase_chain(
+            credentials_db=cfg.db_path,
             systemd_creds_file=cfg.vault_systemd_creds_file,
             use_keyring=cfg.credentials_use_keyring,
             passphrase_command=cfg.credentials_passphrase_command,
@@ -811,9 +812,9 @@ def _rewrite_tier(cfg: SandboxConfig, tier: PassphraseTier, passphrase: str) -> 
 
     try:
         if tier is PassphraseTier.KERNEL_KEYRING:
-            if kernel_keyring.store(passphrase):
+            if kernel_keyring.store(passphrase, cfg.db_path):
                 return TierRewrite(tier, ok=True, detail="kernel-keyring cache rewritten")
-            kernel_keyring.forget()
+            kernel_keyring.forget(cfg.db_path)
             return TierRewrite(
                 tier,
                 ok=False,

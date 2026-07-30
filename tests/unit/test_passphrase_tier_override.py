@@ -57,8 +57,8 @@ class TestExplicitTier:
         # Back the kernel-keyring tier with an in-memory cache already
         # holding a value, undoing conftest's autouse blank.
         cache = {"pw": "preset-passphrase"}
-        monkeypatch.setattr(_kk, "load", lambda: cache["pw"])
-        monkeypatch.setattr(_kk, "store", lambda pw, **_kw: cache.__setitem__("pw", pw) or True)
+        monkeypatch.setattr(_kk, "load", lambda _db=None: cache["pw"])
+        monkeypatch.setattr(_kk, "store", lambda pw, _db=None, **_kw: cache.__setitem__("pw", pw) or True)
         cfg = _cfg(tmp_path)
         # No DB → handler short-circuits after provisioning; no ack
         # required because the value pre-existed (not auto-generated).

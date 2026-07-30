@@ -67,17 +67,26 @@ import ctypes
 import ctypes.util
 import errno
 import functools
+import hashlib
 import logging
 import os
 from typing import Final
 
 _logger = logging.getLogger(__name__)
 
-#: Well-known ``(type, description)`` the key is stored under.  Every
-#: same-uid process finds the cached passphrase by searching ``@u`` for
-#: this exact description — keep it stable across releases.
+#: The ``user`` key type: readable back from userspace (``logon`` is not),
+#: so it can hand the SQLCipher passphrase to a later reader.
 KEY_TYPE: Final = b"user"
-KEY_DESCRIPTION: Final = b"terok-sandbox:vault-passphrase"
+
+#: Prefix of the per-vault ``@u`` key description; the full description
+#: appends a digest of the credentials-DB path (see
+#: [`key_description`][terok_sandbox.vault.store.kernel_keyring.key_description]).
+#: Scoping by DB path keeps every vault a uid can reach — a side-by-side
+#: install, a test's throwaway tmp DB, the operator's real vault — in its
+#: own key, so one process never reads or clears another's passphrase
+#: even though ``@u`` is shared across the whole uid.  Keep the format
+#: stable across releases: the writer and every later reader must agree.
+KEY_DESCRIPTION_PREFIX: Final = b"terok-sandbox:vault-passphrase:"
 
 #: ``KEY_SPEC_USER_KEYRING`` from ``linux/keyctl.h`` — the special id
 #: that resolves to the caller's per-uid user keyring (``@u``).
@@ -105,8 +114,24 @@ _KEY_PERM: Final = 0x3F2F0000
 _MAX_PAYLOAD_BYTES: Final = 4096
 
 
-def store(passphrase: str) -> bool:
-    """Cache *passphrase* so later processes of this user can unlock the vault.
+def key_description(db_path: str | os.PathLike[str]) -> bytes:
+    """Return the ``@u`` key description scoping the cache to one vault DB.
+
+    Anchored on the absolute credentials-DB path and hashed to a
+    fixed-width, ASCII-safe token appended to
+    [`KEY_DESCRIPTION_PREFIX`][terok_sandbox.vault.store.kernel_keyring.KEY_DESCRIPTION_PREFIX]:
+    two vaults on one uid never collide, and a path carrying spaces or
+    non-UTF-8 bytes can't corrupt the description.  ``abspath`` (not
+    ``realpath``) keeps this pure — no filesystem touch — while still
+    agreeing across the writer and every reader, which all derive the
+    path from the same config.
+    """
+    digest = hashlib.sha256(os.path.abspath(db_path).encode("utf-8")).hexdigest()
+    return KEY_DESCRIPTION_PREFIX + digest[:32].encode("ascii")
+
+
+def store(passphrase: str, db_path: str | os.PathLike[str]) -> bool:
+    """Cache *passphrase* for *db_path* so later processes can unlock that vault.
 
     The cache is deliberately untimed: it lives for the login session and
     is cleared only by an explicit ``vault lock`` or a move to a durable
@@ -146,7 +171,9 @@ def store(passphrase: str) -> bool:
     lib.keyctl_link(_KEY_SPEC_USER_KEYRING, _KEY_SPEC_SESSION_KEYRING)
 
     ctypes.set_errno(0)
-    serial = lib.add_key(KEY_TYPE, KEY_DESCRIPTION, payload, len(payload), _KEY_SPEC_USER_KEYRING)
+    serial = lib.add_key(
+        KEY_TYPE, key_description(db_path), payload, len(payload), _KEY_SPEC_USER_KEYRING
+    )
     if serial == -1:
         _logger.warning("kernel keyring add_key failed: %s", os.strerror(ctypes.get_errno()))
         return False
@@ -159,8 +186,8 @@ def store(passphrase: str) -> bool:
     return True
 
 
-def load() -> str | None:
-    """Return the cached passphrase.
+def load(db_path: str | os.PathLike[str]) -> str | None:
+    """Return the passphrase cached for *db_path*.
 
     Silent on every miss: an absent key and an unusable facility are
     both the ordinary "locked" outcome, which the next tier of the
@@ -169,7 +196,7 @@ def load() -> str | None:
     when only presence matters — this materialises the secret.
 
     Returns:
-        The cached passphrase, or None when nothing is cached here.
+        The cached passphrase, or None when nothing is cached for this vault.
     """
     try:
         lib = _load_library()
@@ -177,7 +204,7 @@ def load() -> str | None:
         return None
 
     try:
-        serial = _find_cached_key(lib)
+        serial = _find_cached_key(lib, key_description(db_path))
     except OSError as exc:
         _logger.warning("kernel keyring search failed: %s", exc)
         return None
@@ -198,18 +225,18 @@ def load() -> str | None:
         ctypes.memset(buf, 0, length)
 
 
-def forget() -> bool:
-    """Clear the cached passphrase.
+def forget(db_path: str | os.PathLike[str]) -> bool:
+    """Clear the passphrase cached for *db_path*.
 
     Backs ``vault lock``.  An already-absent key counts as success: the
-    contract is the end state — nothing cached here — not the act of
-    removing something.  A lookup that *fails* is not that end state, so
-    it reports failure rather than claim the passphrase is gone.  Any
-    same-uid terminal may call it, not only the one that cached the
-    passphrase.
+    contract is the end state — nothing cached for this vault — not the
+    act of removing something.  A lookup that *fails* is not that end
+    state, so it reports failure rather than claim the passphrase is
+    gone.  Any same-uid terminal may call it, not only the one that
+    cached the passphrase.
 
     Returns:
-        True when no passphrase remains cached.
+        True when no passphrase remains cached for this vault.
     """
     try:
         lib = _load_library()
@@ -217,7 +244,7 @@ def forget() -> bool:
         return True
 
     try:
-        serial = _find_cached_key(lib)
+        serial = _find_cached_key(lib, key_description(db_path))
     except OSError as exc:
         _logger.warning("kernel keyring search failed, cannot confirm removal: %s", exc)
         return False
@@ -229,22 +256,22 @@ def forget() -> bool:
     return True
 
 
-def is_cached() -> bool:
-    """Whether a passphrase is currently cached here.
+def is_cached(db_path: str | os.PathLike[str]) -> bool:
+    """Whether a passphrase is currently cached for *db_path*.
 
     The presence question every status surface asks — ``vault status``,
     the doctor checks, the TUI pill's poll — answered without reading
     the payload, so reporting *on* the secret never materialises it.
 
     Returns:
-        True when the well-known key exists in the user keyring.
+        True when this vault's key exists in the user keyring.
     """
     try:
         lib = _load_library()
     except _KeyutilsUnavailable:
         return False
     try:
-        return _find_cached_key(lib) is not None
+        return _find_cached_key(lib, key_description(db_path)) is not None
     except OSError as exc:
         _logger.warning("kernel keyring search failed: %s", exc)
         return False
@@ -285,14 +312,13 @@ def unavailable_reason() -> str | None:
 # ── Key lookup and library binding (private) ────────────────────────
 
 
-def _find_cached_key(lib: ctypes.CDLL) -> int | None:
-    """Serial of the cached passphrase key, or ``None`` when genuinely absent.
+def _find_cached_key(lib: ctypes.CDLL, description: bytes) -> int | None:
+    """Serial of the key under *description*, or ``None`` when genuinely absent.
 
-    Only ``ENOKEY`` — no key under the well-known description — is a
-    miss.  Any other failure (a revoked or expired key, a permission
-    fault) is a lookup the caller must not read as "absent": a ``forget``
-    that did so would report the passphrase cleared while it may still be
-    cached.
+    Only ``ENOKEY`` — no key under this description — is a miss.  Any
+    other failure (a revoked or expired key, a permission fault) is a
+    lookup the caller must not read as "absent": a ``forget`` that did so
+    would report the passphrase cleared while it may still be cached.
 
     Returns:
         The key's serial number, or None when no such key exists.
@@ -302,7 +328,7 @@ def _find_cached_key(lib: ctypes.CDLL) -> int | None:
             missing key; ``errno`` carries which.
     """
     ctypes.set_errno(0)
-    serial = lib.keyctl_search(_KEY_SPEC_USER_KEYRING, KEY_TYPE, KEY_DESCRIPTION, 0)
+    serial = lib.keyctl_search(_KEY_SPEC_USER_KEYRING, KEY_TYPE, description, 0)
     if serial != -1:
         return serial
     err = ctypes.get_errno()
@@ -371,10 +397,11 @@ def _load_library() -> ctypes.CDLL:
 
 
 __all__ = [
-    "KEY_DESCRIPTION",
+    "KEY_DESCRIPTION_PREFIX",
     "KEY_TYPE",
     "forget",
     "is_cached",
+    "key_description",
     "load",
     "store",
     "unavailable_reason",

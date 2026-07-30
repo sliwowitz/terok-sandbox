@@ -76,6 +76,7 @@ def open_sqlcipher_via_chain(
     interactive fallback for CLI consumers; daemons leave it ``False``.
     """
     passphrase = resolve_passphrase(
+        credentials_db=db_path,
         systemd_creds_file=systemd_creds_file,
         use_keyring=use_keyring,
         passphrase_command=passphrase_command,
@@ -88,6 +89,7 @@ def open_sqlcipher_via_chain(
 
 def resolve_passphrase_with_source(
     *,
+    credentials_db: str | Path,
     systemd_creds_file: Path | None = None,
     use_keyring: bool = False,
     passphrase_command: str | None = None,
@@ -99,6 +101,12 @@ def resolve_passphrase_with_source(
     [`resolve_passphrase`][terok_sandbox.vault.store.encryption.resolve_passphrase]
     for the tier semantics.  Both elements of the tuple are ``None``
     when no tier had a passphrase.
+
+    *credentials_db* is the vault the passphrase is *for*: it scopes the
+    kernel-keyring lookup to that DB's key (see
+    [`kernel_keyring.key_description`][terok_sandbox.vault.store.kernel_keyring.key_description]),
+    so the cache for one vault never resolves another's — pass the same
+    path the caller is about to open.
 
     The source half feeds a TUI/CLI status display — keep the labels
     stable, callers dispatch on them.
@@ -126,7 +134,7 @@ def resolve_passphrase_with_source(
     # absent or expired key falls through rather than masking the
     # durable ``passphrase_command`` beneath.  Read via the module
     # namespace so tests can monkeypatch the kernel keyring away.
-    kernel_pw = _kernel_keyring.load()
+    kernel_pw = _kernel_keyring.load(credentials_db)
     if kernel_pw:
         return kernel_pw, PassphraseTier.KERNEL_KEYRING
     if passphrase_command:
@@ -148,6 +156,7 @@ def resolve_passphrase_with_source(
 
 def resolve_passphrase(
     *,
+    credentials_db: str | Path,
     systemd_creds_file: Path | None = None,
     use_keyring: bool = False,
     passphrase_command: str | None = None,
@@ -182,6 +191,7 @@ def resolve_passphrase(
     credentials.db, and the back-edge would close a tach cycle.
     """
     passphrase, _source = resolve_passphrase_with_source(
+        credentials_db=credentials_db,
         systemd_creds_file=systemd_creds_file,
         use_keyring=use_keyring,
         passphrase_command=passphrase_command,
@@ -209,6 +219,7 @@ class TierPresence:
 
 def probe_passphrase_chain(
     *,
+    credentials_db: str | Path,
     systemd_creds_file: Path | None = None,
     use_keyring: bool = False,
     passphrase_command: str | None = None,
@@ -227,7 +238,7 @@ def probe_passphrase_chain(
     """
     # Presence only — the status chain reports *that* a tier holds
     # material, never its value, so this must not read the passphrase.
-    kernel_cached = _kernel_keyring.is_cached()
+    kernel_cached = _kernel_keyring.is_cached(credentials_db)
     return (
         TierPresence(
             PassphraseTier.SYSTEMD_CREDS,

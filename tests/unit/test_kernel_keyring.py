@@ -22,6 +22,13 @@ import ctypes.util
 import pytest
 
 from terok_sandbox.vault.store import kernel_keyring
+from tests.constants import MOCK_BASE
+
+#: A stable, vault-unique identity for the per-DB key scoping.  Nothing is
+#: written here — the path only seeds
+#: [`kernel_keyring.key_description`][terok_sandbox.vault.store.kernel_keyring.key_description],
+#: so a plain ``MOCK_BASE`` constant (never the operator's real DB) is enough.
+MOCK_DB_PATH = MOCK_BASE / "kernel-keyring" / "credentials.db"
 
 # Captured at import, before the package-level autouse ``_isolate_credential_keyring``
 # fixture swaps these for deterministic stubs.  This module tests the real
@@ -151,12 +158,12 @@ def test_unavailable_reason_reports_missing_library(monkeypatch: pytest.MonkeyPa
 
 
 def test_store_then_load_round_trips(fake_lib: FakeKeyutils) -> None:
-    assert kernel_keyring.store("s3cr3t-éé with spaces") is True
-    assert kernel_keyring.load() == "s3cr3t-éé with spaces"
+    assert kernel_keyring.store("s3cr3t-éé with spaces", MOCK_DB_PATH) is True
+    assert kernel_keyring.load(MOCK_DB_PATH) == "s3cr3t-éé with spaces"
 
 
 def test_store_locks_perms_possessor_and_uid_only(fake_lib: FakeKeyutils) -> None:
-    assert kernel_keyring.store("pw") is True
+    assert kernel_keyring.store("pw", MOCK_DB_PATH) is True
     (serial,) = fake_lib.perms
     # Possessor-all + uid view/read/write/search/setattr, group/other zero.
     assert fake_lib.perms[serial] == 0x3F2F0000
@@ -168,19 +175,19 @@ def test_store_arms_no_timeout(fake_lib: FakeKeyutils) -> None:
 
 
 def test_store_updates_in_place(fake_lib: FakeKeyutils) -> None:
-    kernel_keyring.store("first")
-    kernel_keyring.store("second")
-    assert kernel_keyring.load() == "second"
+    kernel_keyring.store("first", MOCK_DB_PATH)
+    kernel_keyring.store("second", MOCK_DB_PATH)
+    assert kernel_keyring.load(MOCK_DB_PATH) == "second"
 
 
 def test_store_rejects_empty_passphrase(fake_lib: FakeKeyutils) -> None:
     with pytest.raises(ValueError, match="empty passphrase"):
-        kernel_keyring.store("")
+        kernel_keyring.store("", MOCK_DB_PATH)
 
 
 def test_store_rejects_oversize_passphrase(fake_lib: FakeKeyutils) -> None:
     with pytest.raises(ValueError, match="exceeds"):
-        kernel_keyring.store("x" * 5000)
+        kernel_keyring.store("x" * 5000, MOCK_DB_PATH)
 
 
 # ── store failure branches ──────────────────────────────────────────
@@ -192,15 +199,15 @@ def test_store_returns_false_on_add_key_failure(monkeypatch: pytest.MonkeyPatch)
         "_load_library",
         lambda: FakeKeyutils(add_key_errno=122),  # EDQUOT
     )
-    assert kernel_keyring.store("pw") is False
+    assert kernel_keyring.store("pw", MOCK_DB_PATH) is False
 
 
 def test_store_unlinks_when_setperm_fails(monkeypatch: pytest.MonkeyPatch) -> None:
     lib = FakeKeyutils(setperm_ok=False)
     monkeypatch.setattr(kernel_keyring, "_load_library", lambda: lib)
-    assert kernel_keyring.store("pw") is False
+    assert kernel_keyring.store("pw", MOCK_DB_PATH) is False
     # Rolled back — no readable key left behind.
-    assert kernel_keyring.load() is None
+    assert kernel_keyring.load(MOCK_DB_PATH) is None
 
 
 def test_store_returns_false_when_library_unavailable(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -208,14 +215,14 @@ def test_store_returns_false_when_library_unavailable(monkeypatch: pytest.Monkey
         raise kernel_keyring._KeyutilsUnavailable("nope")
 
     monkeypatch.setattr(kernel_keyring, "_load_library", _raise)
-    assert kernel_keyring.store("pw") is False
+    assert kernel_keyring.store("pw", MOCK_DB_PATH) is False
 
 
 # ── load / forget ───────────────────────────────────────────────────
 
 
 def test_load_returns_none_when_absent(fake_lib: FakeKeyutils) -> None:
-    assert kernel_keyring.load() is None
+    assert kernel_keyring.load(MOCK_DB_PATH) is None
 
 
 def test_load_returns_none_when_library_unavailable(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -223,39 +230,39 @@ def test_load_returns_none_when_library_unavailable(monkeypatch: pytest.MonkeyPa
         raise kernel_keyring._KeyutilsUnavailable("nope")
 
     monkeypatch.setattr(kernel_keyring, "_load_library", _raise)
-    assert kernel_keyring.load() is None
+    assert kernel_keyring.load(MOCK_DB_PATH) is None
 
 
 def test_forget_removes_the_key(fake_lib: FakeKeyutils) -> None:
-    kernel_keyring.store("pw")
-    assert kernel_keyring.load() == "pw"
-    assert kernel_keyring.forget() is True
-    assert kernel_keyring.load() is None
+    kernel_keyring.store("pw", MOCK_DB_PATH)
+    assert kernel_keyring.load(MOCK_DB_PATH) == "pw"
+    assert kernel_keyring.forget(MOCK_DB_PATH) is True
+    assert kernel_keyring.load(MOCK_DB_PATH) is None
 
 
 def test_forget_is_idempotent_when_absent(fake_lib: FakeKeyutils) -> None:
-    assert kernel_keyring.forget() is True
+    assert kernel_keyring.forget(MOCK_DB_PATH) is True
 
 
 def test_is_cached_reflects_presence(fake_lib: FakeKeyutils) -> None:
-    assert kernel_keyring.is_cached() is False
-    kernel_keyring.store("pw")
-    assert kernel_keyring.is_cached() is True
-    kernel_keyring.forget()
-    assert kernel_keyring.is_cached() is False
+    assert kernel_keyring.is_cached(MOCK_DB_PATH) is False
+    kernel_keyring.store("pw", MOCK_DB_PATH)
+    assert kernel_keyring.is_cached(MOCK_DB_PATH) is True
+    kernel_keyring.forget(MOCK_DB_PATH)
+    assert kernel_keyring.is_cached(MOCK_DB_PATH) is False
 
 
 def test_is_cached_never_reads_the_payload(
     fake_lib: FakeKeyutils, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Presence must not materialise the secret — status surfaces poll this."""
-    kernel_keyring.store("pw")
+    kernel_keyring.store("pw", MOCK_DB_PATH)
 
     def _explode(*_args: object) -> int:
         raise AssertionError("is_cached must not call keyctl_read")
 
     monkeypatch.setattr(fake_lib, "keyctl_read", _explode)
-    assert kernel_keyring.is_cached() is True
+    assert kernel_keyring.is_cached(MOCK_DB_PATH) is True
 
 
 def test_is_cached_false_when_library_unavailable(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -263,33 +270,33 @@ def test_is_cached_false_when_library_unavailable(monkeypatch: pytest.MonkeyPatc
         raise kernel_keyring._KeyutilsUnavailable("nope")
 
     monkeypatch.setattr(kernel_keyring, "_load_library", _raise)
-    assert kernel_keyring.is_cached() is False
+    assert kernel_keyring.is_cached(MOCK_DB_PATH) is False
 
 
 def test_forget_reports_failure_when_unlink_fails(
     fake_lib: FakeKeyutils, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """A present key whose unlink is refused must report failure, not success."""
-    kernel_keyring.store("pw")
+    kernel_keyring.store("pw", MOCK_DB_PATH)
     monkeypatch.setattr(fake_lib, "keyctl_unlink", lambda _serial, _ring: -1)
-    assert kernel_keyring.forget() is False
+    assert kernel_keyring.forget(MOCK_DB_PATH) is False
 
 
 def test_load_returns_none_when_read_reports_no_length(
     fake_lib: FakeKeyutils, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    kernel_keyring.store("pw")
+    kernel_keyring.store("pw", MOCK_DB_PATH)
     monkeypatch.setattr(fake_lib, "keyctl_read", lambda _s, _b, _l: 0)
-    assert kernel_keyring.load() is None
+    assert kernel_keyring.load(MOCK_DB_PATH) is None
 
 
 def test_load_returns_none_when_second_read_fails(
     fake_lib: FakeKeyutils, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    kernel_keyring.store("pw")
+    kernel_keyring.store("pw", MOCK_DB_PATH)
     # First pass (buf is None) sizes the payload; the fill pass then fails.
     monkeypatch.setattr(fake_lib, "keyctl_read", lambda _s, buf, _l: 8 if buf is None else 0)
-    assert kernel_keyring.load() is None
+    assert kernel_keyring.load(MOCK_DB_PATH) is None
 
 
 def test_unavailable_reason_reports_non_enosys_errno(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -336,19 +343,19 @@ def test_forget_reports_failure_on_lookup_error(monkeypatch: pytest.MonkeyPatch)
     """
     lib = FakeKeyutils(search_errno=13)  # EACCES — not ENOKEY
     monkeypatch.setattr(kernel_keyring, "_load_library", lambda: lib)
-    assert kernel_keyring.forget() is False
+    assert kernel_keyring.forget(MOCK_DB_PATH) is False
 
 
 def test_load_none_on_lookup_error(monkeypatch: pytest.MonkeyPatch) -> None:
     lib = FakeKeyutils(search_errno=13)  # EACCES
     monkeypatch.setattr(kernel_keyring, "_load_library", lambda: lib)
-    assert kernel_keyring.load() is None
+    assert kernel_keyring.load(MOCK_DB_PATH) is None
 
 
 def test_is_cached_false_on_lookup_error(monkeypatch: pytest.MonkeyPatch) -> None:
     lib = FakeKeyutils(search_errno=13)  # EACCES
     monkeypatch.setattr(kernel_keyring, "_load_library", lambda: lib)
-    assert kernel_keyring.is_cached() is False
+    assert kernel_keyring.is_cached(MOCK_DB_PATH) is False
 
 
 def test_forget_true_when_library_unavailable(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -356,7 +363,7 @@ def test_forget_true_when_library_unavailable(monkeypatch: pytest.MonkeyPatch) -
         raise kernel_keyring._KeyutilsUnavailable("nope")
 
     monkeypatch.setattr(kernel_keyring, "_load_library", _raise)
-    assert kernel_keyring.forget() is True
+    assert kernel_keyring.forget(MOCK_DB_PATH) is True
 
 
 # ── live facility (only where the kernel keyring actually works) ─────
@@ -366,22 +373,21 @@ def test_forget_true_when_library_unavailable(monkeypatch: pytest.MonkeyPatch) -
     kernel_keyring.unavailable_reason() is not None,
     reason="kernel keyring facility unavailable here (no CONFIG_KEYS / no libkeyutils)",
 )
-def test_real_round_trip(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_real_round_trip() -> None:
     """Validate the live ctypes signatures against the real keyring.
 
-    Uses a test-unique description so it can't collide with a real
-    vault cache, and cleans up after itself.  ``unavailable_reason`` is
-    a side-effect-free probe (``store``'s return is the definitive
-    answer), so on a host where ``add_key`` is filtered even though
-    ``keyctl`` isn't — e.g. inside a default-seccomp Podman container —
-    the write fails and the test skips rather than failing; it runs for
-    real on an unconfined runner.
+    The mock DB path scopes the key to a test-unique description that
+    can't collide with a real vault cache, and it cleans up after
+    itself.  ``unavailable_reason`` is a side-effect-free probe
+    (``store``'s return is the definitive answer), so on a host where
+    ``add_key`` is filtered even though ``keyctl`` isn't — e.g. inside a
+    default-seccomp Podman container — the write fails and the test skips
+    rather than failing; it runs for real on an unconfined runner.
     """
-    monkeypatch.setattr(kernel_keyring, "KEY_DESCRIPTION", b"terok-sandbox:pytest-probe")
-    if not kernel_keyring.store("live-value"):
+    if not kernel_keyring.store("live-value", MOCK_DB_PATH):
         pytest.skip("add_key not permitted here (seccomp) — nothing to validate live")
     try:
-        assert kernel_keyring.load() == "live-value"
+        assert kernel_keyring.load(MOCK_DB_PATH) == "live-value"
     finally:
-        kernel_keyring.forget()
-    assert kernel_keyring.load() is None
+        kernel_keyring.forget(MOCK_DB_PATH)
+    assert kernel_keyring.load(MOCK_DB_PATH) is None

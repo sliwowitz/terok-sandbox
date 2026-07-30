@@ -72,6 +72,7 @@ def active_durable_source(cfg: SandboxConfig) -> PassphraseTier | None:
     already present, there is nothing worth caching on top of it.
     """
     for tier in _encryption.probe_passphrase_chain(
+        credentials_db=cfg.db_path,
         systemd_creds_file=cfg.vault_systemd_creds_file,
         use_keyring=cfg.credentials_use_keyring,
         passphrase_command=cfg.credentials_passphrase_command,
@@ -232,6 +233,7 @@ class VaultStatus:
         cfg = _resolve_cfg(cfg)
         recovery = RecoveryStatus.load(cfg)
         chain = _encryption.probe_passphrase_chain(
+            credentials_db=cfg.db_path,
             systemd_creds_file=cfg.vault_systemd_creds_file,
             use_keyring=cfg.credentials_use_keyring,
             passphrase_command=cfg.credentials_passphrase_command,

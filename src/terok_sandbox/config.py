@@ -578,10 +578,12 @@ class SandboxConfig:
         """
         from .vault.store.encryption import resolve_passphrase  # noqa: PLC0415
 
-        return resolve_passphrase(**self._chain_kwargs(prompt_on_tty=prompt_on_tty))
+        return resolve_passphrase(
+            credentials_db=self.db_path, **self._chain_kwargs(prompt_on_tty=prompt_on_tty)
+        )
 
     def resolve_passphrase_with_source(
-        self, *, prompt_on_tty: bool = False
+        self, *, prompt_on_tty: bool = False, credentials_db: Path | None = None
     ) -> tuple[str | None, PassphraseTier | None]:
         """Walk the resolution chain with this config's knobs; return ``(passphrase, source)``.
 
@@ -589,10 +591,19 @@ class SandboxConfig:
         [`resolve_passphrase`][terok_sandbox.SandboxConfig.resolve_passphrase]
         — feeds the daemon startup log so the operator sees *which*
         tier unlocked the vault on this boot.
+
+        *credentials_db* overrides which vault the kernel-keyring lookup
+        is scoped to; it defaults to this config's ``db_path``.  A caller
+        opening a DB at a path other than the config default (the vault
+        daemon, handed an explicit DB path) passes it so the cache lookup
+        matches the DB it is about to open.
         """
         from .vault.store.encryption import resolve_passphrase_with_source  # noqa: PLC0415
 
-        return resolve_passphrase_with_source(**self._chain_kwargs(prompt_on_tty=prompt_on_tty))
+        return resolve_passphrase_with_source(
+            credentials_db=credentials_db if credentials_db is not None else self.db_path,
+            **self._chain_kwargs(prompt_on_tty=prompt_on_tty),
+        )
 
     def _chain_kwargs(self, *, prompt_on_tty: bool) -> dict[str, Any]:
         """Return the shared resolver kwargs every chain entry point threads through.

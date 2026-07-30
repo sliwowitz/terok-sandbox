@@ -38,7 +38,7 @@ class TestProbePassphraseChain:
     """``probe_passphrase_chain`` reports per-tier presence in resolution order."""
 
     def test_empty_chain_all_absent(self) -> None:
-        chain = probe_passphrase_chain()
+        chain = probe_passphrase_chain(credentials_db=MOCK_DB_PATH)
         assert [t.source for t in chain] == [
             "systemd-creds",
             "keyring",
@@ -48,8 +48,8 @@ class TestProbePassphraseChain:
         assert all(not t.present for t in chain)
 
     def test_kernel_keyring_present_when_cached(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setattr(_kk, "is_cached", lambda: True)
-        chain = probe_passphrase_chain()
+        monkeypatch.setattr(_kk, "is_cached", lambda _db=None: True)
+        chain = probe_passphrase_chain(credentials_db=MOCK_DB_PATH)
         assert chain[2].source == "kernel-keyring"
         assert chain[2].present is True
         assert "cached in the user keyring" in chain[2].detail
@@ -59,13 +59,13 @@ class TestProbePassphraseChain:
     ) -> None:
         """A host without the keyring facility reports it as unusable, naming the reason."""
         monkeypatch.setattr(_kk, "unavailable_reason", lambda: "no libkeyutils")
-        chain = probe_passphrase_chain()
+        chain = probe_passphrase_chain(credentials_db=MOCK_DB_PATH)
         assert chain[2].source == "kernel-keyring"
         assert "unusable here: no libkeyutils" in chain[2].detail
 
     def test_kernel_keyring_absent_when_empty(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setattr(_kk, "is_cached", lambda: False)
-        chain = probe_passphrase_chain()
+        monkeypatch.setattr(_kk, "is_cached", lambda _db=None: False)
+        chain = probe_passphrase_chain(credentials_db=MOCK_DB_PATH)
         assert chain[2].present is False
         assert "no passphrase cached" in chain[2].detail
 
@@ -74,17 +74,17 @@ class TestProbePassphraseChain:
     ) -> None:
         """Status reports that a tier holds material, never its value."""
 
-        def _explode() -> str:
+        def _explode(_db: object = None) -> str:
             raise AssertionError("probe_passphrase_chain must not read the passphrase")
 
-        monkeypatch.setattr(_kk, "is_cached", lambda: True)
+        monkeypatch.setattr(_kk, "is_cached", lambda _db=None: True)
         monkeypatch.setattr(_kk, "load", _explode)
-        assert probe_passphrase_chain()[2].present is True
+        assert probe_passphrase_chain(credentials_db=MOCK_DB_PATH)[2].present is True
 
     def test_systemd_creds_present_when_sealed_file_exists(self, tmp_path: Path) -> None:
         sealed = tmp_path / "vault.passphrase.cred"
         sealed.write_text("sealed-blob")
-        chain = probe_passphrase_chain(systemd_creds_file=sealed)
+        chain = probe_passphrase_chain(credentials_db=MOCK_DB_PATH, systemd_creds_file=sealed)
         assert chain[0].source == "systemd-creds"
         assert chain[0].present is True
 
@@ -93,19 +93,19 @@ class TestProbePassphraseChain:
         sealed = tmp_path / "vault.passphrase.cred"
         sealed.write_text("sealed-blob")
         with patch.object(encryption, "_systemd_creds") as creds:
-            probe_passphrase_chain(systemd_creds_file=sealed)
+            probe_passphrase_chain(credentials_db=MOCK_DB_PATH, systemd_creds_file=sealed)
         creds.unseal.assert_not_called()
 
     def test_systemd_creds_unconfigured_says_not_configured(self) -> None:
         """No path wired at all reads like the other absent tiers, not a blank."""
-        chain = probe_passphrase_chain()
+        chain = probe_passphrase_chain(credentials_db=MOCK_DB_PATH)
         assert chain[0].detail == "not configured"
 
     def test_systemd_creds_absent_file_says_not_sealed(self, tmp_path: Path) -> None:
         """A configured path with nothing sealed must not masquerade as a live tier."""
         cred = tmp_path / "vault.passphrase.cred"  # never created
         with patch.object(encryption._systemd_creds, "unavailable_reason", return_value=None):
-            chain = probe_passphrase_chain(systemd_creds_file=cred)
+            chain = probe_passphrase_chain(credentials_db=MOCK_DB_PATH, systemd_creds_file=cred)
         assert chain[0].present is False
         assert "not sealed" in chain[0].detail
         assert str(cred) in chain[0].detail
@@ -115,7 +115,7 @@ class TestProbePassphraseChain:
         cred = tmp_path / "vault.passphrase.cred"
         reason = "needs systemd ≥ 257 for non-root --user mode (host has 255)"
         with patch.object(encryption._systemd_creds, "unavailable_reason", return_value=reason):
-            chain = probe_passphrase_chain(systemd_creds_file=cred)
+            chain = probe_passphrase_chain(credentials_db=MOCK_DB_PATH, systemd_creds_file=cred)
         assert "unusable here" in chain[0].detail
         assert "host has 255" in chain[0].detail
 
@@ -124,15 +124,15 @@ class TestProbePassphraseChain:
         cred = tmp_path / "vault.passphrase.cred"
         cred.write_text("sealed-blob")
         with patch.object(encryption._systemd_creds, "unavailable_reason", return_value=None):
-            chain = probe_passphrase_chain(systemd_creds_file=cred)
+            chain = probe_passphrase_chain(credentials_db=MOCK_DB_PATH, systemd_creds_file=cred)
         assert chain[0].present is True
         assert chain[0].detail == str(cred)
 
     def test_keyring_only_probed_when_enabled(self) -> None:
         with patch.object(encryption, "load_passphrase_from_keyring", return_value="k") as load:
-            on = probe_passphrase_chain(use_keyring=True)
+            on = probe_passphrase_chain(credentials_db=MOCK_DB_PATH, use_keyring=True)
             assert on[1].present is True
-            off = probe_passphrase_chain(use_keyring=False)
+            off = probe_passphrase_chain(credentials_db=MOCK_DB_PATH, use_keyring=False)
             assert off[1].present is False
         # one lookup for the enabled probe, none for the disabled one
         assert load.call_count == 1
@@ -140,11 +140,11 @@ class TestProbePassphraseChain:
     def test_keyring_empty_string_is_absent(self) -> None:
         """An empty keyring value is the resolver's no-passphrase sentinel — treat as absent."""
         with patch.object(encryption, "load_passphrase_from_keyring", return_value=""):
-            chain = probe_passphrase_chain(use_keyring=True)
+            chain = probe_passphrase_chain(credentials_db=MOCK_DB_PATH, use_keyring=True)
         assert chain[1].present is False
 
     def test_passphrase_command_present_but_not_executed(self) -> None:
-        chain = probe_passphrase_chain(passphrase_command="pass show vault")
+        chain = probe_passphrase_chain(credentials_db=MOCK_DB_PATH, passphrase_command="pass show vault")
         assert chain[3].source == "passphrase-command"
         assert chain[3].present is True
         assert "not executed" in chain[3].detail

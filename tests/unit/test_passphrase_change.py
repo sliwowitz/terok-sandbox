@@ -59,15 +59,15 @@ def _kernel_keyring_cache(monkeypatch: pytest.MonkeyPatch) -> None:
     """Back the kernel-keyring tier with an in-memory cache this module drives."""
     _KERNEL_CACHE["pw"] = None
 
-    def _store(pw: str, **_kw: object) -> bool:
+    def _store(pw: str, _db: object = None, **_kw: object) -> bool:
         _KERNEL_CACHE["pw"] = pw
         return True
 
-    def _forget() -> bool:
+    def _forget(_db: object = None) -> bool:
         _KERNEL_CACHE["pw"] = None
         return True
 
-    monkeypatch.setattr(_kk, "load", lambda: _KERNEL_CACHE["pw"])
+    monkeypatch.setattr(_kk, "load", lambda _db=None: _KERNEL_CACHE["pw"])
     monkeypatch.setattr(_kk, "store", _store)
     monkeypatch.setattr(_kk, "forget", _forget)
     monkeypatch.setattr(_kk, "unavailable_reason", lambda: None)
@@ -144,6 +144,7 @@ class TestTierRegistry:
         probed = [
             row.source
             for row in probe_passphrase_chain(
+                credentials_db=cfg.db_path,
                 systemd_creds_file=cfg.vault_systemd_creds_file,
                 use_keyring=False,
                 passphrase_command=None,
@@ -527,7 +528,7 @@ class TestRewriteTier:
         """An uncacheable host must not keep the OLD value cached — the stale cache is cleared."""
         cfg = _cfg(tmp_path)
         _write_kernel_keyring_cache(cfg, OLD)
-        monkeypatch.setattr(_kk, "store", lambda _pw: False)
+        monkeypatch.setattr(_kk, "store", lambda _pw, _db=None: False)
 
         rewrite = _rewrite_tier(cfg, PassphraseTier.KERNEL_KEYRING, NEW)
 

@@ -182,7 +182,7 @@ def provision_passphrase_tier(
         return TierProvisionResult(passphrase, PassphraseTier.KEYRING, generated)
 
     if tier is PassphraseTier.KERNEL_KEYRING:
-        if not kernel_keyring.store(passphrase):
+        if not kernel_keyring.store(passphrase, cfg.db_path):
             raise RuntimeError(
                 "the kernel keyring is unavailable here"
                 f" ({kernel_keyring.unavailable_reason() or 'add_key failed'});"
@@ -234,6 +234,7 @@ def _resolve_existing(cfg: SandboxConfig) -> tuple[str, PassphraseTier] | None:
     from ..vault.store.encryption import resolve_passphrase_with_source
 
     passphrase, source = resolve_passphrase_with_source(
+        credentials_db=cfg.db_path,
         systemd_creds_file=cfg.vault_systemd_creds_file,
         use_keyring=cfg.credentials_use_keyring,
         passphrase_command=cfg.credentials_passphrase_command,
@@ -563,7 +564,7 @@ def _provision_passphrase(
     )
 
     if mode is PassphraseTier.KERNEL_KEYRING:
-        existing = kernel_keyring.load()
+        existing = kernel_keyring.load(cfg.db_path)
         if existing is not None:
             return existing, PassphraseTier.KERNEL_KEYRING, False
         # ``prompt_passphrase(confirm=True)`` mints-and-announces an
@@ -573,7 +574,7 @@ def _provision_passphrase(
         # value the operator typed is a no-op the second time round
         # but missing the ack on an auto-mint loses the recovery key.
         new = prompt_passphrase(confirm=True)
-        if not kernel_keyring.store(new):
+        if not kernel_keyring.store(new, cfg.db_path):
             raise RuntimeError(
                 "the kernel keyring is unavailable here"
                 f" ({kernel_keyring.unavailable_reason() or 'add_key failed'});"
