@@ -144,7 +144,9 @@ class TestProbePassphraseChain:
         assert chain[1].present is False
 
     def test_passphrase_command_present_but_not_executed(self) -> None:
-        chain = probe_passphrase_chain(credentials_db=MOCK_DB_PATH, passphrase_command="pass show vault")
+        chain = probe_passphrase_chain(
+            credentials_db=MOCK_DB_PATH, passphrase_command="pass show vault"
+        )
         assert chain[3].source == "passphrase-command"
         assert chain[3].present is True
         assert "not executed" in chain[3].detail

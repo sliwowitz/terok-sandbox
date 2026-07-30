@@ -583,7 +583,7 @@ class SandboxConfig:
         )
 
     def resolve_passphrase_with_source(
-        self, *, prompt_on_tty: bool = False, credentials_db: Path | None = None
+        self, *, prompt_on_tty: bool = False, credentials_db: str | Path | None = None
     ) -> tuple[str | None, PassphraseTier | None]:
         """Walk the resolution chain with this config's knobs; return ``(passphrase, source)``.
 
