@@ -70,6 +70,7 @@ import functools
 import hashlib
 import logging
 import os
+import socket
 from typing import Final
 
 _logger = logging.getLogger(__name__)
@@ -79,13 +80,16 @@ _logger = logging.getLogger(__name__)
 KEY_TYPE: Final = b"user"
 
 #: Prefix of the per-vault ``@u`` key description; the full description
-#: appends a digest of the credentials-DB path (see
+#: appends a digest of ``(hostname, credentials-DB path)`` (see
 #: [`key_description`][terok_sandbox.vault.store.kernel_keyring.key_description]).
 #: Scoping by DB path keeps every vault a uid can reach — a side-by-side
 #: install, a test's throwaway tmp DB, the operator's real vault — in its
-#: own key, so one process never reads or clears another's passphrase
-#: even though ``@u`` is shared across the whole uid.  Keep the format
-#: stable across releases: the writer and every later reader must agree.
+#: own key, so one process never reads or clears another's passphrase even
+#: though ``@u`` is shared across the whole uid.  Folding in the hostname
+#: separates environments that share one ``@u`` yet differ by UTS namespace
+#: — concurrent rootless containers with identical in-container paths — so
+#: a cached passphrase never leaks between them.  Keep the format stable
+#: across releases: the writer and every later reader must agree.
 KEY_DESCRIPTION_PREFIX: Final = b"terok-sandbox:vault-passphrase:"
 
 #: ``KEY_SPEC_USER_KEYRING`` from ``linux/keyctl.h`` — the special id
@@ -115,18 +119,23 @@ _MAX_PAYLOAD_BYTES: Final = 4096
 
 
 def key_description(db_path: str | os.PathLike[str]) -> bytes:
-    """Return the ``@u`` key description scoping the cache to one vault DB.
+    """Return the ``@u`` key description scoping the cache to one vault on this host.
 
-    Anchored on the absolute credentials-DB path and hashed to a
-    fixed-width, ASCII-safe token appended to
+    Anchored on ``(hostname, absolute credentials-DB path)`` and hashed to
+    a fixed-width, ASCII-safe token appended to
     [`KEY_DESCRIPTION_PREFIX`][terok_sandbox.vault.store.kernel_keyring.KEY_DESCRIPTION_PREFIX]:
     two vaults on one uid never collide, and a path carrying spaces or
-    non-UTF-8 bytes can't corrupt the description.  ``abspath`` (not
-    ``realpath``) keeps this pure — no filesystem touch — while still
-    agreeing across the writer and every reader, which all derive the
-    path from the same config.
+    non-UTF-8 bytes can't corrupt the description.  The hostname component
+    separates environments that share one ``@u`` but differ by UTS
+    namespace (concurrent rootless containers with identical in-container
+    paths); the path component keeps a test's throwaway DB off the
+    operator's real key even on the same host.  ``abspath`` (not
+    ``realpath``) and ``gethostname`` keep this pure and stable — the
+    writer and every same-host reader derive both from the same config and
+    the same UTS namespace, so they always agree.
     """
-    digest = hashlib.sha256(os.path.abspath(db_path).encode("utf-8")).hexdigest()
+    ident = f"{socket.gethostname()}\0{os.path.abspath(db_path)}"
+    digest = hashlib.sha256(ident.encode("utf-8")).hexdigest()
     return KEY_DESCRIPTION_PREFIX + digest[:32].encode("ascii")
 
 

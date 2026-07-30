@@ -157,6 +157,24 @@ def test_unavailable_reason_reports_missing_library(monkeypatch: pytest.MonkeyPa
 # ── store / load round-trip ─────────────────────────────────────────
 
 
+def test_key_description_scopes_by_host_and_path(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The ``@u`` key id folds in both hostname and DB path — neither collides alone.
+
+    Path keeps a test's throwaway DB off the operator's real key on one
+    host; hostname separates environments that share a ``@u`` but differ by
+    UTS namespace (concurrent rootless containers with identical paths).
+    """
+    monkeypatch.setattr("socket.gethostname", lambda: "host-a")
+    a_one = kernel_keyring.key_description("/vault/one/credentials.db")
+    a_two = kernel_keyring.key_description("/vault/two/credentials.db")
+    monkeypatch.setattr("socket.gethostname", lambda: "host-b")
+    b_one = kernel_keyring.key_description("/vault/one/credentials.db")
+
+    assert a_one != a_two  # same host, different path
+    assert a_one != b_one  # same path, different host
+    assert a_one.startswith(kernel_keyring.KEY_DESCRIPTION_PREFIX)
+
+
 def test_store_then_load_round_trips(fake_lib: FakeKeyutils) -> None:
     assert kernel_keyring.store("s3cr3t-éé with spaces", MOCK_DB_PATH) is True
     assert kernel_keyring.load(MOCK_DB_PATH) == "s3cr3t-éé with spaces"
