@@ -2083,6 +2083,29 @@ class TestVaultSeal:
             "current-pw", cfg.vault_systemd_creds_file, key_mode=expected_mode
         )
 
+    def test_seal_warns_when_kernel_keyring_cleanup_fails(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """A failed post-seal cache clear is surfaced, not silently swallowed.
+
+        ``forget()`` — not ``load()`` — is the authority on the end state
+        (it alone distinguishes an absent key from a lookup failure), so a
+        clear that cannot be confirmed must warn rather than pass silently.
+        """
+        from terok_sandbox.commands import handle_vault_seal
+        from terok_sandbox.vault.store import kernel_keyring
+
+        cfg = self._seed_cfg(tmp_path, monkeypatch)
+        self._stub_seal_ready(monkeypatch)
+        monkeypatch.setattr(kernel_keyring, "forget", lambda _db=None: False)
+
+        handle_vault_seal(cfg=cfg, key="auto")
+
+        assert "could not clear" in capsys.readouterr().out
+
     def test_seal_propagates_systemd_creds_failure_as_systemexit(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -2289,6 +2312,39 @@ class TestVaultToKeyring:
 
         store.assert_called_once_with("current-pw")
         assert cache["pw"] is None
+        assert "use_keyring: true" in user_config.read_text()
+
+    def test_to_keyring_warns_when_kernel_keyring_cleanup_fails(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """A failed post-move cache clear warns, but the move itself still succeeds."""
+        from unittest.mock import MagicMock
+
+        from terok_sandbox import config as _config
+        from terok_sandbox.commands import handle_vault_to_keyring
+        from terok_sandbox.vault.store import kernel_keyring
+
+        cfg = _make_cfg(tmp_path)
+        _fake_kernel_keyring(monkeypatch, initial="current-pw")
+        _ack_recovery(cfg)
+        user_config = tmp_path / "config.yml"
+        user_config.write_text("credentials: {}\n")
+        monkeypatch.setattr(
+            "terok_sandbox.paths.config_file_paths", lambda: [("user", user_config)]
+        )
+        _config._credentials_section.cache_clear()
+        monkeypatch.setattr(
+            "terok_sandbox.vault.store.encryption.store_passphrase_in_keyring",
+            MagicMock(return_value=True),
+        )
+        monkeypatch.setattr(kernel_keyring, "forget", lambda _db=None: False)
+
+        handle_vault_to_keyring(cfg=cfg)
+
+        assert "could not clear" in capsys.readouterr().out
         assert "use_keyring: true" in user_config.read_text()
 
     def test_removes_sealed_systemd_creds_file(

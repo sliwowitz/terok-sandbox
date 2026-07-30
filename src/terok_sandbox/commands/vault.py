@@ -220,14 +220,17 @@ def purge_passphrase_tiers(cfg: SandboxConfig) -> None:
     from ..vault.store import kernel_keyring
     from ..vault.store.encryption import forget_passphrase_in_keyring, load_passphrase_from_keyring
 
-    if kernel_keyring.load(cfg.db_path) is not None:
-        if kernel_keyring.forget(cfg.db_path):
-            print("→ cleared kernel-keyring cache")
-        else:
-            raise SystemExit(
-                "failed to clear the kernel-keyring cache;"
-                " future processes may still auto-unlock from it"
-            )
+    # Call forget() directly and branch on its result: it distinguishes
+    # cleared/absent (True) from a lookup or unlink failure (False), whereas
+    # load() reports None for both an absent key and a failed lookup — which
+    # would let a live cache survive the purge unnoticed.
+    if kernel_keyring.forget(cfg.db_path):
+        print("→ cleared kernel-keyring cache")
+    else:
+        raise SystemExit(
+            "failed to clear the kernel-keyring cache;"
+            " future processes may still auto-unlock from it"
+        )
 
     if cfg.credentials_use_keyring:
         if forget_passphrase_in_keyring():
@@ -407,8 +410,11 @@ def handle_vault_seal(*, cfg: SandboxConfig | None = None, key: str = "auto") ->
     # does).
     from ..vault.store import kernel_keyring
 
-    if kernel_keyring.load(cfg.db_path) is not None and kernel_keyring.forget(cfg.db_path):
-        print("→ cleared now-redundant kernel-keyring cache")
+    if not kernel_keyring.forget(cfg.db_path):
+        print(
+            "⚠ could not clear the now-redundant kernel-keyring cache;"
+            " it may still auto-unlock the vault — run `vault lock` to clear it"
+        )
 
     print(
         "  the resolution chain will pick this up the next time a supervisor"
@@ -475,8 +481,11 @@ def handle_vault_to_keyring(*, cfg: SandboxConfig | None = None) -> None:
     # kernel-keyring cache is cleared too so nothing stale lingers.
     from ..vault.store import kernel_keyring
 
-    if kernel_keyring.load(cfg.db_path) is not None and kernel_keyring.forget(cfg.db_path):
-        print("→ cleared kernel-keyring cache")
+    if not kernel_keyring.forget(cfg.db_path):
+        print(
+            "⚠ could not clear the kernel-keyring cache;"
+            " it may still auto-unlock the vault — run `vault lock` to clear it"
+        )
     if cfg.vault_systemd_creds_file.exists():
         cfg.vault_systemd_creds_file.unlink()
         print(f"→ removed {sanitize_tty(str(cfg.vault_systemd_creds_file))}")
@@ -814,13 +823,14 @@ def _rewrite_tier(cfg: SandboxConfig, tier: PassphraseTier, passphrase: str) -> 
         if tier is PassphraseTier.KERNEL_KEYRING:
             if kernel_keyring.store(passphrase, cfg.db_path):
                 return TierRewrite(tier, ok=True, detail="kernel-keyring cache rewritten")
-            kernel_keyring.forget(cfg.db_path)
+            cleared = kernel_keyring.forget(cfg.db_path)
+            stale = "stale cache cleared" if cleared else "stale cache may remain"
             return TierRewrite(
                 tier,
                 ok=False,
                 detail=(
                     f"cannot cache ({kernel_keyring.unavailable_reason() or 'add_key failed'})"
-                    " — stale cache cleared"
+                    f" — {stale}"
                 ),
             )
         if tier is PassphraseTier.SYSTEMD_CREDS:

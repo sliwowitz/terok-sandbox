@@ -43,7 +43,7 @@ def db(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     )
 
     # Blank the upper tiers so the chain falls through to keyring.
-    monkeypatch.setattr(_kk, "load", lambda: None)
+    monkeypatch.setattr(_kk, "load", lambda _db=None: None)
     monkeypatch.setattr(_sc, "unseal", lambda _path: None)
     # Pin keyring to the test passphrase.
     monkeypatch.setattr(_enc, "load_passphrase_from_keyring", lambda: "test")
