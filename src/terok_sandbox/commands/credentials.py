@@ -63,19 +63,20 @@ _CHOOSER_FOOTER = """
 For the strongest protection, install systemd ≥ 257 and re-run setup.
 Choice [k]:"""
 
-# One entry per selectable tier: its single-key selector and menu line.
-# The chooser renders only the tiers the plan offers on this host, so an
-# unavailable tier (e.g. the kernel keyring without libkeyutils) is never
-# presented.  Empty or unrecognised input falls back to the recommended
-# keyring default — safer than guessing the operator meant a volatile tier.
+# One entry per selectable tier: its single-key selector and its
+# description.  The chooser lists every tier; an unavailable one is shown
+# with a ``[-]`` marker and its reason instead of a live selector, so the
+# operator sees why it's missing but can't pick it.  Empty or unrecognised
+# input falls back to the recommended keyring default — safer than
+# guessing the operator meant a volatile tier.
 _CHOOSER_OPTIONS: dict[PassphraseTier, tuple[str, str]] = {
     PassphraseTier.KEYRING: (
         "k",
-        "  [k] keyring — your login keyring (recommended; auto-unlocks at login)",
+        "keyring — your login keyring (recommended; auto-unlocks at login)",
     ),
     PassphraseTier.KERNEL_KEYRING: (
         "n",
-        "  [n] kernel keyring — RAM-only cache; re-unlock after logout",
+        "kernel keyring — RAM-only cache; re-unlock after logout",
     ),
 }
 _DEFAULT_TIER = PassphraseTier.KEYRING
@@ -256,18 +257,19 @@ class ProvisioningPlan:
     """The decision half of first-run passphrase provisioning, frontend-free.
 
     Every frontend renders exactly this: skip when ``provisioned``,
-    provision ``auto_tier`` silently when set, otherwise put
-    ``choices`` to the operator.  ``keyring_available`` lets a frontend
-    grey out the keyring choice up front instead of failing after the
-    pick.  The CLI chooser below and the TUI's modal flow are two
-    renderings of one plan — the decisions themselves are made here,
-    once.
+    provision ``auto_tier`` silently when set, otherwise put ``choices``
+    to the operator.  ``unavailable`` maps any chooser tier the host
+    can't provision to the reason why — a frontend lists it greyed-out
+    and non-selectable instead of hiding it (so the operator sees *why*
+    a tier is missing) or failing only after the pick.  The CLI chooser
+    below and the TUI's modal flow are two renderings of one plan — the
+    decisions themselves are made here, once.
     """
 
     provisioned: bool
     auto_tier: PassphraseTier | None
     choices: tuple[PassphraseTier, ...]
-    keyring_available: bool
+    unavailable: dict[PassphraseTier, str]
 
 
 def plan_provisioning(cfg: SandboxConfig | None = None) -> ProvisioningPlan:
@@ -284,24 +286,22 @@ def plan_provisioning(cfg: SandboxConfig | None = None) -> ProvisioningPlan:
 
     if cfg is None:
         cfg = SandboxConfig()
-    keyring_ok = keyring_backend_available()
     if credentials_provisioned(cfg):
-        return ProvisioningPlan(
-            provisioned=True, auto_tier=None, choices=(), keyring_available=keyring_ok
-        )
+        return ProvisioningPlan(provisioned=True, auto_tier=None, choices=(), unavailable={})
     auto_tier = PassphraseTier.SYSTEMD_CREDS if _systemd_creds.is_available() else None
-    # Never offer a tier the host can't provision: the kernel keyring drops
-    # out of the chooser where libkeyutils / CONFIG_KEYS is missing.
-    choices = tuple(
-        tier
-        for tier in CHOOSER_TIERS
-        if tier is not PassphraseTier.KERNEL_KEYRING or kernel_keyring.unavailable_reason() is None
-    )
+    # Every chooser tier is listed; the ones the host can't provision are
+    # reported (with the reason) so a frontend can grey them out rather
+    # than hide them or fail after the pick.
+    unavailable: dict[PassphraseTier, str] = {}
+    if not keyring_backend_available():
+        unavailable[PassphraseTier.KEYRING] = "no OS keyring backend is reachable on this host"
+    if (kernel_reason := kernel_keyring.unavailable_reason()) is not None:
+        unavailable[PassphraseTier.KERNEL_KEYRING] = kernel_reason
     return ProvisioningPlan(
         provisioned=False,
         auto_tier=auto_tier,
-        choices=choices,
-        keyring_available=keyring_ok,
+        choices=CHOOSER_TIERS,
+        unavailable=unavailable,
     )
 
 
@@ -420,7 +420,7 @@ def _select_and_provision(
         passphrase, source = _provision_systemd_creds_tier(cfg, echo_passphrase=echo_passphrase)
         return passphrase, source, True
 
-    mode = _ask_passphrase_mode(plan.choices)
+    mode = _ask_passphrase_mode(plan.choices, plan.unavailable)
     passphrase, source, auto_generated = _provision_passphrase(
         cfg, mode=mode, echo_passphrase=echo_passphrase
     )
@@ -515,7 +515,10 @@ def _maybe_acknowledge_recovery(cfg: SandboxConfig, *, echo_to_stdout: bool) -> 
         )
 
 
-def _ask_passphrase_mode(choices: tuple[PassphraseTier, ...] = CHOOSER_TIERS) -> PassphraseTier:
+def _ask_passphrase_mode(
+    choices: tuple[PassphraseTier, ...] = CHOOSER_TIERS,
+    unavailable: dict[PassphraseTier, str] | None = None,
+) -> PassphraseTier:
     """Return the operator's chosen mode; refuse non-TTY runs without an explicit tier.
 
     Reached only when ``systemd-creds`` isn't available AND no explicit
@@ -526,16 +529,25 @@ def _ask_passphrase_mode(choices: tuple[PassphraseTier, ...] = CHOOSER_TIERS) ->
     saw, lost at logout.  That convenience-vs-data-loss trade is wrong,
     so we now fail closed with an actionable hint.
 
-    *choices* are the tiers the plan offers on this host; the menu renders
-    only those, so an unavailable tier is never presented.  Empty or
-    unrecognised input still falls back to the recommended keyring default.
+    Every tier in *choices* is listed; those in *unavailable* are shown
+    with a ``[-]`` marker and their reason and carry no selector key, so
+    the operator sees why a tier is missing but cannot pick it.  Empty or
+    unrecognised input (including an unavailable tier's letter) falls back
+    to the recommended keyring default.
     """
     if not sys.stdin.isatty():
         raise SystemExit(_NON_TTY_TIER_HINT.format(setup=setup_invocation()))
-    offered = [tier for tier in choices if tier in _CHOOSER_OPTIONS]
-    menu = "\n".join(_CHOOSER_OPTIONS[tier][1] for tier in offered)
-    print(f"{_CHOOSER_HEADER}\n{menu}\n{_CHOOSER_FOOTER}")
-    key_to_tier = {_CHOOSER_OPTIONS[tier][0]: tier for tier in offered}
+    unavailable = unavailable or {}
+    lines: list[str] = []
+    key_to_tier: dict[str, PassphraseTier] = {}
+    for tier in choices:
+        key, description = _CHOOSER_OPTIONS[tier]
+        if tier in unavailable:
+            lines.append(f"  [-] {description} — unavailable ({unavailable[tier]})")
+        else:
+            lines.append(f"  [{key}] {description}")
+            key_to_tier[key] = tier
+    print(f"{_CHOOSER_HEADER}\n" + "\n".join(lines) + f"\n{_CHOOSER_FOOTER}")
     choice = sys.stdin.readline().strip().lower()[:1]
     return key_to_tier.get(choice, _DEFAULT_TIER)
 

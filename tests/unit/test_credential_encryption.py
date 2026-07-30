@@ -32,7 +32,7 @@ from terok_sandbox.vault.store.encryption import (
     resolve_passphrase_with_source,
     store_passphrase_in_keyring,
 )
-from terok_sandbox.vault.store.tiers import PassphraseTier
+from terok_sandbox.vault.store.tiers import CHOOSER_TIERS, PassphraseTier
 from tests.constants import MOCK_BASE
 
 #: Vault identity for the per-DB kernel-keyring key scoping (nothing is written).
@@ -1465,19 +1465,24 @@ class TestAskPassphraseMode:
         assert "recommended" in out.lower()
         assert "systemd" in out and "≥ 257" in out
 
-    def test_unavailable_kernel_keyring_is_not_offered(
+    def test_unavailable_tier_is_listed_but_not_selectable(
         self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
     ) -> None:
-        """A plan that omits the kernel keyring hides it, and ``n`` falls back to keyring."""
+        """An unavailable tier is shown with its reason but carries no live selector."""
         from terok_sandbox.commands import _ask_passphrase_mode
 
         monkeypatch.setattr("sys.stdin.isatty", lambda: True)
         monkeypatch.setattr("sys.stdin.readline", lambda: "n\n")
-        # Only keyring is offered — as plan_provisioning yields on a host
-        # without libkeyutils.
-        result = _ask_passphrase_mode((PassphraseTier.KEYRING,))
+        result = _ask_passphrase_mode(
+            CHOOSER_TIERS, {PassphraseTier.KERNEL_KEYRING: "no libkeyutils"}
+        )
+        out = capsys.readouterr().out
+        # Picking the unavailable tier's letter falls back to the default.
         assert result == "keyring"
-        assert "[n] kernel keyring" not in capsys.readouterr().out
+        # It's still listed — with its reason — just not with a live selector.
+        assert "kernel keyring" in out
+        assert "unavailable (no libkeyutils)" in out
+        assert "[n] kernel keyring" not in out
 
 
 class TestAutoSystemdCredsBranch:

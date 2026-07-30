@@ -816,20 +816,20 @@ class TestPlanProvisioning:
         assert not plan.provisioned
         assert plan.auto_tier is None
         assert plan.choices == CHOOSER_TIERS
-        assert isinstance(plan.keyring_available, bool)
+        assert isinstance(plan.unavailable, dict)
 
-    def test_kernel_keyring_omitted_when_unavailable(
+    def test_kernel_keyring_listed_but_marked_unavailable(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """A host without the kernel keyring facility never sees it offered."""
+        """A host without the kernel keyring facility still lists it — as unavailable."""
         from terok_sandbox.vault.store import systemd_creds
 
         monkeypatch.setattr(systemd_creds, "is_available", lambda: False)
         monkeypatch.setattr(_kk, "unavailable_reason", lambda: "no libkeyutils")
         plan = plan_provisioning(_cfg(tmp_path))
 
-        assert PassphraseTier.KERNEL_KEYRING not in plan.choices
-        assert PassphraseTier.KEYRING in plan.choices
+        assert PassphraseTier.KERNEL_KEYRING in plan.choices
+        assert plan.unavailable[PassphraseTier.KERNEL_KEYRING] == "no libkeyutils"
 
     def test_systemd_creds_auto_selects(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -876,4 +876,4 @@ class TestPlanProvisioning:
         # cfg=None path built a real SandboxConfig and ran the probe.
         assert plan.provisioned
         assert plan.choices == ()
-        assert isinstance(plan.keyring_available, bool)
+        assert isinstance(plan.unavailable, dict)
