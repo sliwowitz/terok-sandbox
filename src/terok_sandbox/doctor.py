@@ -14,8 +14,10 @@ container (vault token broker TCP, SSH signer TCP) and shield firewall state.
 
 from __future__ import annotations
 
+import os
 from collections.abc import Callable
 from dataclasses import dataclass
+from pathlib import Path
 
 # ---------------------------------------------------------------------------
 # Shared protocol types — imported by terok-executor and terok
@@ -119,10 +121,11 @@ def sandbox_doctor_checks(
 def _make_vault_unlocked_check() -> DoctorCheck:
     """Verify the credentials-DB passphrase resolves through some tier.
 
-    Host-side check: walks the resolution chain (session-unlock file →
-    OS keyring → config-file fallback) and reports an actionable error
-    when nothing yields.  The vault daemon won't start without a
-    passphrase, so this is the first check operators should see fail.
+    Host-side check: walks the resolution chain (systemd-creds → OS
+    keyring → kernel keyring → passphrase-command) and reports an
+    actionable error when nothing yields.  The vault daemon won't start
+    without a passphrase, so this is the first check operators should
+    see fail.
     """
 
     def _eval(_rc: int, _stdout: str, _stderr: str) -> CheckVerdict:
@@ -139,7 +142,7 @@ def _make_vault_unlocked_check() -> DoctorCheck:
         return CheckVerdict(
             "error",
             "vault is locked — no passphrase available."
-            " Run `terok-sandbox vault unlock` (session-unlock)"
+            " Run `terok-sandbox vault unlock` (kernel-keyring cache)"
             " or `terok-sandbox setup` to provision.",
         )
 
@@ -159,11 +162,11 @@ def make_recovery_acknowledged_check() -> DoctorCheck:
     """Warn when the operator hasn't confirmed they saved the recovery key.
 
     Two severity bands depending on the resolved tier when the marker
-    is absent — the session-file tier dies on the next reboot, so
-    "unconfirmed AND session-only" is a genuine ``error`` (you are
-    literally one reboot away from losing the vault), while every
-    durable tier (keyring, systemd-creds, config) is "only" a ``warn``
-    (machine-bound; needs an off-host copy for disaster recovery).
+    is absent — the kernel-keyring cache dies at logout, so "unconfirmed
+    AND volatile-only" is a genuine ``error`` (you are literally one
+    logout away from losing the vault), while every durable tier
+    (keyring, systemd-creds, config) is "only" a ``warn`` (machine-bound;
+    needs an off-host copy for disaster recovery).
 
     Intentionally NOT bundled into
     [`sandbox_doctor_checks`][terok_sandbox.doctor.sandbox_doctor_checks]:
@@ -183,12 +186,12 @@ def make_recovery_acknowledged_check() -> DoctorCheck:
             return CheckVerdict("ok", "recovery key acknowledged")
         reveal = bold("terok-sandbox vault passphrase reveal")
         ack = bold("terok-sandbox vault passphrase acknowledge")
-        if status.session_only:
+        if status.volatile_only:
             return CheckVerdict(
                 "error",
                 "vault recovery key UNCONFIRMED and the passphrase lives ONLY"
-                " in the session-unlock tmpfs file — it will be wiped on the"
-                " next reboot and your vault becomes UNRECOVERABLE then."
+                " in the kernel-keyring cache — it will be wiped at logout"
+                " and your vault becomes UNRECOVERABLE then."
                 f" Run {reveal} NOW and save the value off-host,"
                 f" or {ack} if you already captured it.",
             )
@@ -211,6 +214,87 @@ def make_recovery_acknowledged_check() -> DoctorCheck:
             " an off-host store (password manager / paper safe), and confirm"
             " when prompted; or run `terok-sandbox vault passphrase acknowledge`"
             " after capturing the value via `--echo-passphrase`."
+        ),
+    )
+
+
+#: Public docs page explaining the per-container keyring leak → EDQUOT.
+_KEYRING_DOC_URL = "https://terok-ai.github.io/terok/kernel-keyring/"
+
+#: Warn once the per-uid kernel keyring's key-count *or* byte quota is at
+#: least this full.  A healthy host sits far below the edge, where a
+#: warning would only be noise.
+_KEYRING_QUOTA_WARN_AT = 0.95
+
+
+def _kernel_keyring_quota() -> tuple[int, int, int, int] | None:
+    """Return ``(keys_used, keys_max, bytes_used, bytes_max)`` for this uid.
+
+    Read from ``/proc/key-users`` — the kernel's own per-uid quota
+    accounting.  ``None`` when the file is absent (non-Linux, no
+    ``CONFIG_KEYS``) or carries no line for the effective uid, so there
+    is nothing to account here.
+    """
+    try:
+        rows = Path("/proc/key-users").read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return None
+    prefix = f"{os.geteuid()}:"
+    for row in rows:
+        if row.lstrip().startswith(prefix):
+            # <uid>:  <usage> <nkeys>/<nikeys> <qnkeys>/<maxkeys> <qnbytes>/<maxbytes>
+            fields = row.split()
+            try:
+                keys_used, keys_max = (int(n) for n in fields[3].split("/"))
+                bytes_used, bytes_max = (int(n) for n in fields[4].split("/"))
+            except (IndexError, ValueError):
+                return None
+            return keys_used, keys_max, bytes_used, bytes_max
+    return None
+
+
+def make_kernel_keyring_quota_check() -> DoctorCheck:
+    """Warn when the per-uid kernel keyring is nearly full.
+
+    The OCI runtime creates a session keyring per container and does not
+    reliably reclaim it, so a host that cycles many agent containers
+    drifts toward the per-uid key quota (200 keys by default) and then
+    fails to launch new ones with a misleading "Disk quota exceeded".
+    This surfaces the pressure a step before it bites — and only near
+    the edge (``_KEYRING_QUOTA_WARN_AT``), since a healthy host sits far
+    below it and a warning there is noise.
+
+    Host-level like
+    [`make_recovery_acknowledged_check`][terok_sandbox.doctor.make_recovery_acknowledged_check]:
+    the quota is per-uid, not per-container, so it renders exactly once.
+    """
+
+    def _eval(_rc: int, _stdout: str, _stderr: str) -> CheckVerdict:
+        quota = _kernel_keyring_quota()
+        if quota is None:
+            return CheckVerdict("ok", "per-uid keyring quota not accounted on this host")
+        keys_used, keys_max, bytes_used, bytes_max = quota
+        key_frac = keys_used / keys_max if keys_max else 0.0
+        byte_frac = bytes_used / bytes_max if bytes_max else 0.0
+        if max(key_frac, byte_frac) >= _KEYRING_QUOTA_WARN_AT:
+            return CheckVerdict(
+                "warn",
+                f"kernel keyring {round(max(key_frac, byte_frac) * 100)}% full"
+                f" ({keys_used}/{keys_max} keys) — leaked per-container keyrings can block"
+                f" new containers with 'Disk quota exceeded'; see {_KEYRING_DOC_URL}",
+            )
+        return CheckVerdict("ok", f"{keys_used}/{keys_max} keys used (per-uid quota)")
+
+    return DoctorCheck(
+        category="host",
+        label="Kernel keyring quota",
+        probe_cmd=[],
+        evaluate=_eval,
+        host_side=True,
+        fix_description=(
+            "Restart the host to reclaim leaked container keyrings, or set"
+            " `[containers] keyring = false` in containers.conf to stop the leak"
+            f" ({_KEYRING_DOC_URL})."
         ),
     )
 

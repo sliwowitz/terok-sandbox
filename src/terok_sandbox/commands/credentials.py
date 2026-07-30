@@ -6,9 +6,9 @@
 Two passphrase storage modes are chosen interactively when
 ``systemd-creds`` isn't available; with it, the chooser is skipped and
 the credential is sealed silently.  Once chosen, the mode is persisted
-so the resolution chain picks it up on the next daemon start — session
-mode self-describes via the tmpfs file's presence; keyring sets
-``credentials.use_keyring=true`` in ``config.yml``.
+so the resolution chain picks it up on the next daemon start —
+kernel-keyring mode self-describes via the cached key's presence;
+keyring sets ``credentials.use_keyring=true`` in ``config.yml``.
 [`plan_provisioning`][terok_sandbox.commands.credentials.plan_provisioning]
 is the shared decision core: the CLI chooser here and the TUI's modal
 flow are two renderings of the same plan.
@@ -40,36 +40,44 @@ _NON_TTY_TIER_HINT = """\
 {setup}: running non-interactively but no passphrase tier was chosen.
 
   systemd-creds is unavailable on this host (needs systemd ≥ 257), so
-  setup would otherwise fall through to the session-unlock tmpfs file
-  — a fresh random passphrase you would never see, lost on the first
-  reboot.  Pick a tier explicitly:
+  setup would otherwise fall through to the kernel-keyring cache — a
+  fresh random passphrase you would never see, lost at logout.  Pick a
+  tier explicitly:
 
-    --passphrase-tier keyring        (recommended on a single-user host)
-    --passphrase-tier session-file   (re-run `vault unlock` after each boot)
+    --passphrase-tier keyring          (recommended on a single-user host)
+    --passphrase-tier kernel-keyring   (re-run `vault unlock` after each logout)
 
   Or install systemd ≥ 257 (Fedora ≥ 42, Debian ≥ 13) and re-run `{setup}`
   so the systemd-creds auto-tier becomes available.  For a headless
   file-based store, point credentials.passphrase_command at your own
   secret file — see the credentials-encryption docs."""
 
-_CHOOSER_PROMPT = """\
+_CHOOSER_HEADER = """\
 
 systemd-creds isn't available on this host (needs systemd ≥ 257 with
 the user Varlink service).  Where should terok store the passphrase
 to encrypt the vault?
+"""
 
-  [k] keyring — your login keyring (recommended; auto-unlocks at login)
-  [s] session-unlock — terok-sandbox vault unlock after each boot
-
+_CHOOSER_FOOTER = """
 For the strongest protection, install systemd ≥ 257 and re-run setup.
 Choice [k]:"""
 
-# Operator's first character maps to the tier.  Empty input picks the
-# recommended default (keyring); anything outside this set falls back
-# to keyring too — safer than guessing the operator meant ``[s]``.
-_CHOICE_TO_TIER: dict[str, PassphraseTier] = {
-    "s": PassphraseTier.SESSION_FILE,
-    "k": PassphraseTier.KEYRING,
+# One entry per selectable tier: its single-key selector and its
+# description.  The chooser lists every tier; an unavailable one is shown
+# with a ``[-]`` marker and its reason instead of a live selector, so the
+# operator sees why it's missing but can't pick it.  Empty or unrecognised
+# input falls back to the recommended keyring default — safer than
+# guessing the operator meant a volatile tier.
+_CHOOSER_OPTIONS: dict[PassphraseTier, tuple[str, str]] = {
+    PassphraseTier.KEYRING: (
+        "k",
+        "keyring — your login keyring (recommended; auto-unlocks at login)",
+    ),
+    PassphraseTier.KERNEL_KEYRING: (
+        "n",
+        "kernel keyring — RAM-only cache; re-unlock after logout",
+    ),
 }
 _DEFAULT_TIER = PassphraseTier.KEYRING
 
@@ -128,7 +136,7 @@ def provision_passphrase_tier(
     backend (systemd-creds, OS keyring) is unreachable.
     """
     from ..config import SandboxConfig
-    from ..vault.store import systemd_creds as _systemd_creds
+    from ..vault.store import kernel_keyring, systemd_creds as _systemd_creds
     from ..vault.store.db import CredentialDB
     from ..vault.store.encryption import (
         NoPassphraseError,
@@ -145,7 +153,7 @@ def provision_passphrase_tier(
     tier = PassphraseTier(tier)
     if passphrase == "":  # nosec: B105 — rejecting the empty sentinel, not comparing a secret
         # The keyring and systemd-creds writers refuse an empty value
-        # themselves; guard the session-file tier to the same standard
+        # themselves; guard the kernel-keyring tier to the same standard
         # so no branch can report success while leaving nothing usable.
         raise ValueError("refusing to provision an empty passphrase")
     if cfg is None:
@@ -181,10 +189,18 @@ def provision_passphrase_tier(
         _persist_mode_choice(PassphraseTier.KEYRING)
         return TierProvisionResult(passphrase, PassphraseTier.KEYRING, generated)
 
-    from .._yaml import write_secret_text
+    if tier is PassphraseTier.KERNEL_KEYRING:
+        if not kernel_keyring.store(passphrase, cfg.db_path):
+            raise RuntimeError(
+                "the kernel keyring is unavailable here"
+                f" ({kernel_keyring.unavailable_reason() or 'add_key failed'});"
+                " choose a different storage mode"
+            )
+        return TierProvisionResult(passphrase, PassphraseTier.KERNEL_KEYRING, generated)
 
-    write_secret_text(cfg.vault_passphrase_file, passphrase + "\n")
-    return TierProvisionResult(passphrase, PassphraseTier.SESSION_FILE, generated)
+    # Every member of PROVISIONABLE_TIERS is handled above; a new one
+    # reaching here should fail loudly, not silently land in the keyring.
+    raise ValueError(f"unhandled provisionable tier: {tier!r}")  # pragma: no cover
 
 
 def credentials_provisioned(cfg: SandboxConfig | None = None) -> bool:
@@ -226,7 +242,7 @@ def _resolve_existing(cfg: SandboxConfig) -> tuple[str, PassphraseTier] | None:
     from ..vault.store.encryption import resolve_passphrase_with_source
 
     passphrase, source = resolve_passphrase_with_source(
-        passphrase_file=cfg.vault_passphrase_file,
+        credentials_db=cfg.db_path,
         systemd_creds_file=cfg.vault_systemd_creds_file,
         use_keyring=cfg.credentials_use_keyring,
         passphrase_command=cfg.credentials_passphrase_command,
@@ -241,18 +257,19 @@ class ProvisioningPlan:
     """The decision half of first-run passphrase provisioning, frontend-free.
 
     Every frontend renders exactly this: skip when ``provisioned``,
-    provision ``auto_tier`` silently when set, otherwise put
-    ``choices`` to the operator.  ``keyring_available`` lets a frontend
-    grey out the keyring choice up front instead of failing after the
-    pick.  The CLI chooser below and the TUI's modal flow are two
-    renderings of one plan — the decisions themselves are made here,
-    once.
+    provision ``auto_tier`` silently when set, otherwise put ``choices``
+    to the operator.  ``unavailable`` maps any chooser tier the host
+    can't provision to the reason why — a frontend lists it greyed-out
+    and non-selectable instead of hiding it (so the operator sees *why*
+    a tier is missing) or failing only after the pick.  The CLI chooser
+    below and the TUI's modal flow are two renderings of one plan — the
+    decisions themselves are made here, once.
     """
 
     provisioned: bool
     auto_tier: PassphraseTier | None
     choices: tuple[PassphraseTier, ...]
-    keyring_available: bool
+    unavailable: dict[PassphraseTier, str]
 
 
 def plan_provisioning(cfg: SandboxConfig | None = None) -> ProvisioningPlan:
@@ -264,22 +281,27 @@ def plan_provisioning(cfg: SandboxConfig | None = None) -> ProvisioningPlan:
     — surface it as a hard failure, not as "unprovisioned".
     """
     from ..config import SandboxConfig
-    from ..vault.store import systemd_creds as _systemd_creds
+    from ..vault.store import kernel_keyring, systemd_creds as _systemd_creds
     from ..vault.store.encryption import keyring_backend_available
 
     if cfg is None:
         cfg = SandboxConfig()
-    keyring_ok = keyring_backend_available()
     if credentials_provisioned(cfg):
-        return ProvisioningPlan(
-            provisioned=True, auto_tier=None, choices=(), keyring_available=keyring_ok
-        )
+        return ProvisioningPlan(provisioned=True, auto_tier=None, choices=(), unavailable={})
     auto_tier = PassphraseTier.SYSTEMD_CREDS if _systemd_creds.is_available() else None
+    # Every chooser tier is listed; the ones the host can't provision are
+    # reported (with the reason) so a frontend can grey them out rather
+    # than hide them or fail after the pick.
+    unavailable: dict[PassphraseTier, str] = {}
+    if not keyring_backend_available():
+        unavailable[PassphraseTier.KEYRING] = "no OS keyring backend is reachable on this host"
+    if (kernel_reason := kernel_keyring.unavailable_reason()) is not None:
+        unavailable[PassphraseTier.KERNEL_KEYRING] = kernel_reason
     return ProvisioningPlan(
         provisioned=False,
         auto_tier=auto_tier,
         choices=CHOOSER_TIERS,
-        keyring_available=keyring_ok,
+        unavailable=unavailable,
     )
 
 
@@ -299,7 +321,7 @@ def _handle_credentials_encrypt_db(
 
     1. *passphrase_tier* (CLI: ``--passphrase-tier``) — the operator
        said exactly which tier to use, so honour it.  ``systemd-creds``
-       refuses if unavailable; ``session-file`` skips the silent-default
+       refuses if unavailable; ``kernel-keyring`` skips the silent-default
        refusal below.
     2. A tier that already resolves — reuse it silently.  A frontend
        (the TUI chooser) may have provisioned in-process just before
@@ -310,8 +332,8 @@ def _handle_credentials_encrypt_db(
        asking when the answer is unambiguous just slows the operator down.
     4. Interactive chooser on a TTY; otherwise hard-fail with an
        actionable hint.  Earlier releases silently fell through to
-       ``session-file`` here, which generates a fresh passphrase that
-       the operator never sees and that evaporates on the next reboot.
+       a volatile tier here, which generates a fresh passphrase that
+       the operator never sees and that evaporates at logout.
 
     *echo_passphrase* mirrors the announce path: when ``True``, any
     auto-generated passphrase is also printed to stdout so
@@ -398,7 +420,7 @@ def _select_and_provision(
         passphrase, source = _provision_systemd_creds_tier(cfg, echo_passphrase=echo_passphrase)
         return passphrase, source, True
 
-    mode = _ask_passphrase_mode()
+    mode = _ask_passphrase_mode(plan.choices, plan.unavailable)
     passphrase, source, auto_generated = _provision_passphrase(
         cfg, mode=mode, echo_passphrase=echo_passphrase
     )
@@ -493,24 +515,41 @@ def _maybe_acknowledge_recovery(cfg: SandboxConfig, *, echo_to_stdout: bool) -> 
         )
 
 
-def _ask_passphrase_mode() -> PassphraseTier:
+def _ask_passphrase_mode(
+    choices: tuple[PassphraseTier, ...] = CHOOSER_TIERS,
+    unavailable: dict[PassphraseTier, str] | None = None,
+) -> PassphraseTier:
     """Return the operator's chosen mode; refuse non-TTY runs without an explicit tier.
 
     Reached only when ``systemd-creds`` isn't available AND no explicit
     ``--passphrase-tier`` was supplied — the higher layers short-circuit
-    before us in both of those cases.  Earlier releases auto-picked
-    ``session-file`` on non-TTY to keep installs from hanging; the
+    before us in both of those cases.  Earlier releases auto-picked a
+    volatile tier on non-TTY to keep installs from hanging; the
     side-effect was a silent fresh passphrase that the operator never
-    saw, lost on the first reboot.  That convenience-vs-data-loss
-    trade is wrong, so we now fail closed with an actionable hint.
+    saw, lost at logout.  That convenience-vs-data-loss trade is wrong,
+    so we now fail closed with an actionable hint.
+
+    Every tier in *choices* is listed; those in *unavailable* are shown
+    with a ``[-]`` marker and their reason and carry no selector key, so
+    the operator sees why a tier is missing but cannot pick it.  Empty or
+    unrecognised input (including an unavailable tier's letter) falls back
+    to the recommended keyring default.
     """
     if not sys.stdin.isatty():
         raise SystemExit(_NON_TTY_TIER_HINT.format(setup=setup_invocation()))
-    print(_CHOOSER_PROMPT)
+    unavailable = unavailable or {}
+    lines: list[str] = []
+    key_to_tier: dict[str, PassphraseTier] = {}
+    for tier in choices:
+        key, description = _CHOOSER_OPTIONS[tier]
+        if tier in unavailable:
+            lines.append(f"  [-] {description} — unavailable ({unavailable[tier]})")
+        else:
+            lines.append(f"  [{key}] {description}")
+            key_to_tier[key] = tier
+    print(f"{_CHOOSER_HEADER}\n" + "\n".join(lines) + f"\n{_CHOOSER_FOOTER}")
     choice = sys.stdin.readline().strip().lower()[:1]
-    if not choice:
-        return _DEFAULT_TIER
-    return _CHOICE_TO_TIER.get(choice, _DEFAULT_TIER)
+    return key_to_tier.get(choice, _DEFAULT_TIER)
 
 
 def _provision_systemd_creds_tier(
@@ -544,22 +583,21 @@ def _provision_passphrase(
     passphrase the operator hasn't typed themselves — used by
     [`_handle_credentials_encrypt_db`][terok_sandbox.commands.credentials._handle_credentials_encrypt_db]
     to decide whether the ack flow needs to run.  Reusing an existing
-    session-file / keyring / config entry returns ``False`` because
+    kernel-keyring / keyring / config entry returns ``False`` because
     the operator (or the previous run) already saw the value.
     """
-    from .._yaml import write_secret_text
+    from ..vault.store import kernel_keyring
     from ..vault.store.encryption import (
         generate_passphrase,
-        load_passphrase_from_file,
         load_passphrase_from_keyring,
         prompt_passphrase,
         store_passphrase_in_keyring,
     )
 
-    if mode is PassphraseTier.SESSION_FILE:
-        existing = load_passphrase_from_file(cfg.vault_passphrase_file)
+    if mode is PassphraseTier.KERNEL_KEYRING:
+        existing = kernel_keyring.load(cfg.db_path)
         if existing is not None:
-            return existing, PassphraseTier.SESSION_FILE, False
+            return existing, PassphraseTier.KERNEL_KEYRING, False
         # ``prompt_passphrase(confirm=True)`` mints-and-announces an
         # auto-generated value on empty input, or echo-confirms a typed
         # one.  We can't distinguish the two outcomes from here, so we
@@ -567,8 +605,13 @@ def _provision_passphrase(
         # value the operator typed is a no-op the second time round
         # but missing the ack on an auto-mint loses the recovery key.
         new = prompt_passphrase(confirm=True)
-        write_secret_text(cfg.vault_passphrase_file, new + "\n")
-        return new, PassphraseTier.SESSION_FILE, True
+        if not kernel_keyring.store(new, cfg.db_path):
+            raise RuntimeError(
+                "the kernel keyring is unavailable here"
+                f" ({kernel_keyring.unavailable_reason() or 'add_key failed'});"
+                " choose a different storage mode"
+            )
+        return new, PassphraseTier.KERNEL_KEYRING, True
 
     if mode is PassphraseTier.KEYRING:
         existing = load_passphrase_from_keyring()
@@ -665,10 +708,10 @@ def _post_setup_recovery_hint(cfg: SandboxConfig | None = None) -> None:
 def _persist_mode_choice(mode: PassphraseTier) -> None:
     """Write the chosen mode into config.yml so the chain re-resolves next time.
 
-    Session mode needs no change — the tmpfs file is self-describing.
-    ``use_keyring`` is written even though it defaults on, so an
-    explicit ``use_keyring: false`` in the user config can't silently
-    disable the tier the operator just chose.
+    Kernel-keyring mode needs no change — the cached key is
+    self-describing.  ``use_keyring`` is written even though it defaults
+    on, so an explicit ``use_keyring: false`` in the user config can't
+    silently disable the tier the operator just chose.
     """
     from .. import config as _config
     from .._yaml import update_section as _yaml_update_section

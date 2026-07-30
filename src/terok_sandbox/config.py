@@ -408,17 +408,6 @@ class SandboxConfig:
         return self.runtime_dir / "vault.pid"
 
     @property
-    def vault_passphrase_file(self) -> Path:
-        """Return the session-unlock tmpfs path for the SQLCipher passphrase.
-
-        Lives under ``runtime_dir`` (``$XDG_RUNTIME_DIR/...``), so it is
-        RAM-backed and cleared on reboot.  Written by
-        ``terok-sandbox vault unlock``; read at daemon startup as the
-        highest-priority tier of the passphrase resolution chain.
-        """
-        return self.runtime_dir / "vault.passphrase"
-
-    @property
     def vault_pending_passphrase_file(self) -> Path:
         """Return the crash-recovery escrow for a passphrase change in flight.
 
@@ -426,9 +415,8 @@ class SandboxConfig:
         writes the *new* value here before re-encrypting the DB and
         removes it once at least one tier holds it — so a crash between
         the rekey and the tier fan-out can never leave the DB encrypted
-        under a key that exists nowhere.  Same exposure class as the
-        session-unlock file (RAM-backed, owner-only, cleared on
-        reboot); a distinct filename so the resolver chain never reads
+        under a key that exists nowhere.  RAM-backed, owner-only, cleared
+        on reboot; a distinct filename so the resolver chain never reads
         it as a live tier.
         """
         return self.runtime_dir / "vault.passphrase.pending"
@@ -590,10 +578,12 @@ class SandboxConfig:
         """
         from .vault.store.encryption import resolve_passphrase  # noqa: PLC0415
 
-        return resolve_passphrase(**self._chain_kwargs(prompt_on_tty=prompt_on_tty))
+        return resolve_passphrase(
+            credentials_db=self.db_path, **self._chain_kwargs(prompt_on_tty=prompt_on_tty)
+        )
 
     def resolve_passphrase_with_source(
-        self, *, prompt_on_tty: bool = False
+        self, *, prompt_on_tty: bool = False, credentials_db: str | Path | None = None
     ) -> tuple[str | None, PassphraseTier | None]:
         """Walk the resolution chain with this config's knobs; return ``(passphrase, source)``.
 
@@ -601,10 +591,19 @@ class SandboxConfig:
         [`resolve_passphrase`][terok_sandbox.SandboxConfig.resolve_passphrase]
         — feeds the daemon startup log so the operator sees *which*
         tier unlocked the vault on this boot.
+
+        *credentials_db* overrides which vault the kernel-keyring lookup
+        is scoped to; it defaults to this config's ``db_path``.  A caller
+        opening a DB at a path other than the config default (the vault
+        daemon, handed an explicit DB path) passes it so the cache lookup
+        matches the DB it is about to open.
         """
         from .vault.store.encryption import resolve_passphrase_with_source  # noqa: PLC0415
 
-        return resolve_passphrase_with_source(**self._chain_kwargs(prompt_on_tty=prompt_on_tty))
+        return resolve_passphrase_with_source(
+            credentials_db=credentials_db if credentials_db is not None else self.db_path,
+            **self._chain_kwargs(prompt_on_tty=prompt_on_tty),
+        )
 
     def _chain_kwargs(self, *, prompt_on_tty: bool) -> dict[str, Any]:
         """Return the shared resolver kwargs every chain entry point threads through.
@@ -614,7 +613,6 @@ class SandboxConfig:
         sites — the authoritative list of tier knobs lives here.
         """
         return {
-            "passphrase_file": self.vault_passphrase_file,
             "systemd_creds_file": self.vault_systemd_creds_file,
             "use_keyring": self.credentials_use_keyring,
             "passphrase_command": self.credentials_passphrase_command,

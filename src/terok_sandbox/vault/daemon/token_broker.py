@@ -158,7 +158,7 @@ class _TokenDB:
             from ..store.encryption import NoPassphraseError
 
             cfg = SandboxConfig()
-            passphrase, source = cfg.resolve_passphrase_with_source()
+            passphrase, source = cfg.resolve_passphrase_with_source(credentials_db=db_path)
             if passphrase is None:
                 _logger.info("Vault passphrase: no tier resolved")
                 raise NoPassphraseError(f"no SQLCipher passphrase available for {db_path}")

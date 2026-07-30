@@ -105,6 +105,7 @@ _LAZY: dict[str, str] = {
     # Doctor
     "CheckVerdict": "doctor:CheckVerdict",
     "DoctorCheck": "doctor:DoctorCheck",
+    "make_kernel_keyring_quota_check": "doctor:make_kernel_keyring_quota_check",
     "sandbox_doctor_checks": "doctor:sandbox_doctor_checks",
     # Git gate
     "AppliedOp": "gate.mirror:AppliedOp",
@@ -192,13 +193,10 @@ _LAZY: dict[str, str] = {
     "keyring_backend_available": "vault.store.encryption:keyring_backend_available",
     "RecoveryStatus": "vault.store.recovery:RecoveryStatus",
     "ChainRow": "vault.store.status:ChainRow",
-    "SessionShadow": "vault.store.status:SessionShadow",
     "VaultState": "vault.store.status:VaultState",
     "VaultStatus": "vault.store.status:VaultStatus",
     "VaultWarning": "vault.store.status:VaultWarning",
     "VaultWarningKind": "vault.store.status:VaultWarningKind",
-    "clear_redundant_session_file": "vault.store.status:clear_redundant_session_file",
-    "session_shadow_state": "vault.store.status:session_shadow_state",
     "systemd_creds_available": "vault.store.systemd_creds:is_available",
     "systemd_creds_has_tpm2": "vault.store.systemd_creds:has_tpm2",
     "PassphraseTier": "vault.store.tiers:PassphraseTier",
@@ -289,7 +287,12 @@ if TYPE_CHECKING:
         respawn_supervisor,
         supervisor_liveness,
     )
-    from .doctor import CheckVerdict, DoctorCheck, sandbox_doctor_checks
+    from .doctor import (
+        CheckVerdict,
+        DoctorCheck,
+        make_kernel_keyring_quota_check,
+        sandbox_doctor_checks,
+    )
     from .gate.hooks import PUSH_MARKER_FILENAME
     from .gate.mirror import (
         AppliedOp,
@@ -374,7 +377,6 @@ if TYPE_CHECKING:
     from .vault.store.recovery import RecoveryStatus
     from .vault.store.status import (
         ChainRow,
-        SessionShadow,
         VaultState,
         VaultStatus,
         VaultWarning,
@@ -473,7 +475,6 @@ __all__ = [
     "PassphraseTier",
     "ProvisioningPlan",
     "RecoveryStatus",
-    "SessionShadow",
     "TierProvisionResult",
     "TierRewrite",
     "VaultState",
@@ -505,6 +506,7 @@ __all__ = [
     # Doctor (container health checks)
     "CheckVerdict",
     "DoctorCheck",
+    "make_kernel_keyring_quota_check",
     "sandbox_doctor_checks",
     # Container diagnostics (on-host supervisor/sidecar artifact paths)
     "ContainerDiagnostics",
