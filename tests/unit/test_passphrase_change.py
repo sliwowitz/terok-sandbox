@@ -818,6 +818,19 @@ class TestPlanProvisioning:
         assert plan.choices == CHOOSER_TIERS
         assert isinstance(plan.keyring_available, bool)
 
+    def test_kernel_keyring_omitted_when_unavailable(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A host without the kernel keyring facility never sees it offered."""
+        from terok_sandbox.vault.store import systemd_creds
+
+        monkeypatch.setattr(systemd_creds, "is_available", lambda: False)
+        monkeypatch.setattr(_kk, "unavailable_reason", lambda: "no libkeyutils")
+        plan = plan_provisioning(_cfg(tmp_path))
+
+        assert PassphraseTier.KERNEL_KEYRING not in plan.choices
+        assert PassphraseTier.KEYRING in plan.choices
+
     def test_systemd_creds_auto_selects(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:

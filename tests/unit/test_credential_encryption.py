@@ -1465,6 +1465,20 @@ class TestAskPassphraseMode:
         assert "recommended" in out.lower()
         assert "systemd" in out and "≥ 257" in out
 
+    def test_unavailable_kernel_keyring_is_not_offered(
+        self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """A plan that omits the kernel keyring hides it, and ``n`` falls back to keyring."""
+        from terok_sandbox.commands import _ask_passphrase_mode
+
+        monkeypatch.setattr("sys.stdin.isatty", lambda: True)
+        monkeypatch.setattr("sys.stdin.readline", lambda: "n\n")
+        # Only keyring is offered — as plan_provisioning yields on a host
+        # without libkeyutils.
+        result = _ask_passphrase_mode((PassphraseTier.KEYRING,))
+        assert result == "keyring"
+        assert "[n] kernel keyring" not in capsys.readouterr().out
+
 
 class TestAutoSystemdCredsBranch:
     """When systemd-creds is available, ``_handle_credentials_encrypt_db`` skips the chooser.

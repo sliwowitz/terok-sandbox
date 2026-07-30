@@ -52,24 +52,31 @@ _NON_TTY_TIER_HINT = """\
   file-based store, point credentials.passphrase_command at your own
   secret file — see the credentials-encryption docs."""
 
-_CHOOSER_PROMPT = """\
+_CHOOSER_HEADER = """\
 
 systemd-creds isn't available on this host (needs systemd ≥ 257 with
 the user Varlink service).  Where should terok store the passphrase
 to encrypt the vault?
+"""
 
-  [k] keyring — your login keyring (recommended; auto-unlocks at login)
-  [n] kernel keyring — RAM-only cache; re-unlock after logout
-
+_CHOOSER_FOOTER = """
 For the strongest protection, install systemd ≥ 257 and re-run setup.
 Choice [k]:"""
 
-# Operator's first character maps to the tier.  Empty input picks the
-# recommended default (keyring); anything outside this set falls back
-# to keyring too — safer than guessing the operator meant ``[n]``.
-_CHOICE_TO_TIER: dict[str, PassphraseTier] = {
-    "n": PassphraseTier.KERNEL_KEYRING,
-    "k": PassphraseTier.KEYRING,
+# One entry per selectable tier: its single-key selector and menu line.
+# The chooser renders only the tiers the plan offers on this host, so an
+# unavailable tier (e.g. the kernel keyring without libkeyutils) is never
+# presented.  Empty or unrecognised input falls back to the recommended
+# keyring default — safer than guessing the operator meant a volatile tier.
+_CHOOSER_OPTIONS: dict[PassphraseTier, tuple[str, str]] = {
+    PassphraseTier.KEYRING: (
+        "k",
+        "  [k] keyring — your login keyring (recommended; auto-unlocks at login)",
+    ),
+    PassphraseTier.KERNEL_KEYRING: (
+        "n",
+        "  [n] kernel keyring — RAM-only cache; re-unlock after logout",
+    ),
 }
 _DEFAULT_TIER = PassphraseTier.KEYRING
 
@@ -272,7 +279,7 @@ def plan_provisioning(cfg: SandboxConfig | None = None) -> ProvisioningPlan:
     — surface it as a hard failure, not as "unprovisioned".
     """
     from ..config import SandboxConfig
-    from ..vault.store import systemd_creds as _systemd_creds
+    from ..vault.store import kernel_keyring, systemd_creds as _systemd_creds
     from ..vault.store.encryption import keyring_backend_available
 
     if cfg is None:
@@ -283,10 +290,17 @@ def plan_provisioning(cfg: SandboxConfig | None = None) -> ProvisioningPlan:
             provisioned=True, auto_tier=None, choices=(), keyring_available=keyring_ok
         )
     auto_tier = PassphraseTier.SYSTEMD_CREDS if _systemd_creds.is_available() else None
+    # Never offer a tier the host can't provision: the kernel keyring drops
+    # out of the chooser where libkeyutils / CONFIG_KEYS is missing.
+    choices = tuple(
+        tier
+        for tier in CHOOSER_TIERS
+        if tier is not PassphraseTier.KERNEL_KEYRING or kernel_keyring.unavailable_reason() is None
+    )
     return ProvisioningPlan(
         provisioned=False,
         auto_tier=auto_tier,
-        choices=CHOOSER_TIERS,
+        choices=choices,
         keyring_available=keyring_ok,
     )
 
@@ -406,7 +420,7 @@ def _select_and_provision(
         passphrase, source = _provision_systemd_creds_tier(cfg, echo_passphrase=echo_passphrase)
         return passphrase, source, True
 
-    mode = _ask_passphrase_mode()
+    mode = _ask_passphrase_mode(plan.choices)
     passphrase, source, auto_generated = _provision_passphrase(
         cfg, mode=mode, echo_passphrase=echo_passphrase
     )
@@ -501,7 +515,7 @@ def _maybe_acknowledge_recovery(cfg: SandboxConfig, *, echo_to_stdout: bool) -> 
         )
 
 
-def _ask_passphrase_mode() -> PassphraseTier:
+def _ask_passphrase_mode(choices: tuple[PassphraseTier, ...] = CHOOSER_TIERS) -> PassphraseTier:
     """Return the operator's chosen mode; refuse non-TTY runs without an explicit tier.
 
     Reached only when ``systemd-creds`` isn't available AND no explicit
@@ -511,14 +525,19 @@ def _ask_passphrase_mode() -> PassphraseTier:
     side-effect was a silent fresh passphrase that the operator never
     saw, lost at logout.  That convenience-vs-data-loss trade is wrong,
     so we now fail closed with an actionable hint.
+
+    *choices* are the tiers the plan offers on this host; the menu renders
+    only those, so an unavailable tier is never presented.  Empty or
+    unrecognised input still falls back to the recommended keyring default.
     """
     if not sys.stdin.isatty():
         raise SystemExit(_NON_TTY_TIER_HINT.format(setup=setup_invocation()))
-    print(_CHOOSER_PROMPT)
+    offered = [tier for tier in choices if tier in _CHOOSER_OPTIONS]
+    menu = "\n".join(_CHOOSER_OPTIONS[tier][1] for tier in offered)
+    print(f"{_CHOOSER_HEADER}\n{menu}\n{_CHOOSER_FOOTER}")
+    key_to_tier = {_CHOOSER_OPTIONS[tier][0]: tier for tier in offered}
     choice = sys.stdin.readline().strip().lower()[:1]
-    if not choice:
-        return _DEFAULT_TIER
-    return _CHOICE_TO_TIER.get(choice, _DEFAULT_TIER)
+    return key_to_tier.get(choice, _DEFAULT_TIER)
 
 
 def _provision_systemd_creds_tier(
