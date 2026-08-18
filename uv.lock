@@ -2229,8 +2229,8 @@ wheels = [
 
 [[package]]
 name = "terok-clearance"
-version = "0.8.0a8.dev218+gd11720679"
-source = { git = "https://github.com/sliwowitz/terok-clearance.git?rev=chore%2Futil-landlock-pin#d11720679951bd474649334933b3c3eb76c594c8" }
+version = "0.8.0a8.dev223+g1d34b069a"
+source = { git = "https://github.com/sliwowitz/terok-clearance.git?rev=chore%2Futil-landlock-pin#1d34b069ac44fc4d7f056a19598981f6091e457a" }
 dependencies = [
     { name = "asyncvarlink" },
     { name = "dbus-fast" },
@@ -2334,8 +2334,8 @@ test = [
 
 [[package]]
 name = "terok-shield"
-version = "0.8.0a9.dev357+gc85a3b0fc"
-source = { git = "https://github.com/sliwowitz/terok-shield.git?rev=feat%2Flandlock-confinement#c85a3b0fc43bb3aaa32dcc30e8055cfe2cdf276f" }
+version = "0.8.0a9.dev363+gbf57bcef7"
+source = { git = "https://github.com/sliwowitz/terok-shield.git?rev=feat%2Flandlock-confinement#bf57bcef7953ba6edbe2fc13ff74488d4a330f7d" }
 dependencies = [
     { name = "pydantic" },
     { name = "pyyaml" },
@@ -2344,8 +2344,8 @@ dependencies = [
 
 [[package]]
 name = "terok-util"
-version = "0.3.1a5.dev88+g1e095db2b"
-source = { git = "https://github.com/sliwowitz/terok-util.git?rev=feat%2Flandlock-fs-confinement#1e095db2bfba84a96116e325c0be77d5494e3991" }
+version = "0.3.1a5.dev97+g9e08865a2"
+source = { git = "https://github.com/sliwowitz/terok-util.git?rev=feat%2Flandlock-fs-confinement#9e08865a2132d4b1b9b3f859ca05bd18e48fd503" }
 dependencies = [
     { name = "jinja2" },
     { name = "platformdirs" },
