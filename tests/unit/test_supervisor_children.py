@@ -33,7 +33,9 @@ from terok_sandbox.supervisor.children import (
     _arm_parent_death_signal,
     _ensure_socket_dirs,
     _install_signal_handlers,
+    _readable_paths,
     _resolve_service_passphrase,
+    _resolver_config_target,
     _run_clearance,
     _run_gate,
     _run_signer,
@@ -715,6 +717,56 @@ class TestWritablePaths:
         ]
 
 
+class TestReadablePaths:
+    """The per-service read policy — exact files a child may open after confinement."""
+
+    def test_vault_reaches_resolver_config_through_a_run_symlink(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """systemd-resolved hosts keep the real resolv.conf under ``/run``.
+
+        Landlock checks rules against a symlink's target, and the granted
+        system roots deliberately exclude ``/run`` — without an exact-file
+        grant on the target, every DNS lookup in the vault child fails and
+        the token broker answers 502 for all providers.
+        """
+        target = tmp_path / "run" / "stub-resolv.conf"
+        target.parent.mkdir()
+        target.write_text("nameserver 127.0.0.53\n")
+        link = tmp_path / "etc" / "resolv.conf"
+        link.parent.mkdir()
+        link.symlink_to(target)
+        monkeypatch.setattr("terok_sandbox.supervisor.children._RESOLV_CONF", link)
+
+        assert _resolver_config_target() == (target.resolve(),)
+        assert target.resolve() in _readable_paths("vault", _socket_cfg(tmp_path))
+
+    def test_regular_resolver_config_grants_the_file_itself(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        resolv = tmp_path / "resolv.conf"
+        resolv.write_text("nameserver 127.0.0.53\n")
+        monkeypatch.setattr("terok_sandbox.supervisor.children._RESOLV_CONF", resolv)
+        assert _resolver_config_target() == (resolv.resolve(),)
+
+    def test_missing_resolver_config_grants_nothing(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr("terok_sandbox.supervisor.children._RESOLV_CONF", tmp_path / "absent")
+        assert _resolver_config_target() == ()
+        assert _readable_paths("vault", _socket_cfg(tmp_path)) == (tmp_path / "routes.json",)
+
+    def test_only_vault_reads_beyond_the_system_roots(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        resolv = tmp_path / "resolv.conf"
+        resolv.write_text("nameserver 127.0.0.53\n")
+        monkeypatch.setattr("terok_sandbox.supervisor.children._RESOLV_CONF", resolv)
+        cfg = _socket_cfg(tmp_path)
+        for service in ("verdict", "clearance", "gate", "signer"):
+            assert _readable_paths(service, cfg) == ()
+
+
 class TestConfinementWiring:
     """``run_child`` confines the filesystem on a normal start, opens it in debug mode."""
 
@@ -730,6 +782,11 @@ class TestConfinementWiring:
             payload["allow_debugger"] = True
         sidecar.write_text(json.dumps(payload))
 
+        # Pin the resolver config to a fixture file so the expected lane is
+        # identical on hosts with and without a symlinked /etc/resolv.conf.
+        resolv = tmp_path / "resolv.conf"
+        resolv.write_text("nameserver 127.0.0.53\n")
+
         calls: list[tuple[object, object]] = []
 
         def _spy(read_exec: object, read_write: object) -> object:
@@ -743,6 +800,7 @@ class TestConfinementWiring:
 
         with (
             patch("terok_sandbox.supervisor.children.confine_filesystem", _spy),
+            patch("terok_sandbox.supervisor.children._RESOLV_CONF", resolv),
             patch.dict("terok_sandbox.supervisor.children._RUNNERS", {"vault": _noop}, clear=False),
         ):
             assert run_child("vault", "abc123def456", sidecar) == 0
@@ -752,7 +810,11 @@ class TestConfinementWiring:
         from terok_sandbox.supervisor.children import _SYSTEM_READABLE_ROOTS
 
         ((read_exec, read_write),) = self._run(tmp_path, allow_debugger=False)
-        assert read_exec == (*_SYSTEM_READABLE_ROOTS, tmp_path / "routes.json")
+        assert read_exec == (
+            *_SYSTEM_READABLE_ROOTS,
+            tmp_path / "routes.json",
+            (tmp_path / "resolv.conf").resolve(),
+        )
         assert read_write == [
             tmp_path / "rt" / "sandbox" / "run" / "demo" / "vault",
             tmp_path,
