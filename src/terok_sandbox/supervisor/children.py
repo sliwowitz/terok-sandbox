@@ -89,6 +89,11 @@ _SYSTEM_READABLE_ROOTS: tuple[Path, ...] = (
 #: write grant over all of ``/dev``.
 _DEV_NULL = Path(os.devnull)
 
+#: The resolver configuration ``getaddrinfo`` re-reads on every lookup the
+#: vault child performs for its upstream providers.  Module-level so tests
+#: can repoint it at a fixture file.
+_RESOLV_CONF = Path("/etc/resolv.conf")
+
 #: Cross-supervisor OAuth refresh locks used by ``VaultProxy``.
 _VAULT_LOCKS_RELATIVE = Path("terok") / "vault" / "locks"
 
@@ -418,11 +423,35 @@ def _systemd_creds_path(cfg: SidecarConfig) -> Path:
     return cfg.vault_systemd_creds_file or cfg.db_path.parent / "vault.passphrase.cred"
 
 
+def _resolver_config_target() -> Path | None:
+    """Return the real resolver-config file, resolved through symlinks.
+
+    Landlock checks a rule against the file a symlink *targets*, and the
+    system roots deliberately exclude ``/run`` — yet on systemd-resolved,
+    resolvconf, and NetworkManager hosts ``/etc/resolv.conf`` points
+    exactly there.  Without an exact-file grant on the target, every name
+    lookup in the confined child fails and each upstream request collapses
+    into an opaque 502.  A regular file yields a redundant grant beneath
+    the already-readable ``/etc``; a missing file yields ``None``, because
+    resolution is equally absent without confinement.
+    """
+    try:
+        return _RESOLV_CONF.resolve(strict=True)
+    except OSError:
+        return None
+
+
 def _readable_paths(service: str, cfg: SidecarConfig) -> tuple[Path, ...]:
-    """Return service-specific exact files needed after confinement."""
+    """Return service-specific exact files needed after confinement.
+
+    Vault is the only child that dials out: it reads its route table and
+    the resolver configuration behind ``/etc/resolv.conf``.
+    """
     readable: list[Path] = []
     if service == "vault":
         readable.append(_routes_path(cfg))
+        if resolver := _resolver_config_target():
+            readable.append(resolver)
     return tuple(readable)
 
 
