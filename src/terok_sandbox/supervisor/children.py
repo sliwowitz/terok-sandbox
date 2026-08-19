@@ -74,8 +74,8 @@ _PR_SET_PDEATHSIG = 1
 
 #: Filesystem roots every confined child needs to read or execute: the OS,
 #: its shared libraries, this interpreter, and this package's source tree
-#: when running from an editable development install.  Runtime trees such
-#: as ``/run`` are deliberately absent; each service receives only its own
+#: when running from an editable development install.  The list deliberately
+#: omits runtime trees such as ``/run``: each service receives only its own
 #: explicit runtime lane from ``_writable_paths``.
 _SYSTEM_READABLE_ROOTS: tuple[Path, ...] = (
     *(Path(p) for p in ("/usr", "/lib", "/lib64", "/bin", "/sbin", "/etc", "/proc", "/dev")),
@@ -386,7 +386,7 @@ def _resolve_service_passphrase(service: str, cfg: SidecarConfig) -> str | None:
     The launch process captures the operator's non-secret passphrase policy
     in the sidecar.  Vault and signer walk it here, while arbitrary
     ``passphrase_command`` executables and systemd credentials are still
-    reachable, then retain only the resolved value in process memory.
+    reachable.  They retain only the resolved value in process memory.
     """
     if service not in {"vault", "signer"}:
         return None
