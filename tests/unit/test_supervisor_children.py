@@ -738,7 +738,7 @@ class TestReadablePaths:
         link.symlink_to(target)
         monkeypatch.setattr("terok_sandbox.supervisor.children._RESOLV_CONF", link)
 
-        assert _resolver_config_target() == (target.resolve(),)
+        assert _resolver_config_target() == target.resolve()
         assert target.resolve() in _readable_paths("vault", _socket_cfg(tmp_path))
 
     def test_regular_resolver_config_grants_the_file_itself(
@@ -747,13 +747,13 @@ class TestReadablePaths:
         resolv = tmp_path / "resolv.conf"
         resolv.write_text("nameserver 127.0.0.53\n")
         monkeypatch.setattr("terok_sandbox.supervisor.children._RESOLV_CONF", resolv)
-        assert _resolver_config_target() == (resolv.resolve(),)
+        assert _resolver_config_target() == resolv.resolve()
 
     def test_missing_resolver_config_grants_nothing(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         monkeypatch.setattr("terok_sandbox.supervisor.children._RESOLV_CONF", tmp_path / "absent")
-        assert _resolver_config_target() == ()
+        assert _resolver_config_target() is None
         assert _readable_paths("vault", _socket_cfg(tmp_path)) == (tmp_path / "routes.json",)
 
     def test_only_vault_reads_beyond_the_system_roots(

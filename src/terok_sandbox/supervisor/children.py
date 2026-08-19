@@ -423,7 +423,7 @@ def _systemd_creds_path(cfg: SidecarConfig) -> Path:
     return cfg.vault_systemd_creds_file or cfg.db_path.parent / "vault.passphrase.cred"
 
 
-def _resolver_config_target() -> tuple[Path, ...]:
+def _resolver_config_target() -> Path | None:
     """Return the real resolver-config file, resolved through symlinks.
 
     Landlock checks a rule against the file a symlink *targets*, and the
@@ -432,13 +432,13 @@ def _resolver_config_target() -> tuple[Path, ...]:
     exactly there.  Without an exact-file grant on the target, every name
     lookup in the confined child fails and each upstream request collapses
     into an opaque 502.  A regular file yields a redundant grant beneath
-    the already-readable ``/etc``; a missing file yields nothing, because
+    the already-readable ``/etc``; a missing file yields ``None``, because
     resolution is equally absent without confinement.
     """
     try:
-        return (_RESOLV_CONF.resolve(strict=True),)
+        return _RESOLV_CONF.resolve(strict=True)
     except OSError:
-        return ()
+        return None
 
 
 def _readable_paths(service: str, cfg: SidecarConfig) -> tuple[Path, ...]:
@@ -450,7 +450,8 @@ def _readable_paths(service: str, cfg: SidecarConfig) -> tuple[Path, ...]:
     readable: list[Path] = []
     if service == "vault":
         readable.append(_routes_path(cfg))
-        readable.extend(_resolver_config_target())
+        if resolver := _resolver_config_target():
+            readable.append(resolver)
     return tuple(readable)
 
 
