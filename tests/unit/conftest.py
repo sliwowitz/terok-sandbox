@@ -172,7 +172,7 @@ def _isolate_credential_keyring(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(_kk, "forget", lambda _db=None: True)
     monkeypatch.setattr(_kk, "is_cached", lambda _db=None: False)
     monkeypatch.setattr(_kk, "unavailable_reason", lambda: None)
-    monkeypatch.setattr(_enc, "load_passphrase_from_keyring", lambda: "test")
+    monkeypatch.setattr(_enc, "load_passphrase_from_keyring", lambda **_kw: "test")
     monkeypatch.setattr(_enc, "store_passphrase_in_keyring", lambda _pw: True)
     monkeypatch.setattr(_enc, "forget_passphrase_in_keyring", lambda: True)
     monkeypatch.setattr(_config, "credentials_use_keyring", lambda: True)

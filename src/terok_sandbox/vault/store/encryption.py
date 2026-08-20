@@ -130,7 +130,7 @@ def resolve_passphrase_with_source(
             " but could not be unsealed"
         )
     if use_keyring:
-        keyring_pw = load_passphrase_from_keyring()
+        keyring_pw = load_passphrase_from_keyring(allow_prompt=prompt_on_tty)
         if keyring_pw:
             return keyring_pw, PassphraseTier.KEYRING
     # Volatile unlock cache, below the zero-friction durable tiers and
@@ -307,38 +307,47 @@ def _systemd_creds_detail(path: Path | None) -> str:
 _KEYRING_READ_TIMEOUT_S = 3.0
 
 
-def load_passphrase_from_keyring() -> str | None:
+def load_passphrase_from_keyring(*, allow_prompt: bool = False) -> str | None:
     """Return the keyring-stored passphrase, or ``None`` when a read cannot succeed.
 
-    Never blocks and never prompts.  The read skips a locked Secret
-    Service collection up front: an unlock opens an interactive desktop
-    dialog, and nobody can answer that dialog on a headless or SSH
-    session.  Unlock prompts belong to the explicit provisioning flow
-    ([`store_passphrase_in_keyring`][terok_sandbox.vault.store.encryption.store_passphrase_in_keyring])
-    alone.  A timeout guards the read itself, so a misbehaving backend
-    degrades this tier instead of freezing its caller.
+    A read from a locked Secret Service collection triggers the
+    desktop's unlock dialog and waits for the answer.  That wait is
+    legitimate exactly once: an interactive caller (*allow_prompt*) on
+    a host with a graphical session, where the operator sees the dialog
+    and answers or cancels it.  Every other read — a status probe, a
+    poll, a daemon, a headless or SSH session — skips a locked
+    collection instead of waiting on a dialog nobody sees.  A timeout
+    guards the promptless read, so a misbehaving backend degrades this
+    tier instead of freezing its caller.
     """
-    if os_keyring_read_blocked() is not None:
-        return None
 
     def _read() -> str | None:
         import keyring  # noqa: PLC0415
 
         return keyring.get_password(KEYRING_SERVICE, KEYRING_USERNAME)
 
+    blocked = os_keyring_read_blocked(allow_prompt=allow_prompt)
+    if blocked is not None:
+        return None
     try:
+        if allow_prompt:
+            # The unlock dialog may legitimately wait on the operator;
+            # a timeout here would cancel a dialog they are looking at.
+            return _read()
         return _call_with_timeout(_read, _KEYRING_READ_TIMEOUT_S)
     except Exception:  # noqa: BLE001
         return None
 
 
-def os_keyring_read_blocked() -> str | None:
+def os_keyring_read_blocked(*, allow_prompt: bool = False) -> str | None:
     """Explain why an OS-keyring read would block or fail, or ``None`` when safe.
 
     Only the Secret Service backend can block: a read from a locked
     collection triggers a D-Bus unlock prompt, and the prompt waits for
     a desktop dialog.  This probe reads the lock state without a
-    prompt.  A probe error (no D-Bus session, no Secret Service daemon)
+    prompt.  A locked collection does not block an *allow_prompt* read
+    when a graphical session is present — the operator answers the
+    dialog.  A probe error (no D-Bus session, no Secret Service daemon)
     also makes the tier unusable and returns a reason.  Non-D-Bus
     backends never prompt, so they pass.
     """
@@ -354,12 +363,19 @@ def os_keyring_read_blocked() -> str | None:
         try:
             collection = secretstorage.get_default_collection(connection)
             if collection.is_locked():
+                if allow_prompt and _graphical_session_present():
+                    return None
                 return "OS keyring locked (unlock it in a desktop session, or use another tier)"
         finally:
             connection.close()
     except Exception as exc:  # noqa: BLE001
         return f"OS keyring unreachable ({type(exc).__name__})"
     return None
+
+
+def _graphical_session_present() -> bool:
+    """Return ``True`` when a display server can show the unlock dialog."""
+    return bool(os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY"))
 
 
 def _call_with_timeout(fn: Callable[[], str | None], timeout: float) -> str | None:

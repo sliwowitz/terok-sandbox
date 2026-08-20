@@ -234,7 +234,7 @@ def purge_passphrase_tiers(cfg: SandboxConfig) -> None:
     if cfg.credentials_use_keyring:
         if forget_passphrase_in_keyring():
             print("→ cleared keyring entry")
-        elif load_passphrase_from_keyring() is None:
+        elif load_passphrase_from_keyring(allow_prompt=True) is None:
             # ``keyring.delete_password`` raises on a missing entry on most
             # backends, which the helper folds to False — a residual entry
             # after that means the backend rejected the delete.

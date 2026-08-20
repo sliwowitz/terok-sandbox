@@ -43,7 +43,9 @@ class TestKeyringReadNeverBlocks:
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """A read the probe marks blocked returns None and never imports keyring."""
-        monkeypatch.setattr(encryption, "os_keyring_read_blocked", lambda: "OS keyring locked")
+        monkeypatch.setattr(
+            encryption, "os_keyring_read_blocked", lambda **_kw: "OS keyring locked"
+        )
         forbidden = types.ModuleType("keyring")
 
         def _explode(*_args: object) -> str:
@@ -58,7 +60,7 @@ class TestKeyringReadNeverBlocks:
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """A backend that never answers costs the timeout, not the process."""
-        monkeypatch.setattr(encryption, "os_keyring_read_blocked", lambda: None)
+        monkeypatch.setattr(encryption, "os_keyring_read_blocked", lambda **_kw: None)
         monkeypatch.setattr(encryption, "_KEYRING_READ_TIMEOUT_S", 0.2)
         stuck = types.ModuleType("keyring")
 
@@ -75,7 +77,7 @@ class TestKeyringReadNeverBlocks:
 
     def test_healthy_backend_answers_normally(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """The guards are transparent to a backend that just answers."""
-        monkeypatch.setattr(encryption, "os_keyring_read_blocked", lambda: None)
+        monkeypatch.setattr(encryption, "os_keyring_read_blocked", lambda **_kw: None)
         healthy = types.ModuleType("keyring")
         healthy.get_password = lambda *_args: "the-passphrase"  # type: ignore[attr-defined]
         monkeypatch.setitem(sys.modules, "keyring", healthy)
@@ -166,3 +168,52 @@ class TestSessionCacheFacade:
         detail = session_cache.backing_detail(cached=True)
         assert "session file" in detail
         assert "no libkeyutils" in detail
+
+
+class TestLockedCollectionPromptPolicy:
+    """A locked collection prompts only an interactive caller on a desktop.
+
+    The unlock dialog is legitimate when the operator sees it and can
+    answer or cancel it.  A background read, and any read on a host
+    without a display server, must skip the locked collection instead.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _locked_secret_service(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Present a locked Secret Service collection without real D-Bus."""
+        import keyring
+        from keyring.backends.SecretService import Keyring as SecretService
+
+        backend = SecretService.__new__(SecretService)
+        monkeypatch.setattr(keyring, "get_keyring", lambda: backend)
+        fake = types.ModuleType("secretstorage")
+        connection = types.SimpleNamespace(close=lambda: None)
+        collection = types.SimpleNamespace(is_locked=lambda: True)
+        fake.dbus_init = lambda: connection  # type: ignore[attr-defined]
+        fake.get_default_collection = lambda _c: collection  # type: ignore[attr-defined]
+        monkeypatch.setitem(sys.modules, "secretstorage", fake)
+
+    def test_background_read_skips_the_locked_collection(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("DISPLAY", ":0")  # a desktop alone does not permit a prompt
+        assert encryption.os_keyring_read_blocked() is not None
+
+    def test_interactive_read_on_a_desktop_may_prompt(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import keyring
+
+        monkeypatch.setenv("DISPLAY", ":0")
+        assert encryption.os_keyring_read_blocked(allow_prompt=True) is None
+        # The read reaches the backend — the prompt is the backend's business.
+        monkeypatch.setattr(keyring, "get_password", lambda *_a: "unlocked-by-dialog")
+        assert _REAL_LOAD(allow_prompt=True) == "unlocked-by-dialog"
+
+    def test_interactive_read_without_a_display_skips(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.delenv("DISPLAY", raising=False)
+        monkeypatch.delenv("WAYLAND_DISPLAY", raising=False)
+        assert encryption.os_keyring_read_blocked(allow_prompt=True) is not None
+        assert _REAL_LOAD(allow_prompt=True) is None

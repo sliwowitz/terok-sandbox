@@ -614,7 +614,7 @@ def _provision_passphrase(
         return new, PassphraseTier.KERNEL_KEYRING, True
 
     if mode is PassphraseTier.KEYRING:
-        existing = load_passphrase_from_keyring()
+        existing = load_passphrase_from_keyring(allow_prompt=True)
         if existing is not None:
             return existing, PassphraseTier.KEYRING, False
         new = generate_passphrase()

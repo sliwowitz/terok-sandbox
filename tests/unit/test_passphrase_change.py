@@ -379,7 +379,7 @@ class TestChangePassphrase:
         """After the rekey a failing tier is purged + reported, never aborted on."""
         cfg = _cfg(tmp_path, use_keyring=True)
         _seed_db(cfg, OLD)
-        monkeypatch.setattr(encryption, "load_passphrase_from_keyring", lambda: OLD)
+        monkeypatch.setattr(encryption, "load_passphrase_from_keyring", lambda **_kw: OLD)
         monkeypatch.setattr(encryption, "store_passphrase_in_keyring", lambda _v: False)
         monkeypatch.setattr(encryption, "forget_passphrase_in_keyring", lambda: True)
 
@@ -432,7 +432,7 @@ class TestChangePassphrase:
         """If no tier took the new value, the pending file is its only on-host copy."""
         cfg = _cfg(tmp_path, use_keyring=True)
         _seed_db(cfg, OLD)
-        monkeypatch.setattr(encryption, "load_passphrase_from_keyring", lambda: OLD)
+        monkeypatch.setattr(encryption, "load_passphrase_from_keyring", lambda **_kw: OLD)
         monkeypatch.setattr(encryption, "store_passphrase_in_keyring", lambda _v: False)
         monkeypatch.setattr(encryption, "forget_passphrase_in_keyring", lambda: False)
 
@@ -742,7 +742,7 @@ class TestChangeHandlerPiped:
         """The fail-loud contract: a tier left without the new value cannot scroll past."""
         cfg = _cfg(tmp_path, use_keyring=True)
         _seed_db(cfg, OLD)
-        monkeypatch.setattr(encryption, "load_passphrase_from_keyring", lambda: OLD)
+        monkeypatch.setattr(encryption, "load_passphrase_from_keyring", lambda **_kw: OLD)
         monkeypatch.setattr(encryption, "store_passphrase_in_keyring", lambda _v: False)
         monkeypatch.setattr(encryption, "forget_passphrase_in_keyring", lambda: False)
         monkeypatch.setattr(sys, "stdin", io.StringIO(NEW + "\n"))
