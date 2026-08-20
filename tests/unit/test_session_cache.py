@@ -71,19 +71,16 @@ class TestKeyringReadNeverBlocks:
 
         stuck.get_password = _hang  # type: ignore[attr-defined]
         monkeypatch.setitem(sys.modules, "keyring", stuck)
-        # monkeypatch restores the pre-test value (None) at teardown, so
-        # the abandoned worker never leaks into the next test.
-        monkeypatch.setattr(encryption, "_stuck_keyring_worker", None)
 
         try:
             started = time.monotonic()
             assert _REAL_LOAD() is None
             assert time.monotonic() - started < 2.0
         finally:
-            release.set()
+            release.set()  # frees the shared worker for the next test
 
     def test_repeated_timeouts_do_not_stack_workers(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """While one abandoned worker lives, further reads fail fast without a new thread."""
+        """A wedged backend occupies the single worker; later reads never reach it."""
         monkeypatch.setattr(encryption, "os_keyring_read_blocked", lambda **_kw: None)
         monkeypatch.setattr(encryption, "_KEYRING_READ_TIMEOUT_S", 0.2)
         release = threading.Event()
@@ -97,18 +94,13 @@ class TestKeyringReadNeverBlocks:
 
         stuck.get_password = _hang  # type: ignore[attr-defined]
         monkeypatch.setitem(sys.modules, "keyring", stuck)
-        # monkeypatch restores the pre-test value (None) at teardown, so
-        # the abandoned worker never leaks into the next test.
-        monkeypatch.setattr(encryption, "_stuck_keyring_worker", None)
 
         try:
-            assert _REAL_LOAD() is None  # times out and abandons its worker
-            started = time.monotonic()
-            assert _REAL_LOAD() is None  # fails fast — no second worker
-            assert time.monotonic() - started < 0.15
-            assert len(backend_calls) == 1
+            assert _REAL_LOAD() is None  # times out; the call occupies the worker
+            assert _REAL_LOAD() is None  # queues, times out, and cancels out of the queue
+            assert len(backend_calls) == 1  # the wedged call is the only backend entry
         finally:
-            release.set()
+            release.set()  # frees the shared worker for the next test
 
     def test_healthy_backend_answers_normally(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """The guards are transparent to a backend that just answers."""

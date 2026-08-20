@@ -24,6 +24,8 @@ import os
 from pathlib import Path
 from typing import Final
 
+from terok_util import write_sensitive_file
+
 from . import kernel_keyring as _kernel_keyring
 
 _logger = logging.getLogger(__name__)
@@ -42,19 +44,15 @@ def store(passphrase: str, db_path: str | os.PathLike[str]) -> bool:
     path = _cache_path(db_path)
     if path is None:
         return False
+    # ``write_sensitive_file`` owns the secure write: 0700 parent, 0600
+    # file, symlinked-parent refusal, ``O_NOFOLLOW`` on the final path.
+    # It creates only, so an existing cache is unlinked first.
     try:
-        path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-        # ``mkdir`` and ``os.open`` set modes only on creation; enforce
-        # them on pre-existing paths too, before the secret lands.
-        os.chmod(path.parent, 0o700)
-        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-        with os.fdopen(fd, "w") as handle:
-            os.fchmod(fd, 0o600)
-            handle.write(passphrase)
-    except OSError as exc:
+        path.unlink(missing_ok=True)
+        return write_sensitive_file(path, passphrase)
+    except (OSError, RuntimeError) as exc:
         _logger.warning("session-file cache write failed: %s", exc)
         return False
-    return True
 
 
 def load(db_path: str | os.PathLike[str]) -> str | None:
@@ -114,11 +112,10 @@ def unavailable_reason() -> str | None:
 
 def _cache_path(db_path: str | os.PathLike[str]) -> Path | None:
     """Return the per-vault cache file path, or ``None`` without a runtime dir."""
-    runtime_dir = os.environ.get("XDG_RUNTIME_DIR")
-    if not runtime_dir or not Path(runtime_dir).is_dir():
+    if unavailable_reason() is not None:
         return None
-    digest = _kernel_keyring.key_description(db_path).decode("ascii").rsplit(":", 1)[-1]
-    return Path(runtime_dir) / _RUNTIME_RELATIVE / digest
+    runtime_dir = os.environ["XDG_RUNTIME_DIR"]
+    return Path(runtime_dir) / _RUNTIME_RELATIVE / _kernel_keyring.cache_digest(db_path)
 
 
 __all__ = [

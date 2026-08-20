@@ -134,9 +134,19 @@ def key_description(db_path: str | os.PathLike[str]) -> bytes:
     writer and every same-host reader derive both from the same config and
     the same UTS namespace, so they always agree.
     """
+    return KEY_DESCRIPTION_PREFIX + cache_digest(db_path).encode("ascii")
+
+
+def cache_digest(db_path: str | os.PathLike[str]) -> str:
+    """Return the per-vault cache token every backing scopes its entry with.
+
+    [`key_description`][terok_sandbox.vault.store.kernel_keyring.key_description]
+    composes it into the ``@u`` description;
+    [`session_file`][terok_sandbox.vault.store.session_file] uses it as
+    the cache file name.  One derivation, so the backings always agree.
+    """
     ident = f"{socket.gethostname()}\0{os.path.abspath(db_path)}"
-    digest = hashlib.sha256(ident.encode("utf-8")).hexdigest()
-    return KEY_DESCRIPTION_PREFIX + digest[:32].encode("ascii")
+    return hashlib.sha256(ident.encode("utf-8")).hexdigest()[:32]
 
 
 def store(passphrase: str, db_path: str | os.PathLike[str]) -> bool:

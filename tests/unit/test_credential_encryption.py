@@ -41,6 +41,13 @@ MOCK_DB_PATH = MOCK_BASE / "credential-encryption" / "credentials.db"
 _PASSPHRASE = "correct-horse-battery-staple"
 
 
+def _pin_kernel_backing(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Force the session cache onto the kernel backing for this test."""
+    import terok_sandbox.vault.store.kernel_keyring as _kk
+
+    monkeypatch.setattr(_kk, "unavailable_reason", lambda: None)
+
+
 def _fake_kernel_keyring(monkeypatch: pytest.MonkeyPatch, *, initial: str | None = None) -> dict:
     """Install an in-memory kernel-keyring stub; return the ``{"pw": …}`` cache.
 
@@ -1045,7 +1052,7 @@ class TestProvisionPassphrase:
         cfg = _make_cfg(tmp_path)
         _patch_dev_tty(monkeypatch)
         _scripted_tty_prompt(monkeypatch, "")  # empty entry → mint
-        monkeypatch.setattr(_kk, "unavailable_reason", lambda: None)  # pin the kernel backing
+        _pin_kernel_backing(monkeypatch)
         monkeypatch.setattr(_kk, "store", lambda _pw, _db=None: False)
         with pytest.raises(RuntimeError, match="session cache is unavailable"):
             _provision_passphrase(cfg, mode=PassphraseTier.KERNEL_KEYRING)
@@ -1678,7 +1685,7 @@ class TestProvisionSessionPassphrase:
         # DB, so the no-cache guard passes and validation is skipped — the
         # write itself is what fails.
         cfg = _make_cfg(tmp_path)
-        monkeypatch.setattr(_kk, "unavailable_reason", lambda: None)  # pin the kernel backing
+        _pin_kernel_backing(monkeypatch)
         monkeypatch.setattr(_kk, "store", lambda _pw, _db=None: False)
         with pytest.raises(RuntimeError, match="session cache is unavailable"):
             provision_session_passphrase(cfg, "brand-new-key")
@@ -2054,7 +2061,7 @@ class TestVaultUnlockLock:
         from terok_sandbox.commands.vault import purge_passphrase_tiers
 
         cfg = _make_cfg(tmp_path)  # use_keyring=False → only the kernel-keyring branch runs
-        monkeypatch.setattr(_kk, "unavailable_reason", lambda: None)  # pin the kernel backing
+        _pin_kernel_backing(monkeypatch)
         monkeypatch.setattr(_kk, "load", lambda _db=None: "x")
         monkeypatch.setattr(_kk, "forget", lambda _db=None: False)
         with pytest.raises(SystemExit, match="failed to clear the session cache"):
@@ -2776,7 +2783,7 @@ class TestProvisionPassphraseTier:
         from terok_sandbox.commands import provision_passphrase_tier
 
         cfg = _make_cfg(tmp_path)
-        monkeypatch.setattr(_kk, "unavailable_reason", lambda: None)  # pin the kernel backing
+        _pin_kernel_backing(monkeypatch)
         monkeypatch.setattr(_kk, "store", lambda _pw, _db=None: False)
         with pytest.raises(RuntimeError, match="session cache is unavailable"):
             provision_passphrase_tier(cfg, tier="kernel-keyring")

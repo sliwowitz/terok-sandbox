@@ -75,12 +75,12 @@ def backing_detail(*, cached: bool) -> str:
     serves this session, whether it holds a passphrase, and why the
     tier cannot run at all.
     """
-    reason = unavailable_reason()
-    if reason is not None:
-        return f"unusable here: {reason}"
     kernel_reason = _kernel_keyring.unavailable_reason()
     if kernel_reason is None:
         return "cached in the user keyring" if cached else "no passphrase cached"
+    file_reason = _session_file.unavailable_reason()
+    if file_reason is not None:
+        return f"unusable here: {kernel_reason}; {file_reason}"
     where = f"session file (kernel keyring unusable here: {kernel_reason})"
     return f"cached in a {where}" if cached else f"no passphrase cached — {where}"
 

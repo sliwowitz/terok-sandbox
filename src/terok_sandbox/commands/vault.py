@@ -839,7 +839,7 @@ def _rewrite_tier(cfg: SandboxConfig, tier: PassphraseTier, passphrase: str) -> 
                 tier,
                 ok=False,
                 detail=(
-                    f"cannot cache ({session_cache.unavailable_reason() or 'add_key failed'})"
+                    f"cannot cache ({session_cache.unavailable_reason() or 'store failed'})"
                     f" — {stale}"
                 ),
             )
