@@ -62,18 +62,51 @@ class TestKeyringReadNeverBlocks:
         """A backend that never answers costs the timeout, not the process."""
         monkeypatch.setattr(encryption, "os_keyring_read_blocked", lambda **_kw: None)
         monkeypatch.setattr(encryption, "_KEYRING_READ_TIMEOUT_S", 0.2)
+        release = threading.Event()
         stuck = types.ModuleType("keyring")
 
-        def _hang(*_args: object) -> str:
-            threading.Event().wait()  # blocks forever, like a locked-collection prompt
-            raise AssertionError("unreachable")
+        def _hang(*_args: object) -> str | None:
+            release.wait()  # blocks until released, like a locked-collection prompt
+            return None
 
         stuck.get_password = _hang  # type: ignore[attr-defined]
         monkeypatch.setitem(sys.modules, "keyring", stuck)
 
-        started = time.monotonic()
-        assert _REAL_LOAD() is None
-        assert time.monotonic() - started < 2.0
+        try:
+            started = time.monotonic()
+            assert _REAL_LOAD() is None
+            assert time.monotonic() - started < 2.0
+        finally:
+            release.set()
+            with encryption._stuck_keyring_lock:
+                encryption._stuck_keyring_worker = None
+
+    def test_repeated_timeouts_do_not_stack_workers(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """While one abandoned worker lives, further reads fail fast without a new thread."""
+        monkeypatch.setattr(encryption, "os_keyring_read_blocked", lambda **_kw: None)
+        monkeypatch.setattr(encryption, "_KEYRING_READ_TIMEOUT_S", 0.2)
+        release = threading.Event()
+        backend_calls: list[int] = []
+        stuck = types.ModuleType("keyring")
+
+        def _hang(*_args: object) -> str | None:
+            backend_calls.append(1)
+            release.wait()
+            return None
+
+        stuck.get_password = _hang  # type: ignore[attr-defined]
+        monkeypatch.setitem(sys.modules, "keyring", stuck)
+
+        try:
+            assert _REAL_LOAD() is None  # times out and abandons its worker
+            started = time.monotonic()
+            assert _REAL_LOAD() is None  # fails fast — no second worker
+            assert time.monotonic() - started < 0.15
+            assert len(backend_calls) == 1
+        finally:
+            release.set()
+            with encryption._stuck_keyring_lock:
+                encryption._stuck_keyring_worker = None
 
     def test_healthy_backend_answers_normally(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """The guards are transparent to a backend that just answers."""

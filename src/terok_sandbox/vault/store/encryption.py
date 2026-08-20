@@ -326,16 +326,27 @@ def load_passphrase_from_keyring(*, allow_prompt: bool = False) -> str | None:
 
         return keyring.get_password(KEYRING_SERVICE, KEYRING_USERNAME)
 
-    blocked = os_keyring_read_blocked(allow_prompt=allow_prompt)
-    if blocked is not None:
-        return None
+    def _probe_and_read() -> str | None:
+        if os_keyring_read_blocked(allow_prompt=allow_prompt) is not None:
+            return None
+        return _read()
+
     try:
         if allow_prompt:
-            # The unlock dialog may legitimately wait on the operator;
-            # a timeout here would cancel a dialog they are looking at.
+            # The probe stays bounded — a wedged D-Bus must not block an
+            # interactive caller either.  The read itself is unbounded:
+            # the unlock dialog may legitimately wait on the operator,
+            # and a timeout would cancel a dialog they are looking at.
+            blocked = _call_with_timeout(
+                lambda: os_keyring_read_blocked(allow_prompt=True), _KEYRING_READ_TIMEOUT_S
+            )
+            if blocked is not None:
+                return None
             return _read()
-        return _call_with_timeout(_read, _KEYRING_READ_TIMEOUT_S)
-    except Exception:  # noqa: BLE001
+        # Promptless mode: the probe and the read share one bounded
+        # worker, because ``dbus_init`` can block exactly like the read.
+        return _call_with_timeout(_probe_and_read, _KEYRING_READ_TIMEOUT_S)
+    except Exception:  # noqa: BLE001 — timeout or backend error: the tier degrades
         return None
 
 
@@ -378,26 +389,49 @@ def _graphical_session_present() -> bool:
     return bool(os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY"))
 
 
+#: The last worker that overran its timeout.  While it lives, further
+#: bounded calls fail fast instead of stacking one abandoned thread per
+#: poll against the same wedged backend.
+_stuck_keyring_worker: threading.Thread | None = None
+_stuck_keyring_lock = threading.Lock()
+
+
 def _call_with_timeout(fn: Callable[[], str | None], timeout: float) -> str | None:
-    """Run *fn* on a daemon thread; return ``None`` when it exceeds *timeout*.
+    """Run *fn* on a daemon thread; raise ``TimeoutError`` past *timeout*.
 
     The caller abandons an overrun thread instead of killing it,
     because Python has no safe thread kill.  *fn* must therefore be a
     read with no state to corrupt.  One abandoned thread beats one
-    frozen process.
+    frozen process — and it stays *one*: while an abandoned worker
+    lives, the next call raises immediately instead of starting
+    another.  An exception inside the worker re-raises here, in the
+    caller's thread.
     """
-    result: list[str | None] = [None]
+    global _stuck_keyring_worker
+    with _stuck_keyring_lock:
+        if _stuck_keyring_worker is not None and _stuck_keyring_worker.is_alive():
+            raise TimeoutError("a previous OS-keyring worker is still wedged")
+        _stuck_keyring_worker = None
+
+    outcome: dict[str, Any] = {}
 
     def _target() -> None:
-        result[0] = fn()
+        try:
+            outcome["result"] = fn()
+        except BaseException as exc:  # noqa: BLE001 — carried to the caller's thread
+            outcome["error"] = exc
 
     worker = threading.Thread(target=_target, daemon=True)
     worker.start()
     worker.join(timeout)
     if worker.is_alive():
-        _logger.warning("OS keyring read exceeded %.0fs; skipping the tier", timeout)
-        return None
-    return result[0]
+        with _stuck_keyring_lock:
+            _stuck_keyring_worker = worker
+        _logger.warning("OS keyring access exceeded %.0fs; skipping the tier", timeout)
+        raise TimeoutError("OS keyring access timed out")
+    if "error" in outcome:
+        raise outcome["error"]
+    return outcome.get("result")
 
 
 def keyring_backend_available() -> bool:

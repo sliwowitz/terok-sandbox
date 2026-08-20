@@ -44,8 +44,12 @@ def store(passphrase: str, db_path: str | os.PathLike[str]) -> bool:
         return False
     try:
         path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        # ``mkdir`` and ``os.open`` set modes only on creation; enforce
+        # them on pre-existing paths too, before the secret lands.
+        os.chmod(path.parent, 0o700)
         fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
         with os.fdopen(fd, "w") as handle:
+            os.fchmod(fd, 0o600)
             handle.write(passphrase)
     except OSError as exc:
         _logger.warning("session-file cache write failed: %s", exc)

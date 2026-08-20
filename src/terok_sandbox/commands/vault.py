@@ -218,7 +218,11 @@ def purge_passphrase_tiers(cfg: SandboxConfig) -> None:
     directly — no questions asked.
     """
     from ..vault.store import session_cache
-    from ..vault.store.encryption import forget_passphrase_in_keyring, load_passphrase_from_keyring
+    from ..vault.store.encryption import (
+        forget_passphrase_in_keyring,
+        load_passphrase_from_keyring,
+        os_keyring_read_blocked,
+    )
 
     # Call forget() directly and branch on its result: it distinguishes
     # cleared/absent (True) from a lookup or unlink failure (False), whereas
@@ -234,7 +238,14 @@ def purge_passphrase_tiers(cfg: SandboxConfig) -> None:
     if cfg.credentials_use_keyring:
         if forget_passphrase_in_keyring():
             print("→ cleared keyring entry")
-        elif load_passphrase_from_keyring(allow_prompt=True) is None:
+        elif (blocked := os_keyring_read_blocked()) is not None:
+            # A lock must not prompt for an unlock, and a locked keyring
+            # cannot prove the entry is absent — abort loudly instead.
+            raise SystemExit(
+                f"failed to clear the keyring entry and cannot verify it is absent ({blocked});"
+                " unlock the OS keyring and run `vault lock` again"
+            )
+        elif load_passphrase_from_keyring() is None:
             # ``keyring.delete_password`` raises on a missing entry on most
             # backends, which the helper folds to False — a residual entry
             # after that means the backend rejected the delete.

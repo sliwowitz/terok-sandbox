@@ -22,8 +22,12 @@ backing this boot does not prefer.
 from __future__ import annotations
 
 import os
+from typing import TYPE_CHECKING
 
 from . import kernel_keyring as _kernel_keyring, session_file as _session_file
+
+if TYPE_CHECKING:
+    from types import ModuleType
 
 
 def store(passphrase: str, db_path: str | os.PathLike[str]) -> bool:
@@ -81,7 +85,7 @@ def backing_detail(*, cached: bool) -> str:
     return f"cached in a {where}" if cached else f"no passphrase cached — {where}"
 
 
-def _backend():
+def _backend() -> ModuleType:
     """Return the session's cache backing: kernel keyring, else session file."""
     return _kernel_keyring if _kernel_keyring.unavailable_reason() is None else _session_file
 
