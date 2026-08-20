@@ -2310,7 +2310,7 @@ requires-dist = [
     { name = "ruamel-yaml", specifier = "==0.19.1" },
     { name = "sqlcipher3", specifier = "==0.6.2" },
     { name = "terok-clearance", url = "https://github.com/terok-ai/terok-clearance/releases/download/v0.8.0a8/terok_clearance-0.8.0a8-py3-none-any.whl" },
-    { name = "terok-shield", git = "https://github.com/sliwowitz/terok-shield.git?rev=fix%2Fnflog-reader-leak" },
+    { name = "terok-shield", url = "https://github.com/terok-ai/terok-shield/releases/download/v0.8.0a10/terok_shield-0.8.0a10-py3-none-any.whl" },
     { name = "terok-util", url = "https://github.com/terok-ai/terok-util/releases/download/v0.3.1a5/terok_util-0.3.1a5-py3-none-any.whl" },
 ]
 
@@ -2345,12 +2345,22 @@ test = [
 
 [[package]]
 name = "terok-shield"
-version = "0.8.0a10.dev361+g5f1b941e2"
-source = { git = "https://github.com/sliwowitz/terok-shield.git?rev=fix%2Fnflog-reader-leak#5f1b941e2afac32066218d9f57ad21269ed3a54c" }
+version = "0.8.0a10"
+source = { url = "https://github.com/terok-ai/terok-shield/releases/download/v0.8.0a10/terok_shield-0.8.0a10-py3-none-any.whl" }
 dependencies = [
     { name = "pydantic" },
     { name = "pyyaml" },
     { name = "terok-util" },
+]
+wheels = [
+    { url = "https://github.com/terok-ai/terok-shield/releases/download/v0.8.0a10/terok_shield-0.8.0a10-py3-none-any.whl", hash = "sha256:a589e80024e1e4336348eb19561a827c8f010825363075630a0f007bc22c7421" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "pydantic", specifier = "~=2.13" },
+    { name = "pyyaml", specifier = "~=6.0" },
+    { name = "terok-util", url = "https://github.com/terok-ai/terok-util/releases/download/v0.3.1a5/terok_util-0.3.1a5-py3-none-any.whl" },
 ]
 
 [[package]]
