@@ -154,9 +154,30 @@ depends_on = []
 path = "terok_sandbox.vault.store.encryption"
 layer = "foundation"
 depends_on = [
-    "terok_sandbox.vault.store.kernel_keyring",
+    "terok_sandbox.vault.store.session_cache",
     "terok_sandbox.vault.store.systemd_creds",
     "terok_sandbox.vault.store.tiers",
+]
+
+# Vault.store.session_cache — the volatile unlock-cache tier behind one
+# facade: the kernel keyring on hosts that have it, the tmpfs session
+# file where they don't.
+[[modules]]
+path = "terok_sandbox.vault.store.session_cache"
+layer = "foundation"
+depends_on = [
+    "terok_sandbox.vault.store.kernel_keyring",
+    "terok_sandbox.vault.store.session_file",
+]
+
+# Vault.store.session_file — the tmpfs fallback backing.  Reaches into
+# kernel_keyring only for the shared per-vault digest, so both backings
+# scope their cache identically.
+[[modules]]
+path = "terok_sandbox.vault.store.session_file"
+layer = "foundation"
+depends_on = [
+    "terok_sandbox.vault.store.kernel_keyring",
 ]
 
 # Vault.store.kernel_keyring — the ``libkeyutils`` ctypes binding for the

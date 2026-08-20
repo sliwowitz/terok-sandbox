@@ -43,7 +43,7 @@ def _keyring_holds_passphrase(monkeypatch: pytest.MonkeyPatch) -> None:
     """
     import terok_sandbox.vault.store.encryption as _enc
 
-    monkeypatch.setattr(_enc, "load_passphrase_from_keyring", lambda: _PASSPHRASE)
+    monkeypatch.setattr(_enc, "load_passphrase_from_keyring", lambda **_kw: _PASSPHRASE)
 
 
 def _cfg(tmp_path: Path, *, unlocked: bool = True) -> SandboxConfig:

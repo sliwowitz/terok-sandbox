@@ -123,7 +123,7 @@ class TestOwnership:
         # on the developer host.
         monkeypatch.setattr(
             "terok_sandbox.vault.store.encryption.load_passphrase_from_keyring",
-            lambda: "test",
+            lambda **_kw: "test",
         )
         cfg = SandboxConfig(credentials_use_keyring=True)
         db_path = tmp_path / "owned.db"

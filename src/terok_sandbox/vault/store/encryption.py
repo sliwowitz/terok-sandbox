@@ -25,12 +25,16 @@ import shlex
 import sqlite3
 import subprocess  # nosec B404 — operator-supplied passphrase_command helper — operator-supplied passphrase_command helper + systemd-creds
 import sys
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
-from . import kernel_keyring as _kernel_keyring, systemd_creds as _systemd_creds
+from . import session_cache as _session_cache, systemd_creds as _systemd_creds
 from .tiers import PassphraseTier
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
 
 KEYRING_SERVICE = "terok-sandbox"
 KEYRING_USERNAME = "credentials-db"
@@ -126,15 +130,15 @@ def resolve_passphrase_with_source(
             " but could not be unsealed"
         )
     if use_keyring:
-        keyring_pw = load_passphrase_from_keyring()
+        keyring_pw = load_passphrase_from_keyring(allow_prompt=prompt_on_tty)
         if keyring_pw:
             return keyring_pw, PassphraseTier.KEYRING
     # Volatile unlock cache, below the zero-friction durable tiers and
     # above the helper: fail-*open* like the OS keyring above it — an
     # absent or expired key falls through rather than masking the
     # durable ``passphrase_command`` beneath.  Read via the module
-    # namespace so tests can monkeypatch the kernel keyring away.
-    kernel_pw = _kernel_keyring.load(credentials_db)
+    # namespace so tests can monkeypatch the session cache away.
+    kernel_pw = _session_cache.load(credentials_db)
     if kernel_pw:
         return kernel_pw, PassphraseTier.KERNEL_KEYRING
     if passphrase_command:
@@ -172,11 +176,13 @@ def resolve_passphrase(
        [`terok_sandbox.vault.store.systemd_creds`][terok_sandbox.vault.store.systemd_creds].
     2. OS keyring — only when *use_keyring* is true; off by default because
        Linux Secret Service grants access per-collection, not per-item.
-    3. Kernel keyring — the volatile unlock cache
-       ([`terok_sandbox.vault.store.kernel_keyring`][terok_sandbox.vault.store.kernel_keyring]).
-       Consulted unconditionally (an absent/expired/unavailable key just
-       yields ``None``); positioned so it never shadows a zero-friction
-       durable tier above but still spares re-running the helper below.
+    3. Session cache — the volatile unlock cache
+       ([`terok_sandbox.vault.store.session_cache`][terok_sandbox.vault.store.session_cache]):
+       the kernel keyring, or a tmpfs session file where the kernel
+       facility is unusable.  Consulted unconditionally (an
+       absent/expired/unavailable cache just yields ``None``);
+       positioned so it never shadows a zero-friction durable tier
+       above but still spares re-running the helper below.
     4. *passphrase_command* — operator-supplied shell command
        (``pass show …``, ``bw get``, ``op read``, cloud secret-manager
        CLIs).  Delegates retrieval without per-backend integration code,
@@ -238,7 +244,7 @@ def probe_passphrase_chain(
     """
     # Presence only — the status chain reports *that* a tier holds
     # material, never its value, so this must not read the passphrase.
-    kernel_cached = _kernel_keyring.is_cached(credentials_db)
+    kernel_cached = _session_cache.is_cached(credentials_db)
     return (
         TierPresence(
             PassphraseTier.SYSTEMD_CREDS,
@@ -255,7 +261,7 @@ def probe_passphrase_chain(
         TierPresence(
             PassphraseTier.KERNEL_KEYRING,
             kernel_cached,
-            _kernel_keyring_detail(cached=kernel_cached),
+            _session_cache.backing_detail(cached=kernel_cached),
         ),
         TierPresence(
             PassphraseTier.PASSPHRASE_COMMAND,
@@ -293,38 +299,113 @@ def _systemd_creds_detail(path: Path | None) -> str:
     return f"{base} — unusable here: {reason}" if reason else base
 
 
-def _kernel_keyring_detail(*, cached: bool) -> str:
-    """Human detail for the kernel-keyring tier in the ``vault status`` chain.
-
-    Separates the three states an operator acts on differently: the
-    facility cannot run on this host at all, it can but holds nothing,
-    or a passphrase is cached.
-
-    Args:
-        cached: Whether a passphrase is cached, as the caller already
-            determined — threaded in so one status render probes the
-            keyring once.
-
-    Returns:
-        A short phrase for the tier's detail column.
-    """
-    reason = _kernel_keyring.unavailable_reason()
-    if reason is not None:
-        return f"unusable here: {reason}"
-    return "cached in the user keyring" if cached else "no passphrase cached"
-
-
 # ── Tier primitives ─────────────────────────────────────────────────
 
 
-def load_passphrase_from_keyring() -> str | None:
-    """Return the keyring-stored passphrase, or ``None`` if no backend is reachable."""
-    try:
+#: Ceiling on one OS-keyring read.  A healthy backend answers in
+#: milliseconds.  Only a wedged D-Bus round-trip comes near this limit.
+_KEYRING_READ_TIMEOUT_S = 3.0
+
+
+def load_passphrase_from_keyring(*, allow_prompt: bool = False) -> str | None:
+    """Return the keyring-stored passphrase, or ``None`` when a read cannot succeed.
+
+    A read from a locked Secret Service collection triggers the
+    desktop's unlock dialog and waits for the answer.  That wait is
+    legitimate exactly once: an interactive caller (*allow_prompt*) on
+    a host with a graphical session, where the operator sees the dialog
+    and answers or cancels it.  Every other read — a status probe, a
+    poll, a daemon, a headless or SSH session — skips a locked
+    collection instead of waiting on a dialog nobody sees.  A timeout
+    guards the promptless read, so a misbehaving backend degrades this
+    tier instead of freezing its caller.
+    """
+
+    def _read() -> str | None:
         import keyring  # noqa: PLC0415
 
         return keyring.get_password(KEYRING_SERVICE, KEYRING_USERNAME)
-    except Exception:  # noqa: BLE001
+
+    # The probe is always bounded — ``dbus_init`` can block exactly like
+    # the read, and a wedged D-Bus must not block any caller.  Only the
+    # interactive read is unbounded: the unlock dialog may legitimately
+    # wait on the operator, and a timeout would cancel a dialog they
+    # are looking at.
+    try:
+        blocked = _call_with_timeout(
+            lambda: os_keyring_read_blocked(allow_prompt=allow_prompt),
+            _KEYRING_READ_TIMEOUT_S,
+        )
+        if blocked is not None:
+            return None
+        return _read() if allow_prompt else _call_with_timeout(_read, _KEYRING_READ_TIMEOUT_S)
+    except Exception:  # noqa: BLE001 — timeout or backend error: the tier degrades
         return None
+
+
+def os_keyring_read_blocked(*, allow_prompt: bool = False) -> str | None:
+    """Explain why an OS-keyring read would block or fail, or ``None`` when safe.
+
+    Only the Secret Service backend can block: a read from a locked
+    collection triggers a D-Bus unlock prompt, and the prompt waits for
+    a desktop dialog.  This probe reads the lock state without a
+    prompt.  A locked collection does not block an *allow_prompt* read
+    when a graphical session is present — the operator answers the
+    dialog.  A probe error (no D-Bus session, no Secret Service daemon)
+    also makes the tier unusable and returns a reason.  Non-D-Bus
+    backends never prompt, so they pass.
+    """
+    try:
+        import keyring  # noqa: PLC0415
+        from keyring.backends.SecretService import Keyring as _SecretService  # noqa: PLC0415
+
+        if not isinstance(keyring.get_keyring(), _SecretService):
+            return None
+        import secretstorage  # noqa: PLC0415
+
+        connection = secretstorage.dbus_init()
+        try:
+            collection = secretstorage.get_default_collection(connection)
+            if collection.is_locked():
+                if allow_prompt and _graphical_session_present():
+                    return None
+                return "OS keyring locked (unlock it in a desktop session, or use another tier)"
+        finally:
+            connection.close()
+    except Exception as exc:  # noqa: BLE001
+        return f"OS keyring unreachable ({type(exc).__name__})"
+    return None
+
+
+def _graphical_session_present() -> bool:
+    """Return ``True`` when a display server can show the unlock dialog."""
+    return bool(os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY"))
+
+
+#: One worker serializes every bounded OS-keyring access.  A wedged
+#: call occupies the single slot; later calls wait in the queue for at
+#: most their own timeout and then cancel out of it, so the process
+#: never accumulates threads against one wedged backend.
+_keyring_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="os-keyring")
+
+
+def _call_with_timeout(fn: Callable[[], str | None], timeout: float) -> str | None:
+    """Run *fn* on the shared keyring worker; raise ``TimeoutError`` past *timeout*.
+
+    The caller abandons an overrun call instead of killing it, because
+    Python has no safe thread kill.  *fn* must therefore be a read with
+    no state to corrupt.  A worker exception re-raises here, in the
+    caller's thread.
+    """
+    future = _keyring_executor.submit(fn)
+    try:
+        return future.result(timeout)
+    except TimeoutError:
+        # A queued call leaves the queue; a running one is abandoned to
+        # the single slot it already occupies.
+        future.cancel()
+        _logger.warning("OS keyring access exceeded %.0fs; skipping the tier", timeout)
+        raise
 
 
 def keyring_backend_available() -> bool:

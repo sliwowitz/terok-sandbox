@@ -379,7 +379,7 @@ class TestChangePassphrase:
         """After the rekey a failing tier is purged + reported, never aborted on."""
         cfg = _cfg(tmp_path, use_keyring=True)
         _seed_db(cfg, OLD)
-        monkeypatch.setattr(encryption, "load_passphrase_from_keyring", lambda: OLD)
+        monkeypatch.setattr(encryption, "load_passphrase_from_keyring", lambda **_kw: OLD)
         monkeypatch.setattr(encryption, "store_passphrase_in_keyring", lambda _v: False)
         monkeypatch.setattr(encryption, "forget_passphrase_in_keyring", lambda: True)
 
@@ -432,7 +432,7 @@ class TestChangePassphrase:
         """If no tier took the new value, the pending file is its only on-host copy."""
         cfg = _cfg(tmp_path, use_keyring=True)
         _seed_db(cfg, OLD)
-        monkeypatch.setattr(encryption, "load_passphrase_from_keyring", lambda: OLD)
+        monkeypatch.setattr(encryption, "load_passphrase_from_keyring", lambda **_kw: OLD)
         monkeypatch.setattr(encryption, "store_passphrase_in_keyring", lambda _v: False)
         monkeypatch.setattr(encryption, "forget_passphrase_in_keyring", lambda: False)
 
@@ -742,7 +742,7 @@ class TestChangeHandlerPiped:
         """The fail-loud contract: a tier left without the new value cannot scroll past."""
         cfg = _cfg(tmp_path, use_keyring=True)
         _seed_db(cfg, OLD)
-        monkeypatch.setattr(encryption, "load_passphrase_from_keyring", lambda: OLD)
+        monkeypatch.setattr(encryption, "load_passphrase_from_keyring", lambda **_kw: OLD)
         monkeypatch.setattr(encryption, "store_passphrase_in_keyring", lambda _v: False)
         monkeypatch.setattr(encryption, "forget_passphrase_in_keyring", lambda: False)
         monkeypatch.setattr(sys, "stdin", io.StringIO(NEW + "\n"))
@@ -818,18 +818,35 @@ class TestPlanProvisioning:
         assert plan.choices == CHOOSER_TIERS
         assert isinstance(plan.unavailable, dict)
 
-    def test_kernel_keyring_listed_but_marked_unavailable(
+    def test_cache_tier_degrades_to_session_file_when_kernel_keyring_is_gone(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """A host without the kernel keyring facility still lists it — as unavailable."""
+        """A host without the kernel keyring still offers the tier — the session file backs it."""
         from terok_sandbox.vault.store import systemd_creds
 
         monkeypatch.setattr(systemd_creds, "is_available", lambda: False)
         monkeypatch.setattr(_kk, "unavailable_reason", lambda: "no libkeyutils")
+        runtime = tmp_path / "xdg-runtime"
+        runtime.mkdir()
+        monkeypatch.setenv("XDG_RUNTIME_DIR", str(runtime))
         plan = plan_provisioning(_cfg(tmp_path))
 
         assert PassphraseTier.KERNEL_KEYRING in plan.choices
-        assert plan.unavailable[PassphraseTier.KERNEL_KEYRING] == "no libkeyutils"
+        assert PassphraseTier.KERNEL_KEYRING not in plan.unavailable
+
+    def test_cache_tier_marked_unavailable_when_both_backings_are_gone(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """With no kernel keyring and no session runtime dir, the tier reports both reasons."""
+        from terok_sandbox.vault.store import session_file, systemd_creds
+
+        monkeypatch.setattr(systemd_creds, "is_available", lambda: False)
+        monkeypatch.setattr(_kk, "unavailable_reason", lambda: "no libkeyutils")
+        monkeypatch.setattr(session_file, "unavailable_reason", lambda: "no runtime dir")
+        plan = plan_provisioning(_cfg(tmp_path))
+
+        assert PassphraseTier.KERNEL_KEYRING in plan.choices
+        assert plan.unavailable[PassphraseTier.KERNEL_KEYRING] == "no libkeyutils; no runtime dir"
 
     def test_systemd_creds_auto_selects(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
