@@ -418,7 +418,7 @@ def _call_with_timeout(fn: Callable[[], str | None], timeout: float) -> str | No
     def _target() -> None:
         try:
             outcome["result"] = fn()
-        except BaseException as exc:  # noqa: BLE001 — carried to the caller's thread
+        except Exception as exc:  # noqa: BLE001 — carried to the caller's thread
             outcome["error"] = exc
 
     worker = threading.Thread(target=_target, daemon=True)
