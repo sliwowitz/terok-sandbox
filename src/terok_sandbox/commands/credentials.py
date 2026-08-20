@@ -136,7 +136,7 @@ def provision_passphrase_tier(
     backend (systemd-creds, OS keyring) is unreachable.
     """
     from ..config import SandboxConfig
-    from ..vault.store import kernel_keyring, systemd_creds as _systemd_creds
+    from ..vault.store import session_cache, systemd_creds as _systemd_creds
     from ..vault.store.db import CredentialDB
     from ..vault.store.encryption import (
         NoPassphraseError,
@@ -190,10 +190,10 @@ def provision_passphrase_tier(
         return TierProvisionResult(passphrase, PassphraseTier.KEYRING, generated)
 
     if tier is PassphraseTier.KERNEL_KEYRING:
-        if not kernel_keyring.store(passphrase, cfg.db_path):
+        if not session_cache.store(passphrase, cfg.db_path):
             raise RuntimeError(
-                "the kernel keyring is unavailable here"
-                f" ({kernel_keyring.unavailable_reason() or 'add_key failed'});"
+                "the session cache is unavailable here"
+                f" ({session_cache.unavailable_reason() or 'store failed'});"
                 " choose a different storage mode"
             )
         return TierProvisionResult(passphrase, PassphraseTier.KERNEL_KEYRING, generated)
@@ -281,7 +281,7 @@ def plan_provisioning(cfg: SandboxConfig | None = None) -> ProvisioningPlan:
     — surface it as a hard failure, not as "unprovisioned".
     """
     from ..config import SandboxConfig
-    from ..vault.store import kernel_keyring, systemd_creds as _systemd_creds
+    from ..vault.store import session_cache, systemd_creds as _systemd_creds
     from ..vault.store.encryption import keyring_backend_available
 
     if cfg is None:
@@ -295,7 +295,7 @@ def plan_provisioning(cfg: SandboxConfig | None = None) -> ProvisioningPlan:
     unavailable: dict[PassphraseTier, str] = {}
     if not keyring_backend_available():
         unavailable[PassphraseTier.KEYRING] = "no OS keyring backend is reachable on this host"
-    if (kernel_reason := kernel_keyring.unavailable_reason()) is not None:
+    if (kernel_reason := session_cache.unavailable_reason()) is not None:
         unavailable[PassphraseTier.KERNEL_KEYRING] = kernel_reason
     return ProvisioningPlan(
         provisioned=False,
@@ -586,7 +586,7 @@ def _provision_passphrase(
     kernel-keyring / keyring / config entry returns ``False`` because
     the operator (or the previous run) already saw the value.
     """
-    from ..vault.store import kernel_keyring
+    from ..vault.store import session_cache
     from ..vault.store.encryption import (
         generate_passphrase,
         load_passphrase_from_keyring,
@@ -595,7 +595,7 @@ def _provision_passphrase(
     )
 
     if mode is PassphraseTier.KERNEL_KEYRING:
-        existing = kernel_keyring.load(cfg.db_path)
+        existing = session_cache.load(cfg.db_path)
         if existing is not None:
             return existing, PassphraseTier.KERNEL_KEYRING, False
         # ``prompt_passphrase(confirm=True)`` mints-and-announces an
@@ -605,10 +605,10 @@ def _provision_passphrase(
         # value the operator typed is a no-op the second time round
         # but missing the ack on an auto-mint loses the recovery key.
         new = prompt_passphrase(confirm=True)
-        if not kernel_keyring.store(new, cfg.db_path):
+        if not session_cache.store(new, cfg.db_path):
             raise RuntimeError(
-                "the kernel keyring is unavailable here"
-                f" ({kernel_keyring.unavailable_reason() or 'add_key failed'});"
+                "the session cache is unavailable here"
+                f" ({session_cache.unavailable_reason() or 'store failed'});"
                 " choose a different storage mode"
             )
         return new, PassphraseTier.KERNEL_KEYRING, True
