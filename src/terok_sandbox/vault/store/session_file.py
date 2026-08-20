@@ -3,13 +3,13 @@
 
 """Tmpfs-file backing for the volatile unlock cache.
 
-The fallback [`session_cache`][terok_sandbox.vault.store.session_cache]
-engages when the kernel key facility is unusable on a host.  The cache
-file lives under ``$XDG_RUNTIME_DIR`` — a per-login tmpfs that systemd
-wipes at last logout and that never survives a reboot — with ``0600``
-permissions in a ``0700`` directory.  That reproduces the kernel-keyring
-tier's guarantees by construction: memory-backed, user-only, gone with
-the session.  Nothing here touches durable storage.
+[`session_cache`][terok_sandbox.vault.store.session_cache] engages this
+backing when the kernel key facility is unusable on a host.  The cache
+file lives under ``$XDG_RUNTIME_DIR``: a per-login tmpfs that systemd
+wipes at the last logout and that never survives a reboot.  The file
+has ``0600`` permissions in a ``0700`` directory.  This construction
+reproduces the kernel-keyring guarantees: memory-backed, user-only,
+gone with the session.  Nothing here touches durable storage.
 
 The file name embeds the same ``(hostname, DB path)`` digest as
 [`kernel_keyring.key_description`][terok_sandbox.vault.store.kernel_keyring.key_description],
@@ -57,9 +57,9 @@ def load(db_path: str | os.PathLike[str]) -> str | None:
     """Return the passphrase cached for *db_path*, or ``None`` on any miss.
 
     Silent on every miss, mirroring
-    [`kernel_keyring.load`][terok_sandbox.vault.store.kernel_keyring.load]:
-    an absent file and an unusable runtime directory are both the
-    ordinary "locked" outcome for the next tier to handle.
+    [`kernel_keyring.load`][terok_sandbox.vault.store.kernel_keyring.load].
+    An absent file and an unusable runtime directory are both the
+    ordinary "locked" outcome, and the next tier handles it.
     """
     path = _cache_path(db_path)
     if path is None:

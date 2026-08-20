@@ -303,18 +303,17 @@ def _systemd_creds_detail(path: Path | None) -> str:
 
 
 #: Ceiling on one OS-keyring read.  A healthy backend answers in
-#: milliseconds; only a wedged D-Bus round-trip ever gets near this.
+#: milliseconds.  Only a wedged D-Bus round-trip comes near this limit.
 _KEYRING_READ_TIMEOUT_S = 3.0
 
 
 def load_passphrase_from_keyring() -> str | None:
     """Return the keyring-stored passphrase, or ``None`` when a read cannot succeed.
 
-    Never blocks and never prompts.  A locked Secret Service collection
-    is skipped up front: unlocking pops an interactive desktop dialog,
-    which on a headless or SSH session nobody can answer — the read
-    would wait on it forever.  Unlock prompts belong to the explicit
-    provisioning flow
+    Never blocks and never prompts.  The read skips a locked Secret
+    Service collection up front: an unlock opens an interactive desktop
+    dialog, and nobody can answer that dialog on a headless or SSH
+    session.  Unlock prompts belong to the explicit provisioning flow
     ([`store_passphrase_in_keyring`][terok_sandbox.vault.store.encryption.store_passphrase_in_keyring])
     alone.  A timeout guards the read itself, so a misbehaving backend
     degrades this tier instead of freezing its caller.
@@ -336,12 +335,12 @@ def load_passphrase_from_keyring() -> str | None:
 def os_keyring_read_blocked() -> str | None:
     """Explain why an OS-keyring read would block or fail, or ``None`` when safe.
 
-    Only the Secret Service backend can block: reading from a locked
-    collection triggers a D-Bus unlock prompt that waits for a desktop
-    dialog.  The lock state is probed here without prompting.  Errors
-    while probing (no D-Bus session, no Secret Service daemon) also
-    make the tier unusable and return a reason.  Non-D-Bus backends
-    never prompt, so they pass.
+    Only the Secret Service backend can block: a read from a locked
+    collection triggers a D-Bus unlock prompt, and the prompt waits for
+    a desktop dialog.  This probe reads the lock state without a
+    prompt.  A probe error (no D-Bus session, no Secret Service daemon)
+    also makes the tier unusable and returns a reason.  Non-D-Bus
+    backends never prompt, so they pass.
     """
     try:
         import keyring  # noqa: PLC0415
@@ -366,9 +365,10 @@ def os_keyring_read_blocked() -> str | None:
 def _call_with_timeout(fn: Callable[[], str | None], timeout: float) -> str | None:
     """Run *fn* on a daemon thread; return ``None`` when it exceeds *timeout*.
 
-    The overrun thread is abandoned, not killed — Python offers no safe
-    kill — so *fn* must be a read with no state to corrupt.  One
-    abandoned thread beats one frozen process.
+    The caller abandons an overrun thread instead of killing it,
+    because Python has no safe thread kill.  *fn* must therefore be a
+    read with no state to corrupt.  One abandoned thread beats one
+    frozen process.
     """
     result: list[str | None] = [None]
 

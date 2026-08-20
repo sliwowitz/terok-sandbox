@@ -4,18 +4,19 @@
 """The volatile unlock cache — one tier, two backings.
 
 The cache tier of the passphrase chain holds the vault passphrase for
-the login session: untimed, cleared by ``vault lock``, gone on reboot.
-Its primary backing is the kernel keyring
-([`kernel_keyring`][terok_sandbox.vault.store.kernel_keyring]).  On a
-host where the kernel facility is unusable, the tier degrades to a
-tmpfs session file ([`session_file`][terok_sandbox.vault.store.session_file])
-with the same lifetime and exposure — and the status surfaces say so,
-so the degradation is never silent.
+the login session.  The cache has no timeout; ``vault lock`` clears it;
+a reboot removes it.  Its primary backing is the kernel keyring
+([`kernel_keyring`][terok_sandbox.vault.store.kernel_keyring]).  When
+the kernel facility is unusable on a host, the tier degrades to a
+tmpfs session file
+([`session_file`][terok_sandbox.vault.store.session_file]) with the
+same lifetime and the same exposure.  The status surfaces name the
+degraded backing, so the degradation is never silent.
 
 Callers use this module, not a backing, for every cache operation.
-``forget`` clears *both* backings: facility availability can change
-between boots, and ``vault lock`` must never leave a live cache behind
-in a backing the current boot happens not to prefer.
+``forget`` clears both backings: facility availability can change
+between boots, and ``vault lock`` must not leave a live cache in the
+backing this boot does not prefer.
 """
 
 from __future__ import annotations
