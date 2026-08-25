@@ -79,6 +79,14 @@ so this allowlist stays the single statement of capability policy.
   applies: the container can sample **its own processes, user-space
   only** (host sysctl ≤ 2), never the host.  Invisible to shield and
   the userns mapping — safe to grant.
+
+``net_admin`` and ``net_raw`` are **permanently ineligible**: shield's
+nftables rules live in the container's own network namespace, so either
+capability would let container root rewrite (or raw-socket around) the
+egress firewall.  Shield's integrity rests on both staying out of the
+container's bounding set — do not add them here for any feature or
+debug mode; whatever needs them belongs on the host side of the
+boundary.
 """
 
 
