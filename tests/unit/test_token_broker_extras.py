@@ -16,6 +16,7 @@ from __future__ import annotations
 import asyncio
 import json
 from pathlib import Path
+from unittest import mock
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -396,3 +397,47 @@ class TestHandleRequestApiKeyEdges:
         async with TestClient(TestServer(app)) as client:
             resp = await client.get("/p", headers={"Authorization": f"Bearer {token}"})
             assert resp.status == 502
+
+
+class TestClassifyUpstreamFailure:
+    """The 502 body names the failure class the agent cannot otherwise see."""
+
+    @staticmethod
+    def _classify(exc: BaseException) -> tuple[str, str]:
+        from terok_sandbox.vault.daemon.token_broker import _classify_upstream_failure
+
+        return _classify_upstream_failure(exc)
+
+    def test_dns_failure(self) -> None:
+        import aiohttp
+
+        exc = aiohttp.ClientConnectorDNSError(mock.Mock(), OSError("no host"))
+        assert self._classify(exc) == (":dns", ": name resolution")
+
+    def test_certificate_failure(self) -> None:
+        import ssl
+
+        import aiohttp
+
+        exc = aiohttp.ClientConnectorCertificateError(
+            mock.Mock(), ssl.SSLCertVerificationError("bad chain")
+        )
+        assert self._classify(exc) == (":tls", ": TLS verification")
+
+    def test_timeout(self) -> None:
+        assert self._classify(TimeoutError()) == (":timeout", ": timeout")
+
+    def test_connection_refused_carries_the_os_strerror(self) -> None:
+        import errno
+        import os
+
+        import aiohttp
+
+        os_error = OSError(errno.ECONNREFUSED, os.strerror(errno.ECONNREFUSED))
+        exc = aiohttp.ClientConnectorError(mock.Mock(), os_error)
+        tag, cause = self._classify(exc)
+        assert tag == ":connect"
+        assert "refused" in cause.lower()
+
+    def test_unrecognized_exception_keeps_the_bare_text(self) -> None:
+        assert self._classify(RuntimeError("boom")) == ("", "")

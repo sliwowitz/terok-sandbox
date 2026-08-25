@@ -220,8 +220,6 @@ def purge_passphrase_tiers(cfg: SandboxConfig) -> None:
     from ..vault.store import session_cache
     from ..vault.store.encryption import (
         forget_passphrase_in_keyring,
-        load_passphrase_from_keyring,
-        os_keyring_read_blocked,
     )
 
     # Call forget() directly and branch on its result: it distinguishes
@@ -236,24 +234,13 @@ def purge_passphrase_tiers(cfg: SandboxConfig) -> None:
         )
 
     if cfg.credentials_use_keyring:
-        if forget_passphrase_in_keyring():
-            print("→ cleared keyring entry")
-        elif (blocked := os_keyring_read_blocked()) is not None:
-            # A lock must not prompt for an unlock, and a locked keyring
-            # cannot prove the entry is absent — abort loudly instead.
-            raise SystemExit(
-                f"failed to clear the keyring entry and cannot verify it is absent ({blocked});"
-                " unlock the OS keyring and run `vault lock` again"
-            )
-        elif load_passphrase_from_keyring() is None:
-            # ``keyring.delete_password`` raises on a missing entry on most
-            # backends, which the helper folds to False — a residual entry
-            # after that means the backend rejected the delete.
-            print("→ keyring entry already absent")
+        if (keyring_reason := forget_passphrase_in_keyring()) is None:
+            print("→ keyring entry cleared or absent")
         else:
             raise SystemExit(
-                "failed to clear keyring entry;"
-                " future supervisors may still auto-unlock from keyring"
+                f"failed to clear the keyring entry ({keyring_reason});"
+                " future supervisors may still auto-unlock from keyring —"
+                " resolve it and run `vault lock` again"
             )
 
     config_updates = _forget_config_tier_updates(cfg)
@@ -862,7 +849,7 @@ def _rewrite_tier(cfg: SandboxConfig, tier: PassphraseTier, passphrase: str) -> 
         if tier is PassphraseTier.KEYRING:
             if store_passphrase_in_keyring(passphrase):
                 return TierRewrite(tier, ok=True, detail="keyring entry rewritten")
-            if forget_passphrase_in_keyring():
+            if forget_passphrase_in_keyring() is None:
                 return TierRewrite(
                     tier, ok=False, detail="keyring write failed — stale entry removed"
                 )

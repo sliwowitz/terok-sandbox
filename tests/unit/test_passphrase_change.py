@@ -381,7 +381,7 @@ class TestChangePassphrase:
         _seed_db(cfg, OLD)
         monkeypatch.setattr(encryption, "load_passphrase_from_keyring", lambda **_kw: OLD)
         monkeypatch.setattr(encryption, "store_passphrase_in_keyring", lambda _v: False)
-        monkeypatch.setattr(encryption, "forget_passphrase_in_keyring", lambda: True)
+        monkeypatch.setattr(encryption, "forget_passphrase_in_keyring", lambda: None)
 
         result = change_passphrase(cfg, new=NEW)
 

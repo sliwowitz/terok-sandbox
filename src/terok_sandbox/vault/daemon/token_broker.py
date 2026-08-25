@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import errno
 import json
 import logging
 import socket
@@ -41,11 +42,17 @@ if TYPE_CHECKING:
     from ..store.db import SSHKeyRecord
 
 from aiohttp import (
+    ClientConnectorCertificateError,
+    ClientConnectorDNSError,
+    ClientConnectorError,
+    ClientConnectorSSLError,
     ClientResponse,
     ClientSession,
     ClientTimeout,
     ClientWebSocketResponse,
+    ConnectionTimeoutError,
     ServerDisconnectedError,
+    ServerTimeoutError,
     TCPConnector,
     WSMsgType,
     web,
@@ -447,12 +454,60 @@ async def _proxy_websocket(
             if not client_ws.closed:
                 await client_ws.close(code=_WEBSOCKET_INTERNAL_ERROR)
             return client_ws
-        return web.Response(status=502, text="Upstream websocket failed")
+        _, cause = _classify_upstream_failure(exc)
+        return web.Response(status=502, text=f"Upstream websocket failed{cause}")
 
 
 # ---------------------------------------------------------------------------
 # Request handler
 # ---------------------------------------------------------------------------
+
+
+#: Upstream failure classes, most specific first — subclass order matters:
+#: the DNS, certificate, and SSL errors all derive from
+#: ``ClientConnectorError``, which therefore comes last as the generic
+#: connect bucket.
+_UPSTREAM_FAILURE_CLASSES: tuple[tuple[type[BaseException], str, str], ...] = (
+    (ClientConnectorDNSError, ":dns", ": name resolution"),
+    (ClientConnectorCertificateError, ":tls", ": TLS verification"),
+    (ClientConnectorSSLError, ":tls", ": TLS"),
+    (ConnectionTimeoutError, ":timeout", ": connect timeout"),
+    (ServerTimeoutError, ":timeout", ": timeout"),
+    (TimeoutError, ":timeout", ": timeout"),
+    (ClientConnectorError, ":connect", ": connect"),
+)
+
+
+#: Connect-class causes named by errno — the classes an operator acts on
+#: differently, without the address detail ``strerror`` would leak.
+_CONNECT_ERRNO_CAUSES: dict[int | None, str] = {
+    errno.ECONNREFUSED: ": connection refused",
+    errno.EHOSTUNREACH: ": host unreachable",
+    errno.ENETUNREACH: ": network unreachable",
+}
+
+
+def _classify_upstream_failure(exc: BaseException) -> tuple[str, str]:
+    """Name the failure class as ``(audit tag, response suffix)``.
+
+    The suffix lands in the 502 body, so the agent inside the container
+    can tell a resolver failure from a refused connection from a broken
+    TLS chain without host access — the difference between a one-probe
+    diagnosis and a forensic session.  It names the failure class only;
+    no addresses, no certificate details, no secrets.  An unrecognized
+    exception keeps the bare legacy text.
+    """
+    for exc_type, tag, cause in _UPSTREAM_FAILURE_CLASSES:
+        if isinstance(exc, exc_type):
+            if exc_type is ClientConnectorError:
+                # errno lookup, never strerror: asyncio embeds the
+                # upstream address tuple in strerror, and the body must
+                # name the class without leaking where the broker dialed.
+                os_error = getattr(exc, "os_error", None)
+                errno_value = getattr(os_error, "errno", None)
+                return tag, _CONNECT_ERRNO_CAUSES.get(errno_value, cause)
+            return tag, cause
+    return "", ""
 
 
 async def _audit_request(
@@ -749,9 +804,10 @@ async def _handle_request(request: web.Request) -> web.StreamResponse:
             await _audit_request(request, token_info, 502, "upstream_disconnected", started_at)
             return web.Response(status=502, text="Upstream disconnected")
         except Exception as exc:
+            tag, cause = _classify_upstream_failure(exc)
             _logger.error("Upstream request to %s failed: %s", provider, exc)
-            await _audit_request(request, token_info, 502, "upstream_error", started_at)
-            return web.Response(status=502, text="Upstream request failed")
+            await _audit_request(request, token_info, 502, f"upstream_error{tag}", started_at)
+            return web.Response(status=502, text=f"Upstream request failed{cause}")
     await _audit_request(request, token_info, 502, "upstream_disconnected", started_at)
     return web.Response(status=502, text="Upstream disconnected")  # unreachable
 
