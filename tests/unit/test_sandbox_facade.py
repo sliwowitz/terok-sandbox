@@ -658,28 +658,35 @@ class TestSandbox:
         mock_shield.assert_not_called()
 
     def test_run_refuses_when_shield_setup_fails(self) -> None:
-        """A failing ``shield.pre_start`` aborts the launch with a remediation hint.
+        """A failing ``shield.pre_start`` aborts the launch with a diagnostic ``ShieldSetupError``.
 
         Soft-failing past shield setup would launch the container with
         unfiltered egress under a config that explicitly asked for
         shielding — exactly the silent-fallback shape the loud-failure
-        principle exists to prevent.
+        principle exists to prevent.  The remedy is the CLI's to name:
+        the library message carries no command hint.
         """
+        from terok_sandbox import ShieldSetupError
+
         spec = _make_spec()
+        cause = FileNotFoundError("nft")
         with (
             patch("subprocess.run") as mock_run,
             patch(
                 "terok_sandbox.integrations.shield.ShieldManager.pre_start",
-                side_effect=FileNotFoundError("nft"),
+                side_effect=cause,
             ),
-            pytest.raises(SystemExit) as exc_info,
+            pytest.raises(ShieldSetupError) as exc_info,
         ):
             Sandbox().run(spec)
 
         message = str(exc_info.value)
         assert "Shield setup failed" in message
         assert spec.container_name in message
-        assert "shield_disabled" in message
+        assert "unfiltered egress" in message
+        assert "terok" not in message
+        assert exc_info.value.container_name == spec.container_name
+        assert exc_info.value.cause is cause
         mock_run.assert_not_called()
 
     def test_run_fires_lifecycle_hooks(self) -> None:
