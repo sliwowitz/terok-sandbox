@@ -80,11 +80,19 @@ if [[ -n "${TEROK_VAULT_LOOPBACK_PORT:-}" ]] && [[ -z "${TEROK_TOKEN_BROKER_PORT
     echo "terok: vault loopback bridge skipped — socket mode announced" \
       "(TEROK_VAULT_LOOPBACK_PORT=${TEROK_VAULT_LOOPBACK_PORT}) but" \
       "TEROK_VAULT_SOCKET is unset" >&2
-  elif command -v socat >/dev/null 2>&1 \
+  else
+    # Stable alias for shared agent configs: /tmp/terok-vault.sock is the
+    # one vault-socket path every container generation serves (TCP mode
+    # binds a real socket there).  The env var carries this generation's
+    # mounted path; the alias shields the shared singleton config files
+    # from mount-layout changes between generations.
+    ln -sfn "${TEROK_VAULT_SOCKET}" /tmp/terok-vault.sock
+    if command -v socat >/dev/null 2>&1 \
        && ! _terok_bridge_alive "$_TEROK_PIDDIR/vault-loopback.pid"; then
-    socat "TCP-LISTEN:${TEROK_VAULT_LOOPBACK_PORT},bind=127.0.0.1,fork,reuseaddr" \
-      UNIX-CONNECT:"${TEROK_VAULT_SOCKET}",retry=300,interval=0.1 &
-    echo $! > "$_TEROK_PIDDIR/vault-loopback.pid"
+      socat "TCP-LISTEN:${TEROK_VAULT_LOOPBACK_PORT},bind=127.0.0.1,fork,reuseaddr" \
+        UNIX-CONNECT:"${TEROK_VAULT_SOCKET}",retry=300,interval=0.1 &
+      echo $! > "$_TEROK_PIDDIR/vault-loopback.pid"
+    fi
   fi
 fi
 
