@@ -1159,7 +1159,7 @@ class TestForwardingPath:
         await upstream_server.close()
 
     async def test_upstream_error_returns_502(self, _forwarding_env) -> None:
-        """Connection refused to upstream returns generic 502."""
+        """Connection refused to upstream returns a 502 that names the cause."""
         from aiohttp.test_utils import TestClient, TestServer
 
         _, tmp_path, tokens = _forwarding_env
@@ -1178,6 +1178,10 @@ class TestForwardingPath:
                 headers={"Authorization": f"Bearer {tokens['claude']}"},
             )
             assert resp.status == 502
+            body = await resp.text()
+            # The agent inside the container must be able to tell the
+            # failure class without host access.
+            assert body.startswith("Upstream request failed: ")
             text = await resp.text()
             assert "127.0.0.1" not in text
 

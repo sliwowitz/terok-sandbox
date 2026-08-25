@@ -445,15 +445,31 @@ def store_passphrase_in_keyring(passphrase: str) -> bool:
         return False
 
 
-def forget_passphrase_in_keyring() -> bool:
-    """Remove the keyring entry; return ``True`` on success."""
+def forget_passphrase_in_keyring() -> str | None:
+    """Remove the keyring entry; return ``None`` when it is gone, else why it may survive.
+
+    "Gone" covers a successful delete and an entry that never existed —
+    the caller's goal is absence, not the delete call.  A locked keyring
+    cannot prove absence and never prompts here, so it returns its
+    reason; so does a backend that rejects the delete while the entry
+    still reads back.  Callers render the reason instead of guessing.
+    """
+    if (blocked := os_keyring_read_blocked()) is not None:
+        return blocked
     try:
         import keyring  # noqa: PLC0415
+        from keyring.errors import PasswordDeleteError  # noqa: PLC0415
 
-        keyring.delete_password(KEYRING_SERVICE, KEYRING_USERNAME)
-        return True
-    except Exception:  # noqa: BLE001
-        return False
+        try:
+            keyring.delete_password(KEYRING_SERVICE, KEYRING_USERNAME)
+        except PasswordDeleteError:
+            # Most backends raise this for a missing entry; only a
+            # residual entry after it means the backend refused.
+            if load_passphrase_from_keyring() is not None:
+                return "the backend rejected the delete"
+        return None
+    except Exception as exc:  # noqa: BLE001
+        return f"OS keyring unreachable ({type(exc).__name__})"
 
 
 def load_passphrase_from_command(

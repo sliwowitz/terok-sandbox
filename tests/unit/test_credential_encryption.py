@@ -847,9 +847,13 @@ class TestKeyringHelpers:
         monkeypatch.setitem(sys.modules, "keyring", fake)
         assert store_passphrase_in_keyring("hunter2") is False
 
-    def test_forget_returns_true_on_success(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """``forget`` clears the keyring entry and reports success."""
+    def test_forget_returns_none_on_success(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """``forget`` clears the keyring entry and reports it gone."""
         import sys
+
+        import keyring.errors as _keyring_errors
+
+        from terok_sandbox.vault.store import encryption as _enc_module
 
         deleted: dict[str, tuple[str, str]] = {}
 
@@ -857,22 +861,59 @@ class TestKeyringHelpers:
             deleted["args"] = (svc, user)
 
         fake = type("FakeKeyring", (), {"delete_password": staticmethod(_delete_password)})
+        monkeypatch.setattr(_enc_module, "os_keyring_read_blocked", lambda **_kw: None)
         monkeypatch.setitem(sys.modules, "keyring", fake)
-        assert forget_passphrase_in_keyring() is True
+        monkeypatch.setitem(sys.modules, "keyring.errors", _keyring_errors)
+        assert forget_passphrase_in_keyring() is None
         assert deleted["args"] == ("terok-sandbox", "credentials-db")
 
-    def test_forget_returns_false_when_backend_raises(
+    def test_forget_missing_entry_counts_as_gone(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """A delete of an absent entry is the goal state, not a failure."""
+        import sys
+
+        import keyring.errors as _keyring_errors
+
+        from terok_sandbox.vault.store import encryption as _enc_module
+
+        def _missing(*_a: object, **_kw: object) -> None:
+            raise _keyring_errors.PasswordDeleteError("no such entry")
+
+        fake = type("FakeKeyring", (), {"delete_password": staticmethod(_missing)})
+        monkeypatch.setattr(_enc_module, "os_keyring_read_blocked", lambda **_kw: None)
+        monkeypatch.setattr(_enc_module, "load_passphrase_from_keyring", lambda **_kw: None)
+        monkeypatch.setitem(sys.modules, "keyring", fake)
+        monkeypatch.setitem(sys.modules, "keyring.errors", _keyring_errors)
+        assert forget_passphrase_in_keyring() is None
+
+    def test_forget_locked_keyring_returns_the_reason(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """A denied delete surfaces as ``False`` so callers can keep going."""
+        """A locked keyring cannot prove absence — the caller gets the reason."""
+        from terok_sandbox.vault.store import encryption as _enc_module
+
+        monkeypatch.setattr(
+            _enc_module, "os_keyring_read_blocked", lambda **_kw: "OS keyring locked"
+        )
+        assert forget_passphrase_in_keyring() == "OS keyring locked"
+
+    def test_forget_returns_reason_when_backend_raises(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A denied delete surfaces its reason so callers can render it."""
         import sys
+
+        import keyring.errors as _keyring_errors
+
+        from terok_sandbox.vault.store import encryption as _enc_module
 
         def _boom(*_a: object, **_kw: object) -> None:
             raise RuntimeError("denied")
 
         fake = type("FakeKeyring", (), {"delete_password": staticmethod(_boom)})
+        monkeypatch.setattr(_enc_module, "os_keyring_read_blocked", lambda **_kw: None)
         monkeypatch.setitem(sys.modules, "keyring", fake)
-        assert forget_passphrase_in_keyring() is False
+        monkeypatch.setitem(sys.modules, "keyring.errors", _keyring_errors)
+        assert forget_passphrase_in_keyring() == "OS keyring unreachable (RuntimeError)"
 
 
 class TestPromptPassphraseNonTTY:
@@ -1911,9 +1952,9 @@ class TestVaultUnlockLock:
         _ack_recovery(cfg)
         forget_calls: dict[str, int] = {"n": 0}
 
-        def _forget() -> bool:
+        def _forget() -> str | None:
             forget_calls["n"] += 1
-            return True
+            return None
 
         monkeypatch.setattr(
             "terok_sandbox.vault.store.encryption.forget_passphrase_in_keyring", _forget
@@ -1962,11 +2003,11 @@ class TestVaultUnlockLock:
 
         cfg = _make_cfg(tmp_path, use_keyring=True)
         _ack_recovery(cfg)
-        # Helper returns False on missing entry (keyring.delete_password raises);
-        # the readback then confirms the entry really is absent.
+        # The helper folds a missing entry to "gone" itself; the lock
+        # flow just renders the outcome.
         monkeypatch.setattr(
             "terok_sandbox.vault.store.encryption.forget_passphrase_in_keyring",
-            lambda: False,
+            lambda: None,
         )
         monkeypatch.setattr(
             "terok_sandbox.vault.store.encryption.load_passphrase_from_keyring",
@@ -1975,7 +2016,7 @@ class TestVaultUnlockLock:
 
         _handle_vault_lock(cfg=cfg)  # must not raise
 
-        assert "already absent" in capsys.readouterr().out
+        assert "cleared or absent" in capsys.readouterr().out
 
     def test_lock_raises_when_keyring_backend_rejects_delete(
         self,
@@ -1988,17 +2029,17 @@ class TestVaultUnlockLock:
 
         cfg = _make_cfg(tmp_path, use_keyring=True)
         _ack_recovery(cfg)
-        # Helper claimed failure AND the entry is still there: real backend rejection.
+        # The helper reports the rejection reason; the lock flow aborts.
         monkeypatch.setattr(
             "terok_sandbox.vault.store.encryption.forget_passphrase_in_keyring",
-            lambda: False,
+            lambda: "the backend rejected the delete",
         )
         monkeypatch.setattr(
             "terok_sandbox.vault.store.encryption.load_passphrase_from_keyring",
             lambda **_kw: "still-there",
         )
 
-        with pytest.raises(SystemExit, match="failed to clear keyring entry"):
+        with pytest.raises(SystemExit, match="failed to clear the keyring entry"):
             _handle_vault_lock(cfg=cfg)
 
     def test_lock_removes_sealed_credential(
