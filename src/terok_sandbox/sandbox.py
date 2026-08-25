@@ -469,6 +469,27 @@ def _validate_annotations(annotations: Mapping[str, str]) -> Mapping[str, str]:
 # ---------------------------------------------------------------------------
 
 
+class ShieldSetupError(RuntimeError):
+    """[`Sandbox.run`][terok_sandbox.sandbox.Sandbox.run] refused to launch: shield setup failed for a shielded spec.
+
+    Soft-failing past shield setup would launch the container with
+    unfiltered egress under a config that asked for the firewall, so the
+    launch stops here.  The message is diagnostic only: the surface that
+    renders the launch (the terok CLI) names the remedy.  The library
+    opt-out is ``SandboxConfig(shield_disabled=True)``, which skips shield
+    setup altogether.
+    """
+
+    def __init__(self, container_name: str, cause: OSError) -> None:
+        """Record the container and the failure shield setup raised."""
+        self.container_name = container_name
+        self.cause = cause
+        super().__init__(
+            f"Shield setup failed for {container_name}: {cause}. "
+            "Refusing to launch with unfiltered egress."
+        )
+
+
 class Sandbox:
     """Per-task orchestrator composing runtime + services.
 
@@ -677,19 +698,11 @@ class Sandbox:
                 )
             except SystemExit:
                 raise  # ShieldNeedsSetup; let the caller handle it
-            except (OSError, FileNotFoundError) as exc:
+            except OSError as exc:
                 # Refuse to launch with silent unfiltered egress: a shielded
                 # spec asked for the firewall; soft-failing past it would
                 # weaken the security posture the operator explicitly chose.
-                # ``SandboxConfig(shield_disabled=True)`` is the documented
-                # opt-out and skips this whole branch above.
-                raise SystemExit(
-                    f"Shield setup failed: {exc}\n"
-                    f"Refusing to launch {spec.container_name} with unfiltered "
-                    f"egress. Diagnose with `terok sickbay`, or set "
-                    f"SandboxConfig(shield_disabled=True) if filtering is "
-                    f"intentionally disabled for this run."
-                ) from None
+                raise ShieldSetupError(spec.container_name, exc) from exc
 
         cmd += gpu_run_args(spec.gpus)
 

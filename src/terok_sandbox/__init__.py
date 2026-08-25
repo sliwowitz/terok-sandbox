@@ -175,6 +175,7 @@ _LAZY: dict[str, str] = {
     "RunSpec": "sandbox:RunSpec",
     "Sandbox": "sandbox:Sandbox",
     "Sharing": "sandbox:Sharing",
+    "ShieldSetupError": "sandbox:ShieldSetupError",
     "VolumeSpec": "sandbox:VolumeSpec",
     # Setup stamp / aggregator
     "SetupVerdict": "setup_stamp:SetupVerdict",
@@ -447,6 +448,7 @@ __all__ = [
     "READY_MARKER",
     "RunSpec",
     "Sharing",
+    "ShieldSetupError",
     "TcpSSHTransport",
     "VolumeSpec",
     "check_gpu_available",
