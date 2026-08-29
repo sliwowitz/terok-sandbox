@@ -127,9 +127,21 @@ def _bridge_alive(pidfile: Path, listen_spec: str) -> bool:
     return _run_bash('_terok_bridge_alive "$1" "$2"', str(pidfile), listen_spec)
 
 
-def _start_bridge(pidfile: Path, listen: str, target: str) -> None:
-    """Run the shipped ``_terok_start_bridge``, leaving any socat it spawns running."""
-    _run_bash('_terok_start_bridge "$1" "$2" "$3" </dev/null', str(pidfile), listen, target)
+def _start_bridge(pidfile: Path, listen: str, target: str) -> tuple[int, str]:
+    """Run the shipped ``_terok_start_bridge``; return its status and diagnostics.
+
+    Diagnostics go to a file rather than a pipe: the socat this starts inherits
+    the descriptor and outlives the call, so a pipe would keep the reader
+    waiting for a bridge that is meant to stay up.
+    """
+    errors = pidfile.with_suffix(".stderr")
+    script = f'{_bridge_functions()}\n_terok_start_bridge "$1" "$2" "$3" </dev/null 2>"$4"'
+    completed = subprocess.run(
+        ["bash", "-c", script, "_", str(pidfile), listen, target, str(errors)],
+        check=False,
+        stdout=subprocess.DEVNULL,
+    )
+    return completed.returncode, errors.read_text() if errors.exists() else ""
 
 
 @contextmanager
@@ -1039,6 +1051,29 @@ class TestStartBridge:
             _start_bridge(pidfile, f"UNIX-LISTEN:{front},fork", "UNIX-CONNECT:/nonexistent")
             assert not pidfile.exists()
             assert front.is_socket()
+
+    def test_a_bridge_that_cannot_bind_says_so(self, tmp_path: Path) -> None:
+        """An address already in use is an error state, and it has to be audible.
+
+        Every shell retries a bridge that is down, so a silent bind failure
+        would burn a process per command and say nothing.  The PID file is
+        dropped too: one naming a process that is already gone is a lie the
+        next caller would have to see through.
+        """
+        pidfile = tmp_path / "taken.pid"
+        with socket.socket(socket.AF_INET) as occupied:
+            occupied.bind(("127.0.0.1", 0))
+            occupied.listen()
+            port = occupied.getsockname()[1]
+            status, errors = _start_bridge(
+                pidfile,
+                f"TCP-LISTEN:{port},bind=127.0.0.1,fork,reuseaddr",
+                "UNIX-CONNECT:/nonexistent",
+            )
+        assert status != 0
+        assert f"bridge TCP-LISTEN:{port} did not start" in errors
+        assert "already in use" in errors
+        assert not pidfile.exists()
 
     def test_stale_socket_from_a_dead_bridge_is_rebound(self, tmp_path: Path) -> None:
         """A socket nobody answers on is a corpse; clear it and bind again."""

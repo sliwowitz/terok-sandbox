@@ -148,8 +148,14 @@ _terok_listen_free() {
 
 # Start the bridge from *listen* to *target*, unless it is already running.
 #
-# Records the PID so the next call can tell.  Silently does nothing when socat
-# is absent — an image without it simply has no bridges.
+# Records the PID so the next call can tell.  Does nothing when socat is
+# absent — an image without it simply has no bridges.
+#
+# A bridge that cannot bind is an error state, and an error state has to be
+# audible: socat reports the reason and exits within milliseconds, so this
+# waits that out and complains.  The wait costs a process, which is the right
+# trade on a path only reached when a bridge is down.  The PID file is dropped
+# rather than left naming a process that is already gone.
 _terok_start_bridge() {
   local pidfile="$1" listen="$2" target="$3"
   command -v socat >/dev/null 2>&1 || return 0
@@ -157,6 +163,14 @@ _terok_start_bridge() {
   _terok_listen_free "$listen" || return 0
   socat "$listen" "$target" &
   echo $! > "$pidfile"
+  sleep 0.1
+  _terok_bridge_alive "$pidfile" "$listen" && return 0
+  rm -f "$pidfile"
+  {
+    echo "terok: bridge ${listen%%,*} did not start"
+    echo "terok:   socat exited at once — its address is most likely already in use"
+  } >&2
+  return 1
 }
 
 # ── SSH signer bridge ────────────────────────────────────────────────────
