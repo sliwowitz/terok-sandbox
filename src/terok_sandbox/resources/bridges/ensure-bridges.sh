@@ -74,17 +74,14 @@ fi
 
 # Is the process recorded in *pidfile* still the bridge that wrote it?
 #
+# HOT PATH: every shell in the container runs this, so keep it on builtins.
+# A single subprocess here is paid on every command an agent issues.
+#
 # A PID file records a number, not an identity.  Container PIDs restart from 1
 # on every boot, and /tmp survives a restart.  A stale file therefore names
 # whatever inherited its number — the entrypoint keepalive, typically — and a
 # signal probe reports that as a healthy bridge.  Comparing *listen* against
 # the process's own argument list settles identity instead.
-#
-# This is the all-clear path, reached by every shell in the container, so it
-# runs on builtins alone and spawns nothing.  ``mapfile -d ''`` splits
-# /proc/<pid>/cmdline on its NUL separators, giving socat's arguments exactly
-# as it was invoked with them; a dead PID has no such file and a zombie an
-# empty one, and neither yields a match.
 _terok_bridge_alive() {
   # ``pid`` and ``arg`` start empty: init-ssh-and-repo.sh sources this file
   # under ``set -u``, where a declared-but-unset local is fatal on first boot,
