@@ -15,15 +15,11 @@ from pathlib import Path
 import pytest
 
 from terok_sandbox.config import SandboxConfig
-from terok_sandbox.podman_args import (
-    CONTAINER_GATE_SOCKET,
-    CONTAINER_VAULT_SOCKET,
-)
 from terok_sandbox.supervision import (
+    MIN_RUNTIME_PROTOCOL,
     SupervisionStatus,
-    check_runtime_paths,
+    outdated_container_warning,
     verify_supervision,
-    warn_stale_runtime_paths,
     warn_unsupervised,
 )
 from tests.constants import MOCK_BASE
@@ -173,51 +169,33 @@ class TestSupervisionStatus:
         assert "not responding" in capsys.readouterr().err
 
 
-class TestRuntimePathDrift:
-    """A container's frozen environment vs the layout this sandbox binds."""
+class TestOutdatedContainer:
+    """A container's frozen protocol stamp vs the layout this sandbox binds."""
 
-    def test_current_layout_reports_no_drift(self) -> None:
-        """A container created against today's constants is aligned."""
-        env = {
-            "TEROK_VAULT_SOCKET": CONTAINER_VAULT_SOCKET,
-            "TEROK_GATE_SOCKET": CONTAINER_GATE_SOCKET,
-        }
-        assert check_runtime_paths(_NAME, env).ok
+    def test_current_stamp_is_silent(self) -> None:
+        """A container created against today's contract needs no warning."""
+        env = {"TEROK_CONTAINER_PROTOCOL": str(MIN_RUNTIME_PROTOCOL)}
+        assert outdated_container_warning(_NAME, env) is None
 
-    def test_pre_split_layout_is_named_variable_by_variable(self) -> None:
-        """The flat paths a pre-#491 container carries are reported, both of them.
+    def test_older_stamp_names_both_numbers_and_the_remedy(self) -> None:
+        """The common case: a container carried over from the previous release."""
+        warning = outdated_container_warning(_NAME, {"TEROK_CONTAINER_PROTOCOL": "2"})
+        assert warning is not None
+        assert _NAME in warning
+        assert str(MIN_RUNTIME_PROTOCOL) in warning
+        assert "recreate the task" in warning
 
-        Those containers keep advertising ``/run/terok/gate-server.sock`` while
-        the supervisor binds ``/run/terok/gate/gate-server.sock``.  The bridge
-        starts, listens, accepts, and only fails at the far end.
-        """
-        env = {
-            "TEROK_VAULT_SOCKET": "/run/terok/vault.sock",
-            "TEROK_GATE_SOCKET": "/run/terok/gate-server.sock",
-        }
-        drift = check_runtime_paths(_NAME, env)
-        assert not drift.ok
-        assert {var for var, _, _ in drift.stale} == {
-            "TEROK_VAULT_SOCKET",
-            "TEROK_GATE_SOCKET",
-        }
-        text = drift.warning()
-        assert "/run/terok/gate-server.sock" in text
-        assert CONTAINER_GATE_SOCKET in text
+    def test_unstamped_container_counts_as_outdated(self) -> None:
+        """A container predating the stamp certainly predates the layout."""
+        warning = outdated_container_warning(_NAME, {})
+        assert warning is not None
+        assert "unstamped" in warning
 
-    def test_tcp_mode_container_reports_no_drift(self) -> None:
-        """TCP-mode wiring advertises ports, not paths — nothing to compare."""
-        env = {"TEROK_TOKEN_BROKER_PORT": "18731", "TEROK_GATE_PORT": "18732"}
-        assert check_runtime_paths(_NAME, env).ok
+    def test_unparseable_stamp_counts_as_outdated(self) -> None:
+        """Garbage in the stamp is not evidence of currency."""
+        assert outdated_container_warning(_NAME, {"TEROK_CONTAINER_PROTOCOL": "v2"}) is not None
 
-    def test_warn_is_silent_when_aligned(self, capsys: pytest.CaptureFixture[str]) -> None:
-        warn_stale_runtime_paths(check_runtime_paths(_NAME, {}))
-        assert capsys.readouterr().err == ""
-
-    def test_warn_shouts_and_points_at_the_remedy(self, capsys: pytest.CaptureFixture[str]) -> None:
-        """Loud, and explicit that the container still half-works — recreate is the user's call."""
-        env = {"TEROK_GATE_SOCKET": "/run/terok/gate-server.sock"}
-        warn_stale_runtime_paths(check_runtime_paths(_NAME, env))
-        err = capsys.readouterr().err
-        assert "predates the current /run/terok socket layout" in err
-        assert "recreate the task" in err
+    def test_newer_stamp_is_silent(self) -> None:
+        """A container from a newer host is not this check's business."""
+        env = {"TEROK_CONTAINER_PROTOCOL": str(MIN_RUNTIME_PROTOCOL + 1)}
+        assert outdated_container_warning(_NAME, env) is None
