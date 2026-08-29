@@ -363,13 +363,13 @@ class PodmanContainer:
 
     @property
     def env(self) -> dict[str, str]:
-        """Environment recorded on the container at creation, as a mapping.
+        """Environment recorded on the container when it was created.
 
-        Reads ``podman inspect`` ``.Config.Env`` — the ``KEY=value`` list
-        frozen when the container was created — so a caller can compare what
-        the container was told against what the host offers today.  Empty
-        dict on an absent container or any inspect/parse failure (matching
-        the absent-is-empty contract the other handle properties follow).
+        Reads the ``KEY=value`` list from ``podman inspect`` ``.Config.Env``,
+        so a caller can compare what the container was told against what the
+        host offers today.  Empty on an absent container or any inspect
+        failure, matching the absent-is-empty contract the other handle
+        properties follow.
         """
         try:
             out = subprocess.check_output(  # nosec B603 B607 — argv built from fixed verbs + caller-controlled scope/container names — binary PATH lookup is the cross-distro contract

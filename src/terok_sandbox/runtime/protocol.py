@@ -118,11 +118,10 @@ class Container(Protocol):
 
     @property
     def env(self) -> dict[str, str]:
-        """Environment recorded on the container at creation, as a mapping.
+        """Environment recorded on the container when it was created.
 
-        Frozen when the container was created, so it can name host-side
-        contracts a newer host no longer honours.  Empty when the container
-        is absent or carries no environment.
+        Frozen at creation, so it can still name a host-side contract a newer
+        host no longer honours.  Empty when the container is absent.
         """
         ...
 

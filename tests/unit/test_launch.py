@@ -77,6 +77,11 @@ def _make_cfg(tmp_path: Path, services_mode: str = "socket") -> SandboxConfig:
 # ---------------------------------------------------------------------------
 
 
+#: The address the vault loopback bridge binds, spelled as ``ensure-bridges.sh``
+#: spells it — the guard matches this against a running process's command line.
+_VAULT_LISTEN = "TCP-LISTEN:9419,bind=127.0.0.1,fork,reuseaddr"
+
+
 @contextmanager
 def _spawned(*argv: str) -> Iterator[int]:
     """Yield the PID of a live sleeper carrying *argv* on its command line.
@@ -967,37 +972,36 @@ class TestEdgeCases:
         assert (d / "ssh-agent-bridge.sh").is_file()
 
     def test_recycled_pid_is_not_mistaken_for_a_live_bridge(self, tmp_path: Path) -> None:
-        """A PID collision after a restart must not read as a running bridge.
+        """A PID collision after a restart does not read as a running bridge.
 
-        Container PIDs restart from 1 and ``/tmp`` survives the restart, so a
-        stale PID file can name whatever process inherited its number — the
-        entrypoint keepalive, typically.  Trusting the number alone left the
-        vault loopback bridge unstarted and every URL-transport client on
-        ``localhost:9419`` refused.
+        Container PIDs restart from 1, and ``/tmp`` survives the restart.  A
+        stale PID file therefore names whatever process inherited its number,
+        typically the entrypoint keepalive.  Trusting the number alone left the
+        vault loopback bridge unstarted, and every client on
+        ``localhost:9419`` saw a refused connection.
         """
-        with _spawned("sleep 30") as pid:
-            pidfile = tmp_path / "vault-loopback.pid"
+        pidfile = tmp_path / "vault-loopback.pid"
+        with _spawned() as pid:
             pidfile.write_text(str(pid))
-            assert not _bridge_alive(pidfile, "TCP-LISTEN:9419,")
+            assert not _bridge_alive(pidfile, _VAULT_LISTEN)
 
     def test_running_bridge_reads_as_alive(self, tmp_path: Path) -> None:
-        """A process whose command line carries the listen spec is the bridge."""
-        with _spawned("sleep 30", "TCP-LISTEN:9419,bind=127.0.0.1,fork") as pid:
-            pidfile = tmp_path / "vault-loopback.pid"
+        """A process whose command line carries the listen address is the bridge."""
+        pidfile = tmp_path / "vault-loopback.pid"
+        with _spawned(_VAULT_LISTEN) as pid:
             pidfile.write_text(str(pid))
-            assert _bridge_alive(pidfile, "TCP-LISTEN:9419,")
+            assert _bridge_alive(pidfile, _VAULT_LISTEN)
 
     def test_absent_and_empty_pidfiles_read_as_dead(self, tmp_path: Path) -> None:
-        """No file and an empty file both mean "no bridge".
+        """No PID file and an empty one both mean no bridge.
 
-        The empty case is not academic: ``/proc//cmdline`` resolves to the
-        kernel's boot command line, which is readable and would otherwise be
-        matched against the listen spec.
+        The empty case is not academic.  ``/proc//cmdline`` resolves to the
+        kernel's boot command line, which is readable.
         """
-        assert not _bridge_alive(tmp_path / "absent.pid", "TCP-LISTEN:9419,")
+        assert not _bridge_alive(tmp_path / "absent.pid", _VAULT_LISTEN)
         empty = tmp_path / "empty.pid"
         empty.write_text("")
-        assert not _bridge_alive(empty, "TCP-LISTEN:9419,")
+        assert not _bridge_alive(empty, _VAULT_LISTEN)
 
     def test_exited_pid_reads_as_dead(self, tmp_path: Path) -> None:
         """A PID with no ``/proc`` entry left is not a bridge."""

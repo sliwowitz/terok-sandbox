@@ -26,13 +26,13 @@ raises.
 
 [`outdated_container_warning`][terok_sandbox.supervision.outdated_container_warning]
 closes the mirror-image gap.  A container's environment is frozen when it is
-created, so a container that outlives a change to the ``/run/terok`` layout
-keeps advertising socket paths this sandbox no longer binds.  The supervisor is
-healthy and the bridges start — they just connect somewhere that does not
-exist, which surfaces thirty seconds later as an empty reply rather than as a
-refusal.  Reported, never enforced: an operator may well prefer to keep working
-with whatever in the container still functions rather than pay for the recreate
-straight away.
+created.  A container that outlives a change to the ``/run/terok`` layout
+therefore keeps naming sockets this sandbox no longer binds.  The supervisor is
+healthy and the bridges start; they connect to nothing.  The symptom arrives
+half a minute later as an empty reply, not as a refused connection.  The check
+reads the container's protocol stamp and reports the gap.  It never enforces —
+an operator can keep using the parts of the container that still work, and
+recreate it when that suits them.
 """
 
 from __future__ import annotations
@@ -58,6 +58,16 @@ _DEFAULT_TIMEOUT_S = 5.0
 
 #: Filesystem poll cadence while waiting for the sockets to appear.
 _POLL_INTERVAL_S = 0.1
+
+MIN_RUNTIME_PROTOCOL = 3
+"""Lowest ``TEROK_CONTAINER_PROTOCOL`` whose socket layout this sandbox still binds.
+
+Each service's socket moved into its own ``/run/terok`` subdirectory, which
+changed ``TEROK_VAULT_SOCKET``, ``TEROK_SSH_SIGNER_SOCKET`` and
+``TEROK_GATE_SOCKET``.  A container stamped below this value predates that
+move.  terok-executor stamps the containers, so this value tracks
+``CONTAINER_PROTOCOL`` there.
+"""
 
 
 @dataclass(frozen=True)
@@ -92,44 +102,6 @@ class SupervisionStatus:
             f"warning:   hook diary: {self.hook_log} "
             "(absent or empty ⇒ the OCI supervisor hook never fired)"
         )
-
-
-MIN_RUNTIME_PROTOCOL = 3
-"""Lowest ``TEROK_CONTAINER_PROTOCOL`` whose socket layout matches what this
-sandbox binds.
-
-#491 moved each service's socket into its own ``/run/terok`` subdirectory,
-changing the values of ``TEROK_VAULT_SOCKET`` / ``TEROK_SSH_SIGNER_SOCKET`` /
-``TEROK_GATE_SOCKET``.  A container stamped below this predates that split.
-Must match ``terok_executor.container.env.CONTAINER_PROTOCOL``, which stamps
-the containers.
-"""
-
-
-def outdated_container_warning(container_name: str, env: dict[str, str]) -> str | None:
-    """Return a warning when *env* stamps a container older than the current layout.
-
-    *env* is the environment recorded on the container at creation (see
-    [`Container.env`][terok_sandbox.runtime.protocol.Container.env]).  ``None``
-    when the container is current, and when it carries no usable stamp at all:
-    sidecar tool containers are assembled from a minimal environment that never
-    carried one, so an absent stamp says nothing about age.  Pure: no
-    filesystem, no subprocess, never raises.
-    """
-    try:
-        recorded = int(env["TEROK_CONTAINER_PROTOCOL"])
-    except (KeyError, ValueError):
-        return None
-    if recorded >= MIN_RUNTIME_PROTOCOL:
-        return None
-    return (
-        f"warning: container {container_name!r} predates the current /run/terok socket "
-        f"layout (protocol {recorded}, this host binds {MIN_RUNTIME_PROTOCOL})\n"
-        "warning:   its git gate and vault-routed providers may connect nowhere — the\n"
-        "warning:   bridges still listen, so the symptom is a hang and then an empty reply\n"
-        "warning:   recreate the task to pick up the current layout; until then the rest\n"
-        "warning:   of the container keeps working"
-    )
 
 
 def verify_supervision(
@@ -180,6 +152,32 @@ def warn_unsupervised(status: SupervisionStatus) -> None:
     """Print the loud warning for a failed check to stderr; no-op when healthy."""
     if status.missing:
         print(status.warning(), file=sys.stderr)
+
+
+def outdated_container_warning(container_name: str, env: dict[str, str]) -> str | None:
+    """Return the warning for a container older than the current socket layout.
+
+    *env* is the environment recorded on the container at creation — see
+    [`Container.env`][terok_sandbox.runtime.protocol.Container.env].  Returns
+    ``None`` for a current container, and for one with no usable stamp.
+    Sidecar tool containers are built from a minimal environment that never
+    carried the stamp, so its absence says nothing about age.  Pure: no
+    filesystem, no subprocess, never raises.
+    """
+    try:
+        recorded = int(env["TEROK_CONTAINER_PROTOCOL"])
+    except (KeyError, ValueError):
+        return None
+    if recorded >= MIN_RUNTIME_PROTOCOL:
+        return None
+    return (
+        f"warning: container {container_name!r} predates the current /run/terok socket "
+        f"layout (protocol {recorded}, this host binds {MIN_RUNTIME_PROTOCOL})\n"
+        "warning:   its git gate and vault-routed providers connect nowhere\n"
+        "warning:   the bridges still listen, so the symptom is a hang, then an empty reply\n"
+        "warning:   recreate the task to pick up the current layout\n"
+        "warning:   the rest of the container keeps working until you do"
+    )
 
 
 def _poll_until_bound(expected: tuple[Path, ...], timeout: float) -> tuple[Path, ...]:

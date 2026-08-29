@@ -851,16 +851,10 @@ class Sandbox:
     def _warn_if_outdated(self, container_name: str, handle: Container) -> None:
         """Shout if the container predates the current ``/run/terok`` socket layout.
 
-        A container's environment is frozen at creation, so one that outlives a
-        change to that layout keeps naming paths nothing binds.  Its bridges
-        still listen and still accept, and fail only at the far end — a hang,
-        then an empty reply — which reads as a cold-start race rather than as
-        the version skew it is.
-
-        Warns and starts anyway: recreating a task is destructive, and an
-        operator is entitled to keep using whatever in the container still
-        works until they choose to pay for it.  Never raises out of the start
-        path, matching
+        Prints the warning and starts the container anyway; recreating a task
+        is destructive, so the choice stays with the operator.  See
+        [`outdated_container_warning`][terok_sandbox.supervision.outdated_container_warning]
+        for what the skew breaks.  Never raises out of the start path, matching
         [`_verify_supervision`][terok_sandbox.Sandbox._verify_supervision].
         """
         from .supervision import outdated_container_warning
