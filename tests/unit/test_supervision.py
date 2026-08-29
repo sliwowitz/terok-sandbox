@@ -185,15 +185,13 @@ class TestOutdatedContainer:
         assert str(MIN_RUNTIME_PROTOCOL) in warning
         assert "recreate the task" in warning
 
-    def test_unstamped_container_counts_as_outdated(self) -> None:
-        """A container predating the stamp certainly predates the layout."""
-        warning = outdated_container_warning(_NAME, {})
-        assert warning is not None
-        assert "unstamped" in warning
+    def test_unstamped_container_is_silent(self) -> None:
+        """Sidecar tool containers carry no stamp; an absent one says nothing about age."""
+        assert outdated_container_warning(_NAME, {}) is None
 
-    def test_unparseable_stamp_counts_as_outdated(self) -> None:
-        """Garbage in the stamp is not evidence of currency."""
-        assert outdated_container_warning(_NAME, {"TEROK_CONTAINER_PROTOCOL": "v2"}) is not None
+    def test_unparseable_stamp_is_silent(self) -> None:
+        """An unreadable stamp is no more evidence of age than a missing one."""
+        assert outdated_container_warning(_NAME, {"TEROK_CONTAINER_PROTOCOL": "v2"}) is None
 
     def test_newer_stamp_is_silent(self) -> None:
         """A container from a newer host is not this check's business."""

@@ -110,26 +110,21 @@ def outdated_container_warning(container_name: str, env: dict[str, str]) -> str 
     """Return a warning when *env* stamps a container older than the current layout.
 
     *env* is the environment recorded on the container at creation (see
-    [`Container.env`][terok_sandbox.runtime.protocol.Container.env]).  An
-    unreadable or absent stamp counts as outdated — a container that predates
-    the stamp itself certainly predates the layout.  ``None`` when the
-    container is current.
-
-    Coarse on purpose.  A container created between the layout change and the
-    protocol bump is warned about needlessly, which costs a banner; the
-    alternative — comparing each advertised path — buys precision nobody needs
-    when every container from the last release is outdated anyway.  Pure: no
+    [`Container.env`][terok_sandbox.runtime.protocol.Container.env]).  ``None``
+    when the container is current, and when it carries no usable stamp at all:
+    sidecar tool containers are assembled from a minimal environment that never
+    carried one, so an absent stamp says nothing about age.  Pure: no
     filesystem, no subprocess, never raises.
     """
     try:
-        recorded = int(env.get("TEROK_CONTAINER_PROTOCOL", ""))
-    except ValueError:
-        recorded = 0
+        recorded = int(env["TEROK_CONTAINER_PROTOCOL"])
+    except (KeyError, ValueError):
+        return None
     if recorded >= MIN_RUNTIME_PROTOCOL:
         return None
     return (
         f"warning: container {container_name!r} predates the current /run/terok socket "
-        f"layout (protocol {recorded or 'unstamped'}, this host binds {MIN_RUNTIME_PROTOCOL})\n"
+        f"layout (protocol {recorded}, this host binds {MIN_RUNTIME_PROTOCOL})\n"
         "warning:   its git gate and vault-routed providers may connect nowhere — the\n"
         "warning:   bridges still listen, so the symptom is a hang and then an empty reply\n"
         "warning:   recreate the task to pick up the current layout; until then the rest\n"
