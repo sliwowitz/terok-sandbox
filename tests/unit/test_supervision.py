@@ -183,7 +183,7 @@ class TestOutdatedContainer:
         assert warning is not None
         assert _NAME in warning
         assert str(MIN_RUNTIME_PROTOCOL) in warning
-        assert "recreate the task" in warning
+        assert "recreate the container" in warning
 
     def test_unstamped_container_is_silent(self) -> None:
         """Sidecar tool containers carry no stamp; an absent one says nothing about age."""

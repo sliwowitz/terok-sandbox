@@ -143,7 +143,7 @@ class NullContainer:
 
     @property
     def env(self) -> dict[str, str]:
-        """Return the fixture environment, or ``{}`` when unset."""
+        """Fixture environment recorded for this container; ``{}`` when unset."""
         return dict(self._runtime._container_env.get(self.name, {}))
 
     def start(self) -> None:

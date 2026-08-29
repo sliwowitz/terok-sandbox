@@ -105,6 +105,10 @@ _terok_bridge_alive() {
 # is past that window, so an absent target is real.  It is worth saying out
 # loud: a bridge aimed at nothing still listens and still accepts, and fails
 # only at the far end.
+#
+# The absence is the finding; the cause is not.  A path nothing binds is either
+# a layout this container predates or a supervisor child that failed to start,
+# and from in here the two look identical.  Name both and let the operator look.
 _terok_report_missing_bridge_targets() {
   local var path
   local -a missing=()
@@ -120,8 +124,10 @@ _terok_report_missing_bridge_targets() {
   {
     echo "terok: this container advertises bridge targets that do not exist:"
     printf '%s\n' "${missing[@]}"
-    echo "terok:   its git gate and vault-routed providers connect nowhere.  Recreate the"
-    echo "terok:   task to fix them.  Everything else in the container keeps working."
+    echo "terok:   its git gate and vault-routed providers connect nowhere"
+    echo "terok:   either the container predates the current /run/terok layout, or a"
+    echo "terok:   supervisor child failed to bind — the supervisor log says which"
+    echo "terok:   everything else in the container keeps working meanwhile"
   } >&2
 }
 

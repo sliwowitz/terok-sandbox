@@ -175,7 +175,7 @@ def outdated_container_warning(container_name: str, env: dict[str, str]) -> str 
         f"layout (protocol {recorded}, this host binds {MIN_RUNTIME_PROTOCOL})\n"
         "warning:   its git gate and vault-routed providers connect nowhere\n"
         "warning:   the bridges still listen, so the symptom is a hang, then an empty reply\n"
-        "warning:   recreate the task to pick up the current layout\n"
+        "warning:   recreate the container to pick up the current layout\n"
         "warning:   the rest of the container keeps working until you do"
     )
 
