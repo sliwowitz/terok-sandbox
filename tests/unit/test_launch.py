@@ -10,7 +10,11 @@ import inspect
 import json
 import os
 import stat
+import subprocess
+import sys
 import time
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 from unittest.mock import patch
 
@@ -71,6 +75,36 @@ def _make_cfg(tmp_path: Path, services_mode: str = "socket") -> SandboxConfig:
 # ---------------------------------------------------------------------------
 # Compose — happy paths per flag combination
 # ---------------------------------------------------------------------------
+
+
+@contextmanager
+def _spawned(*argv: str) -> Iterator[int]:
+    """Yield the PID of a live sleeper carrying *argv* on its command line.
+
+    A test stands in for a socat bridge by spawning a process whose own argv
+    holds the listen spec — and for the unrelated process that inherited a
+    bridge's PID after a container restart by spawning one that doesn't.
+    """
+    proc = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)", *argv])
+    try:
+        yield proc.pid
+    finally:
+        proc.kill()
+        proc.wait()
+
+
+def _bridge_alive(pidfile: Path, listen_spec: str) -> bool:
+    """Run the shipped ``_terok_bridge_alive`` against *pidfile* and *listen_spec*.
+
+    Slices the function out of ``ensure-bridges.sh`` rather than sourcing the
+    file: sourcing starts real socat bridges and writes to the container-only
+    ``/tmp/.terok``, neither of which belongs in a unit test.
+    """
+    script = (bridges_resource_dir() / "ensure-bridges.sh").read_text()
+    body = script.partition("_terok_bridge_alive() {")[2].partition("\n}\n")[0]
+    call = f'_terok_bridge_alive() {{{body}\n}}\n_terok_bridge_alive "$1" "$2"'
+    completed = subprocess.run(["bash", "-c", call, "_", str(pidfile), listen_spec], check=False)
+    return completed.returncode == 0
 
 
 class TestCompose:
@@ -931,6 +965,47 @@ class TestEdgeCases:
         d = bridges_resource_dir()
         assert (d / "ensure-bridges.sh").is_file()
         assert (d / "ssh-agent-bridge.sh").is_file()
+
+    def test_recycled_pid_is_not_mistaken_for_a_live_bridge(self, tmp_path: Path) -> None:
+        """A PID collision after a restart must not read as a running bridge.
+
+        Container PIDs restart from 1 and ``/tmp`` survives the restart, so a
+        stale PID file can name whatever process inherited its number — the
+        entrypoint keepalive, typically.  Trusting the number alone left the
+        vault loopback bridge unstarted and every URL-transport client on
+        ``localhost:9419`` refused.
+        """
+        with _spawned("sleep 30") as pid:
+            pidfile = tmp_path / "vault-loopback.pid"
+            pidfile.write_text(str(pid))
+            assert not _bridge_alive(pidfile, "TCP-LISTEN:9419,")
+
+    def test_running_bridge_reads_as_alive(self, tmp_path: Path) -> None:
+        """A process whose command line carries the listen spec is the bridge."""
+        with _spawned("sleep 30", "TCP-LISTEN:9419,bind=127.0.0.1,fork") as pid:
+            pidfile = tmp_path / "vault-loopback.pid"
+            pidfile.write_text(str(pid))
+            assert _bridge_alive(pidfile, "TCP-LISTEN:9419,")
+
+    def test_absent_and_empty_pidfiles_read_as_dead(self, tmp_path: Path) -> None:
+        """No file and an empty file both mean "no bridge".
+
+        The empty case is not academic: ``/proc//cmdline`` resolves to the
+        kernel's boot command line, which is readable and would otherwise be
+        matched against the listen spec.
+        """
+        assert not _bridge_alive(tmp_path / "absent.pid", "TCP-LISTEN:9419,")
+        empty = tmp_path / "empty.pid"
+        empty.write_text("")
+        assert not _bridge_alive(empty, "TCP-LISTEN:9419,")
+
+    def test_exited_pid_reads_as_dead(self, tmp_path: Path) -> None:
+        """A PID with no ``/proc`` entry left is not a bridge."""
+        proc = subprocess.Popen([sys.executable, "-c", ""])
+        proc.wait()
+        pidfile = tmp_path / "gate.pid"
+        pidfile.write_text(str(proc.pid))
+        assert not _bridge_alive(pidfile, "TCP-LISTEN:9418,")
 
     def test_vault_loopback_bridge_tolerates_late_socket_bind(self) -> None:
         """Socket startup relies on socat retry rather than a racy existence check."""

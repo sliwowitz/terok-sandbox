@@ -45,9 +45,24 @@ else
   _TEROK_SSH_BRIDGE="ssh-agent-bridge.sh"
 fi
 
+# Is the bridge recorded in *pidfile* still the one running under that PID?
+#
+# A PID file records a number, not an identity.  Container PIDs restart from 1
+# on every boot and /tmp is the image's writable layer, so the file outlives
+# the process it named: after a restart yesterday's number can land on today's
+# keepalive, read as alive, and leave the bridge unstarted.  *listen_spec* —
+# the socat listen address up to and including its trailing comma, so a port
+# 941 cannot pass for 9418 — settles identity against the process's own
+# command line.  That line answers liveness too: a dead PID has no entry and a
+# zombie an empty one, and neither can contain the spec.  The empty-PID guard
+# is load-bearing: "/proc//cmdline" resolves to the kernel's boot command line.
 _terok_bridge_alive() {
-  local pidfile="$1"
-  [[ -f "$pidfile" ]] && kill -0 "$(cat "$pidfile" 2>/dev/null)" 2>/dev/null
+  local pidfile="$1" listen_spec="$2" pid cmdline
+  [[ -f "$pidfile" ]] || return 1
+  pid=$(cat "$pidfile" 2>/dev/null)
+  [[ -n "$pid" ]] || return 1
+  cmdline=$(tr '\0' ' ' 2>/dev/null < "/proc/${pid}/cmdline")
+  [[ "$cmdline" == *"$listen_spec"* ]]
 }
 
 # ── SSH signer bridge ────────────────────────────────────────────────────
@@ -56,7 +71,7 @@ _terok_bridge_alive() {
 if [[ -n "${TEROK_SSH_SIGNER_TOKEN:-}" ]] \
    && { [[ -n "${TEROK_SSH_SIGNER_SOCKET:-}" ]] || [[ -n "${TEROK_SSH_SIGNER_PORT:-}" ]]; } \
    && command -v socat >/dev/null 2>&1 \
-   && ! _terok_bridge_alive "$_TEROK_PIDDIR/ssh-agent.pid"; then
+   && ! _terok_bridge_alive "$_TEROK_PIDDIR/ssh-agent.pid" "UNIX-LISTEN:/tmp/ssh-agent.sock,"; then
   rm -f /tmp/ssh-agent.sock
   socat "UNIX-LISTEN:/tmp/ssh-agent.sock,fork" "SYSTEM:${_TEROK_SSH_BRIDGE}" &
   echo $! > "$_TEROK_PIDDIR/ssh-agent.pid"
@@ -88,7 +103,8 @@ if [[ -n "${TEROK_VAULT_LOOPBACK_PORT:-}" ]] && [[ -z "${TEROK_TOKEN_BROKER_PORT
     # from mount-layout changes between generations.
     ln -sfn "${TEROK_VAULT_SOCKET}" /tmp/terok-vault.sock
     if command -v socat >/dev/null 2>&1 \
-       && ! _terok_bridge_alive "$_TEROK_PIDDIR/vault-loopback.pid"; then
+       && ! _terok_bridge_alive "$_TEROK_PIDDIR/vault-loopback.pid" \
+         "TCP-LISTEN:${TEROK_VAULT_LOOPBACK_PORT},"; then
       socat "TCP-LISTEN:${TEROK_VAULT_LOOPBACK_PORT},bind=127.0.0.1,fork,reuseaddr" \
         UNIX-CONNECT:"${TEROK_VAULT_SOCKET}",retry=300,interval=0.1 &
       echo $! > "$_TEROK_PIDDIR/vault-loopback.pid"
@@ -101,7 +117,8 @@ fi
 # lives on host TCP.
 if [[ -n "${TEROK_TOKEN_BROKER_PORT:-}" ]] \
    && command -v socat >/dev/null 2>&1 \
-   && ! _terok_bridge_alive "$_TEROK_PIDDIR/vault-socket.pid"; then
+   && ! _terok_bridge_alive "$_TEROK_PIDDIR/vault-socket.pid" \
+     "UNIX-LISTEN:/tmp/terok-vault.sock,"; then
   rm -f /tmp/terok-vault.sock
   socat UNIX-LISTEN:/tmp/terok-vault.sock,fork \
     TCP:host.containers.internal:"${TEROK_TOKEN_BROKER_PORT}",retry=300,interval=0.1 &
@@ -115,7 +132,8 @@ fi
 if [[ -n "${TEROK_TOKEN_BROKER_PORT:-}" ]] \
    && [[ -n "${TEROK_VAULT_LOOPBACK_PORT:-}" ]] \
    && command -v socat >/dev/null 2>&1 \
-   && ! _terok_bridge_alive "$_TEROK_PIDDIR/vault-loopback.pid"; then
+   && ! _terok_bridge_alive "$_TEROK_PIDDIR/vault-loopback.pid" \
+         "TCP-LISTEN:${TEROK_VAULT_LOOPBACK_PORT},"; then
   socat "TCP-LISTEN:${TEROK_VAULT_LOOPBACK_PORT},bind=127.0.0.1,fork,reuseaddr" \
     TCP:host.containers.internal:"${TEROK_TOKEN_BROKER_PORT}",retry=300,interval=0.1 &
   echo $! > "$_TEROK_PIDDIR/vault-loopback.pid"
@@ -128,7 +146,7 @@ fi
 # http://localhost:9418/.
 if [[ -n "${TEROK_GATE_SOCKET:-}" ]] \
    && command -v socat >/dev/null 2>&1 \
-   && ! _terok_bridge_alive "$_TEROK_PIDDIR/gate.pid"; then
+   && ! _terok_bridge_alive "$_TEROK_PIDDIR/gate.pid" "TCP-LISTEN:9418,"; then
   # retry=/interval= make socat hold each git connection and re-attempt the
   # backend connect until the supervisor has bound the gate socket, rather
   # than returning an empty reply when the container clones before the gate
@@ -148,7 +166,7 @@ fi
 # TEROK_GATE_PORT.
 if [[ -n "${TEROK_GATE_PORT:-}" ]] \
    && command -v socat >/dev/null 2>&1 \
-   && ! _terok_bridge_alive "$_TEROK_PIDDIR/gate.pid"; then
+   && ! _terok_bridge_alive "$_TEROK_PIDDIR/gate.pid" "TCP-LISTEN:9418,"; then
   # See the socket-mode note above: retry=/interval= wait for the
   # supervisor's gate listener instead of failing the container's first clone.
   socat TCP-LISTEN:9418,fork,reuseaddr \
