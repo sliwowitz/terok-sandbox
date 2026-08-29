@@ -66,7 +66,7 @@ Each service's socket moved into its own ``/run/terok`` subdirectory, which
 changed ``TEROK_VAULT_SOCKET``, ``TEROK_SSH_SIGNER_SOCKET`` and
 ``TEROK_GATE_SOCKET``.  A container stamped below this value predates that
 move.  terok-executor stamps the containers, so this value tracks
-``CONTAINER_PROTOCOL`` there.
+[`CONTAINER_PROTOCOL`][terok_executor.container.env.CONTAINER_PROTOCOL] there.
 """
 
 
