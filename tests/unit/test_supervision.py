@@ -15,9 +15,15 @@ from pathlib import Path
 import pytest
 
 from terok_sandbox.config import SandboxConfig
+from terok_sandbox.podman_args import (
+    CONTAINER_GATE_SOCKET,
+    CONTAINER_VAULT_SOCKET,
+)
 from terok_sandbox.supervision import (
     SupervisionStatus,
+    check_runtime_paths,
     verify_supervision,
+    warn_stale_runtime_paths,
     warn_unsupervised,
 )
 from tests.constants import MOCK_BASE
@@ -165,3 +171,53 @@ class TestSupervisionStatus:
         missing = tmp_path / "run" / _NAME / "vault" / "vault.sock"
         warn_unsupervised(SupervisionStatus(_NAME, (missing,), (missing,), tmp_path / "hook.log"))
         assert "not responding" in capsys.readouterr().err
+
+
+class TestRuntimePathDrift:
+    """A container's frozen environment vs the layout this sandbox binds."""
+
+    def test_current_layout_reports_no_drift(self) -> None:
+        """A container created against today's constants is aligned."""
+        env = {
+            "TEROK_VAULT_SOCKET": CONTAINER_VAULT_SOCKET,
+            "TEROK_GATE_SOCKET": CONTAINER_GATE_SOCKET,
+        }
+        assert check_runtime_paths(_NAME, env).ok
+
+    def test_pre_split_layout_is_named_variable_by_variable(self) -> None:
+        """The flat paths a pre-#491 container carries are reported, both of them.
+
+        Those containers keep advertising ``/run/terok/gate-server.sock`` while
+        the supervisor binds ``/run/terok/gate/gate-server.sock``.  The bridge
+        starts, listens, accepts, and only fails at the far end.
+        """
+        env = {
+            "TEROK_VAULT_SOCKET": "/run/terok/vault.sock",
+            "TEROK_GATE_SOCKET": "/run/terok/gate-server.sock",
+        }
+        drift = check_runtime_paths(_NAME, env)
+        assert not drift.ok
+        assert {var for var, _, _ in drift.stale} == {
+            "TEROK_VAULT_SOCKET",
+            "TEROK_GATE_SOCKET",
+        }
+        text = drift.warning()
+        assert "/run/terok/gate-server.sock" in text
+        assert CONTAINER_GATE_SOCKET in text
+
+    def test_tcp_mode_container_reports_no_drift(self) -> None:
+        """TCP-mode wiring advertises ports, not paths — nothing to compare."""
+        env = {"TEROK_TOKEN_BROKER_PORT": "18731", "TEROK_GATE_PORT": "18732"}
+        assert check_runtime_paths(_NAME, env).ok
+
+    def test_warn_is_silent_when_aligned(self, capsys: pytest.CaptureFixture[str]) -> None:
+        warn_stale_runtime_paths(check_runtime_paths(_NAME, {}))
+        assert capsys.readouterr().err == ""
+
+    def test_warn_shouts_and_points_at_the_remedy(self, capsys: pytest.CaptureFixture[str]) -> None:
+        """Loud, and explicit that the container still half-works — recreate is the user's call."""
+        env = {"TEROK_GATE_SOCKET": "/run/terok/gate-server.sock"}
+        warn_stale_runtime_paths(check_runtime_paths(_NAME, env))
+        err = capsys.readouterr().err
+        assert "predates the current /run/terok socket layout" in err
+        assert "recreate the task" in err

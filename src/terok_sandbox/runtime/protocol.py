@@ -116,6 +116,16 @@ class Container(Protocol):
         """
         ...
 
+    @property
+    def env(self) -> dict[str, str]:
+        """Environment recorded on the container at creation, as a mapping.
+
+        Frozen when the container was created, so it can name host-side
+        contracts a newer host no longer honours.  Empty when the container
+        is absent or carries no environment.
+        """
+        ...
+
     def start(self) -> None:
         """Start the container.  Raises [`RuntimeError`][RuntimeError] on failure."""
         ...

@@ -37,7 +37,7 @@ from .runtime.podman import (
 if TYPE_CHECKING:
     from collections.abc import Callable, Mapping
 
-    from .runtime import ContainerRemoveResult
+    from .runtime import Container, ContainerRemoveResult
     from .vault.ssh.manager import SSHManager
 
 # ---------------------------------------------------------------------------
@@ -841,10 +841,37 @@ class Sandbox:
         Fires *hooks.post_start* after a successful start.
         """
         self._cfg.ensure_container_runtime_dir(container_name)
-        self._runtime.container(container_name).start()
+        handle = self._runtime.container(container_name)
+        self._warn_stale_runtime_paths(container_name, handle)
+        handle.start()
         if hooks and hooks.post_start:
             hooks.post_start()
         self._verify_supervision(container_name)
+
+    def _warn_stale_runtime_paths(self, container_name: str, handle: Container) -> None:
+        """Shout if the container advertises socket paths this sandbox no longer binds.
+
+        A container's environment is frozen at creation, so one that outlives
+        a change to the ``/run/terok`` layout keeps naming paths nothing binds.
+        Its bridges still listen and still accept, and fail only at the far
+        end — a hang, then an empty reply — which reads as a cold-start race
+        rather than as the version skew it is.
+
+        Warns and starts anyway: recreating a task is destructive, and an
+        operator is entitled to keep using whatever in the container still
+        works until they choose to pay for it.  Never raises out of the start
+        path, matching
+        [`_verify_supervision`][terok_sandbox.Sandbox._verify_supervision].
+        """
+        from .supervision import check_runtime_paths, warn_stale_runtime_paths
+
+        try:
+            warn_stale_runtime_paths(check_runtime_paths(container_name, handle.env))
+        except Exception as exc:  # noqa: BLE001 — diagnostics must never fail a start
+            print(
+                f"warning: runtime-path check errored for {container_name!r}: {exc}",
+                file=sys.stderr,
+            )
 
     def _verify_supervision(self, container_name: str) -> None:
         """Shout if the per-container supervisor didn't come up (issue #458).

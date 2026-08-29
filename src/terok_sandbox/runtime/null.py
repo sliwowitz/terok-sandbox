@@ -141,6 +141,11 @@ class NullContainer:
         """Return the fixture mounts, or ``[]`` when unset."""
         return list(self._runtime._container_mounts.get(self.name, ()))
 
+    @property
+    def env(self) -> dict[str, str]:
+        """Return the fixture environment, or ``{}`` when unset."""
+        return dict(self._runtime._container_env.get(self.name, {}))
+
     def start(self) -> None:
         """Flip the fixture state to ``"running"``."""
         self._runtime._container_states[self.name] = "running"
@@ -254,6 +259,7 @@ class NullRuntime:
         self._container_rw_sizes: dict[str, int] = {}
         self._container_ids: dict[str, str] = {}
         self._container_mounts: dict[str, tuple[tuple[str, str], ...]] = {}
+        self._container_env: dict[str, dict[str, str]] = {}
         self._container_exit_codes: dict[str, int] = {}
         self._ready_results: dict[str, bool] = {}
         self._image_records: dict[str, dict[str, str]] = {}
@@ -288,6 +294,10 @@ class NullRuntime:
     def set_container_id(self, name: str, container_id: str) -> None:
         """Record the full container ID [`Container.id`][terok_sandbox.runtime.Container.id] returns for *name*."""
         self._container_ids[name] = container_id
+
+    def set_container_env(self, name: str, env: dict[str, str]) -> None:
+        """Fixture hook: record the environment *name* was created with."""
+        self._container_env[name] = dict(env)
 
     def set_container_mounts(self, name: str, mounts: tuple[tuple[str, str], ...]) -> None:
         """Record the ``(source, destination)`` mounts for container *name*."""
@@ -440,6 +450,7 @@ class NullRuntime:
             self._container_rw_sizes.pop(name, None)
             self._container_ids.pop(name, None)
             self._container_mounts.pop(name, None)
+            self._container_env.pop(name, None)
             self._container_exit_codes.pop(name, None)
             self._ready_results.pop(name, None)
             # Drop any pre-registered exec results keyed by this container name

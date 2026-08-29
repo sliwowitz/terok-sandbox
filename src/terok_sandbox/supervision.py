@@ -23,6 +23,16 @@ TCP-mode wiring binds per-container loopback ports rather than sockets, so
 there is nothing on disk to poll — the check reports *skipped* there rather
 than guessing.  The pure-Python file poll never runs a subprocess and never
 raises.
+
+[`check_runtime_paths`][terok_sandbox.supervision.check_runtime_paths] closes
+the mirror-image gap.  A container's environment is frozen when it is created,
+so a container that outlives a change to the ``/run/terok`` layout keeps
+advertising socket paths this sandbox no longer binds.  The supervisor is
+healthy and the bridges start — they just connect somewhere that does not
+exist, which surfaces thirty seconds later as an empty reply rather than as a
+refusal.  The drift is reported, never enforced: an operator may well prefer to
+keep working with whatever in the container still functions rather than pay for
+the recreate straight away.
 """
 
 from __future__ import annotations
@@ -82,6 +92,76 @@ class SupervisionStatus:
             f"warning:   hook diary: {self.hook_log} "
             "(absent or empty ⇒ the OCI supervisor hook never fired)"
         )
+
+
+@dataclass(frozen=True)
+class RuntimePathDrift:
+    """Socket paths a container advertises that this sandbox no longer binds.
+
+    ``stale`` maps each environment variable to the ``(recorded, current)``
+    pair, so the warning can name what the container was told and what it
+    would be told today.
+    """
+
+    container_name: str
+    stale: tuple[tuple[str, str, str], ...]
+
+    @property
+    def ok(self) -> bool:
+        """``True`` when every advertised path matches what this sandbox binds."""
+        return not self.stale
+
+    def warning(self) -> str:
+        """A loud, multi-line operator warning naming each drifted path."""
+        lines = "\n".join(
+            f"warning:     {var}\n"
+            f"warning:       container has: {recorded}\n"
+            f"warning:       this host binds: {current}"
+            for var, recorded, current in self.stale
+        )
+        return (
+            f"warning: container {self.container_name!r} predates the current "
+            "/run/terok socket layout\n"
+            f"{lines}\n"
+            "warning:   its bridges will listen but connect nowhere — expect the git gate\n"
+            "warning:   and/or vault-routed providers to hang, then report an empty reply\n"
+            "warning:   recreate the task to pick up the current layout; until then the rest\n"
+            "warning:   of the container keeps working"
+        )
+
+
+def check_runtime_paths(container_name: str, env: dict[str, str]) -> RuntimePathDrift:
+    """Compare a container's advertised socket paths against what sandbox binds.
+
+    *env* is the environment recorded on the container at creation (see
+    [`Container.env`][terok_sandbox.runtime.protocol.Container.env]).  Only
+    variables the container actually carries are compared, so a TCP-mode
+    container — which advertises ports, not paths — reports no drift.  Pure:
+    no filesystem, no subprocess, never raises.
+    """
+    from .podman_args import (
+        CONTAINER_GATE_SOCKET,
+        CONTAINER_SSH_SIGNER_SOCKET,
+        CONTAINER_VAULT_SOCKET,
+    )
+
+    current = {
+        "TEROK_VAULT_SOCKET": CONTAINER_VAULT_SOCKET,
+        "TEROK_SSH_SIGNER_SOCKET": CONTAINER_SSH_SIGNER_SOCKET,
+        "TEROK_GATE_SOCKET": CONTAINER_GATE_SOCKET,
+    }
+    stale = tuple(
+        (var, env[var], expected)
+        for var, expected in current.items()
+        if var in env and env[var] != expected
+    )
+    return RuntimePathDrift(container_name, stale)
+
+
+def warn_stale_runtime_paths(drift: RuntimePathDrift) -> None:
+    """Print the loud warning for drifted paths to stderr; no-op when aligned."""
+    if drift.stale:
+        print(drift.warning(), file=sys.stderr)
 
 
 def verify_supervision(
@@ -153,4 +233,11 @@ def _is_socket(path: Path) -> bool:
         return False
 
 
-__all__ = ["SupervisionStatus", "verify_supervision", "warn_unsupervised"]
+__all__ = [
+    "RuntimePathDrift",
+    "SupervisionStatus",
+    "check_runtime_paths",
+    "verify_supervision",
+    "warn_stale_runtime_paths",
+    "warn_unsupervised",
+]

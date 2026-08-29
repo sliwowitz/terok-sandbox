@@ -65,6 +65,35 @@ _terok_bridge_alive() {
   [[ "$cmdline" == *"$listen_spec"* ]]
 }
 
+# Name the bridge targets this container's environment advertises but does not
+# have.  Deliberately not a start-time guard: the supervisor binds after the
+# container's first shell comes up, which is why every bridge starts regardless
+# and lets socat's retry absorb the delay.  By the time an interactive shell
+# calls this, that window is long past, so an absent target is real — and worth
+# saying out loud, because a bridge aimed at nothing still listens and still
+# accepts, and fails only at the far end as a hang and an empty reply.  Callers
+# are the per-shell layer, never the boot path.
+_terok_report_missing_bridge_targets() {
+  local var path
+  local -a missing=()
+  for var in TEROK_VAULT_SOCKET TEROK_SSH_SIGNER_SOCKET TEROK_GATE_SOCKET; do
+    path="${!var:-}"
+    if [[ -n "$path" && ! -S "$path" ]]; then
+      missing+=("terok:     ${var}=${path}")
+    fi
+  done
+  if [[ ${#missing[@]} -eq 0 ]]; then
+    return 0
+  fi
+  {
+    echo "terok: bridge target(s) advertised by this container's environment are absent:"
+    printf '%s\n' "${missing[@]}"
+    echo "terok:   the container predates the current /run/terok layout, so its git gate"
+    echo "terok:   and vault-routed providers connect nowhere.  Recreate the task to fix"
+    echo "terok:   them; everything else in the container keeps working until you do."
+  } >&2
+}
+
 # ── SSH signer bridge ────────────────────────────────────────────────────
 # Requires a phantom token.  Transport: TEROK_SSH_SIGNER_SOCKET (mounted
 # host socket) or TEROK_SSH_SIGNER_PORT (TCP to host loopback).

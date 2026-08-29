@@ -361,6 +361,36 @@ class PodmanContainer:
             return []
         return [(m.get("Source", ""), m.get("Destination", "")) for m in entries or []]
 
+    @property
+    def env(self) -> dict[str, str]:
+        """Environment recorded on the container at creation, as a mapping.
+
+        Reads ``podman inspect`` ``.Config.Env`` — the ``KEY=value`` list
+        frozen when the container was created — so a caller can compare what
+        the container was told against what the host offers today.  Empty
+        dict on an absent container or any inspect/parse failure (matching
+        the absent-is-empty contract the other handle properties follow).
+        """
+        try:
+            out = subprocess.check_output(  # nosec B603 B607 — argv built from fixed verbs + caller-controlled scope/container names — binary PATH lookup is the cross-distro contract
+                ["podman", "inspect", "-f", "{{json .Config.Env}}", self.name],
+                stderr=subprocess.DEVNULL,
+                text=True,
+                timeout=_PROBE_TIMEOUT,
+            ).strip()
+        except (subprocess.CalledProcessError, FileNotFoundError, subprocess.TimeoutExpired):
+            return {}
+        try:
+            entries = json.loads(out) if out else []
+        except json.JSONDecodeError:
+            return {}
+        env: dict[str, str] = {}
+        for entry in entries or []:
+            key, sep, value = entry.partition("=")
+            if sep:
+                env[key] = value
+        return env
+
     def start(self) -> None:
         """Start the container.
 
