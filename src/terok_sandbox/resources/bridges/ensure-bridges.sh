@@ -31,7 +31,7 @@
 #   - per-shell init (self-heal after restart)
 
 _TEROK_PIDDIR=/tmp/.terok
-mkdir -p "$_TEROK_PIDDIR" 2>/dev/null
+[[ -d "$_TEROK_PIDDIR" ]] || mkdir -p "$_TEROK_PIDDIR" 2>/dev/null
 
 # The sockets this script exposes to the container.  Shared agent configs point
 # at them, so they are contract, not implementation detail.
@@ -57,8 +57,15 @@ _TEROK_BRIDGE_RETRY="retry=300,interval=0.1"
 # from BASH_SOURCE so the SYSTEM: invocation below works regardless of
 # CWD (the script may be sourced from /, /workspace, or anywhere else).
 # Falls back to a name-only invocation if BASH_SOURCE is unavailable so
-# operators who put the bridges on $PATH still work.
-_TEROK_BRIDGES_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-./ensure-bridges.sh}")" 2>/dev/null && pwd)"
+# operators who put the bridges on $PATH still work.  Parameter expansion
+# rather than dirname: this file is sourced by every shell in the container,
+# so it spawns no process it can avoid.
+_TEROK_BRIDGES_DIR="${BASH_SOURCE[0]:-./ensure-bridges.sh}"
+if [[ "$_TEROK_BRIDGES_DIR" == */* ]]; then
+  _TEROK_BRIDGES_DIR="${_TEROK_BRIDGES_DIR%/*}"
+else
+  _TEROK_BRIDGES_DIR="."
+fi
 if [[ -x "${_TEROK_BRIDGES_DIR}/ssh-agent-bridge.sh" ]]; then
   _TEROK_SSH_BRIDGE="${_TEROK_BRIDGES_DIR}/ssh-agent-bridge.sh"
 else
@@ -70,18 +77,27 @@ fi
 # A PID file records a number, not an identity.  Container PIDs restart from 1
 # on every boot, and /tmp survives a restart.  A stale file therefore names
 # whatever inherited its number — the entrypoint keepalive, typically — and a
-# signal probe reports that as a healthy bridge.  Matching *listen_spec*
-# against the process's own command line settles identity instead.
+# signal probe reports that as a healthy bridge.  Comparing *listen* against
+# the process's own argument list settles identity instead.
 #
-# The empty-PID guard is not optional: "/proc//cmdline" resolves to the
-# kernel's boot command line, which is readable.
+# This is the all-clear path, reached by every shell in the container, so it
+# runs on builtins alone and spawns nothing.  ``mapfile -d ''`` splits
+# /proc/<pid>/cmdline on its NUL separators, giving socat's arguments exactly
+# as it was invoked with them; a dead PID has no such file and a zombie an
+# empty one, and neither yields a match.
 _terok_bridge_alive() {
-  local pidfile="$1" listen_spec="$2" pid cmdline
-  [[ -f "$pidfile" ]] || return 1
-  pid=$(cat "$pidfile" 2>/dev/null)
-  [[ -n "$pid" ]] || return 1
-  cmdline=$(tr '\0' ' ' 2>/dev/null < "/proc/${pid}/cmdline")
-  [[ "$cmdline" == *"$listen_spec"* ]]
+  # ``pid`` and ``arg`` start empty: init-ssh-and-repo.sh sources this file
+  # under ``set -u``, where a declared-but-unset local is fatal on first boot,
+  # when no PID file exists yet and ``read`` assigns nothing.
+  local pidfile="$1" listen="$2" pid="" arg=""
+  local -a args=()
+  read -r pid 2>/dev/null < "$pidfile"
+  [[ -n "$pid" && -r "/proc/${pid}/cmdline" ]] || return 1
+  mapfile -d '' -t args < "/proc/${pid}/cmdline"
+  for arg in "${args[@]}"; do
+    [[ "$arg" == "$listen" ]] && return 0
+  done
+  return 1
 }
 
 # Name the bridge targets this container advertises but does not have.
@@ -172,7 +188,11 @@ if [[ -n "${TEROK_VAULT_LOOPBACK_PORT:-}" ]] && [[ -z "${TEROK_TOKEN_BROKER_PORT
     # The env var carries this generation's mounted path; the alias shields the
     # shared singleton config files from mount-layout changes between
     # generations.
-    ln -sfn "${TEROK_VAULT_SOCKET}" "$_TEROK_VAULT_SOCK"
+    # ``ln`` is a process, and this file is sourced by every shell, so pay for
+    # it only when the alias is missing or dangling.  Within one container the
+    # mounted path never changes, so an alias that already resolves is correct.
+    [[ -L "$_TEROK_VAULT_SOCK" && -e "$_TEROK_VAULT_SOCK" ]] \
+      || ln -sfn "${TEROK_VAULT_SOCKET}" "$_TEROK_VAULT_SOCK"
     _terok_start_bridge "$_TEROK_PIDDIR/vault-loopback.pid" \
       "$_TEROK_VAULT_LOOPBACK_LISTEN" \
       "UNIX-CONNECT:${TEROK_VAULT_SOCKET},${_TEROK_BRIDGE_RETRY}"

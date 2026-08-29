@@ -955,6 +955,46 @@ class TestExecPodman:
 # ---------------------------------------------------------------------------
 
 
+class TestBridgeScriptUnderStrictMode:
+    """``init-ssh-and-repo.sh`` sources this file under ``set -euo pipefail``."""
+
+    def test_sources_cleanly_on_a_first_boot(self) -> None:
+        """No bridges configured, no PID files: strict mode must not abort init.
+
+        A local declared without a value is fatal under ``set -u``, and the
+        liveness check has exactly that shape on first boot — ``read`` assigns
+        nothing when the PID file does not exist yet.
+        """
+        script = bridges_resource_dir() / "ensure-bridges.sh"
+        env = {
+            k: v
+            for k, v in os.environ.items()
+            if not k.startswith(("TEROK_VAULT", "TEROK_GATE", "TEROK_SSH_SIGNER", "TEROK_TOKEN"))
+        }
+        completed = subprocess.run(
+            ["bash", "-c", f'set -euo pipefail; . "{script}"; echo ok'],
+            env=env,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        assert completed.returncode == 0, completed.stderr
+        assert completed.stdout.strip() == "ok"
+
+    def test_all_clear_path_spawns_no_process(self) -> None:
+        """The happy path runs on builtins alone.
+
+        Every shell in the container sources this file — an agent's every
+        ``bash -c`` included — so a healthy check must not fork.  The costly
+        work belongs on the branch that has a bridge to rebuild.
+        """
+        text = (bridges_resource_dir() / "ensure-bridges.sh").read_text()
+        body = text.partition("_terok_bridge_alive() {")[2].partition("\n}\n")[0]
+        code = "\n".join(line for line in body.splitlines() if not line.lstrip().startswith("#"))
+        for external in ("cat ", "tr ", "kill -0", "$(", "`"):
+            assert external not in code, f"{external!r} costs a process on the all-clear path"
+
+
 @pytest.mark.skipif(shutil.which("socat") is None, reason="socat is a bridge prerequisite")
 class TestStartBridge:
     """``_terok_start_bridge`` decides between starting, skipping, and rebinding."""
