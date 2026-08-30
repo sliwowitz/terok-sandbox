@@ -2127,13 +2127,16 @@ class TestUpstreamHandshakeRejection:
 
     @staticmethod
     async def _reject(request: web.Request) -> web.Response:
-        """Answer a websocket upgrade the way an expired credential is answered."""
-        from compression import zstd
+        """Answer a websocket upgrade the way an expired credential is answered.
 
-        body = zstd.compress(b'{"error":{"code":"token_expired"}}')
+        The body is not real zstd and does not need to be.  aiohttp arms its
+        decompressor from ``Content-Encoding`` while parsing the response
+        headers, before it reads a byte of the body, and that is where a
+        missing codec raises — so the header alone reproduces the fault.
+        """
         return web.Response(
             status=401,
-            body=body,
+            body=b'{"error":{"code":"token_expired"}}',
             headers={"Content-Encoding": "zstd", "Content-Type": "application/json"},
         )
 
