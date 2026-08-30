@@ -37,7 +37,7 @@ from .runtime.podman import (
 if TYPE_CHECKING:
     from collections.abc import Callable, Mapping
 
-    from .runtime import ContainerRemoveResult
+    from .runtime import Container, ContainerRemoveResult
     from .vault.ssh.manager import SSHManager
 
 # ---------------------------------------------------------------------------
@@ -841,10 +841,32 @@ class Sandbox:
         Fires *hooks.post_start* after a successful start.
         """
         self._cfg.ensure_container_runtime_dir(container_name)
-        self._runtime.container(container_name).start()
+        handle = self._runtime.container(container_name)
+        self._warn_if_outdated(container_name, handle)
+        handle.start()
         if hooks and hooks.post_start:
             hooks.post_start()
         self._verify_supervision(container_name)
+
+    def _warn_if_outdated(self, container_name: str, handle: Container) -> None:
+        """Shout if the container predates the current ``/run/terok`` socket layout.
+
+        Prints the warning and starts the container anyway; recreating a task
+        is destructive, so the choice stays with the operator.  See
+        [`outdated_container_warning`][terok_sandbox.supervision.outdated_container_warning]
+        for what the skew breaks.  Never raises out of the start path, matching
+        [`_verify_supervision`][terok_sandbox.Sandbox._verify_supervision].
+        """
+        from .supervision import outdated_container_warning
+
+        try:
+            if warning := outdated_container_warning(container_name, handle.env):
+                print(warning, file=sys.stderr)
+        except Exception as exc:  # noqa: BLE001 — diagnostics must never fail a start
+            print(
+                f"warning: protocol check errored for {container_name!r}: {exc}",
+                file=sys.stderr,
+            )
 
     def _verify_supervision(self, container_name: str) -> None:
         """Shout if the per-container supervisor didn't come up (issue #458).

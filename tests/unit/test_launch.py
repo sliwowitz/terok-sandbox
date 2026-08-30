@@ -5,12 +5,20 @@
 
 from __future__ import annotations
 
+import contextlib
 import importlib
 import inspect
 import json
 import os
+import shutil
+import signal
+import socket
 import stat
+import subprocess
+import sys
 import time
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 from unittest.mock import patch
 
@@ -71,6 +79,98 @@ def _make_cfg(tmp_path: Path, services_mode: str = "socket") -> SandboxConfig:
 # ---------------------------------------------------------------------------
 # Compose — happy paths per flag combination
 # ---------------------------------------------------------------------------
+
+
+#: The address the vault loopback bridge binds, spelled as ``ensure-bridges.sh``
+#: spells it — the guard matches this against a running process's command line.
+_VAULT_LISTEN = "TCP-LISTEN:9419,bind=127.0.0.1,fork,reuseaddr"
+
+
+@contextmanager
+def _spawned(*argv: str) -> Iterator[int]:
+    """Yield the PID of a live sleeper carrying *argv* on its command line.
+
+    A test stands in for a socat bridge by spawning a process whose own argv
+    holds the listen spec — and for the unrelated process that inherited a
+    bridge's PID after a container restart by spawning one that doesn't.
+    """
+    proc = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)", *argv])
+    try:
+        yield proc.pid
+    finally:
+        proc.kill()
+        proc.wait()
+
+
+def _bridge_functions() -> str:
+    """Return the bridge helpers from ``ensure-bridges.sh`` as sourceable bash.
+
+    Slices them out rather than sourcing the file: sourcing starts real bridges
+    against the ambient environment and writes to the container-only
+    ``/tmp/.terok``, neither of which belongs in a unit test.
+    """
+    script = (bridges_resource_dir() / "ensure-bridges.sh").read_text()
+    return "\n".join(
+        f"{name}() {{{script.partition(f'{name}() {{')[2].partition(chr(10) + '}' + chr(10))[0]}\n}}"
+        for name in ("_terok_bridge_alive", "_terok_listen_free", "_terok_start_bridge")
+    )
+
+
+def _run_bash(snippet: str, *args: str) -> bool:
+    """Run *snippet* after the bridge helpers; report whether it succeeded."""
+    script = f"{_bridge_functions()}\n{snippet}"
+    return subprocess.run(["bash", "-c", script, "_", *args], check=False).returncode == 0
+
+
+def _bridge_alive(pidfile: Path, listen_spec: str) -> bool:
+    """Run the shipped ``_terok_bridge_alive`` against *pidfile* and *listen_spec*."""
+    return _run_bash('_terok_bridge_alive "$1" "$2"', str(pidfile), listen_spec)
+
+
+def _start_bridge(pidfile: Path, listen: str, target: str) -> tuple[int, str]:
+    """Run the shipped ``_terok_start_bridge``; return its status and diagnostics.
+
+    Diagnostics go to a file rather than a pipe: the socat this starts inherits
+    the descriptor and outlives the call, so a pipe would keep the reader
+    waiting for a bridge that is meant to stay up.
+    """
+    errors = pidfile.with_suffix(".stderr")
+    script = f'{_bridge_functions()}\n_terok_start_bridge "$1" "$2" "$3" </dev/null 2>"$4"'
+    completed = subprocess.run(
+        ["bash", "-c", script, "_", str(pidfile), listen, target, str(errors)],
+        check=False,
+        stdout=subprocess.DEVNULL,
+    )
+    return completed.returncode, errors.read_text() if errors.exists() else ""
+
+
+@contextmanager
+def _listening_socket(path: Path) -> Iterator[None]:
+    """Bind and listen on *path* so a connect probe finds a live peer."""
+    srv = socket.socket(socket.AF_UNIX)
+    try:
+        srv.bind(str(path))
+        srv.listen()
+        yield
+    finally:
+        srv.close()
+
+
+def _await_socket(path: Path, *, timeout: float = 5.0) -> bool:
+    """Wait for *path* to become a socket; report whether it did."""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if path.is_socket():
+            return True
+        time.sleep(0.05)
+    return path.is_socket()
+
+
+def _reap(pid: int) -> None:
+    """Terminate *pid* if it is still around; ignore one that is already gone."""
+    with contextlib.suppress(ProcessLookupError, ChildProcessError):
+        os.kill(pid, signal.SIGKILL)
+        os.waitpid(pid, 0)
 
 
 class TestCompose:
@@ -867,6 +967,122 @@ class TestExecPodman:
 # ---------------------------------------------------------------------------
 
 
+class TestBridgeScriptUnderStrictMode:
+    """``init-ssh-and-repo.sh`` sources this file under ``set -euo pipefail``."""
+
+    def test_sources_cleanly_on_a_first_boot(self) -> None:
+        """No bridges configured, no PID files: strict mode must not abort init.
+
+        A local declared without a value is fatal under ``set -u``, and the
+        liveness check has exactly that shape on first boot — ``read`` assigns
+        nothing when the PID file does not exist yet.
+        """
+        script = bridges_resource_dir() / "ensure-bridges.sh"
+        env = {
+            k: v
+            for k, v in os.environ.items()
+            if not k.startswith(("TEROK_VAULT", "TEROK_GATE", "TEROK_SSH_SIGNER", "TEROK_TOKEN"))
+        }
+        completed = subprocess.run(
+            ["bash", "-c", f'set -euo pipefail; . "{script}"; echo ok'],
+            env=env,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        assert completed.returncode == 0, completed.stderr
+        assert completed.stdout.strip() == "ok"
+
+
+@pytest.mark.skipif(shutil.which("socat") is None, reason="socat is a bridge prerequisite")
+class TestStartBridge:
+    """``_terok_start_bridge`` decides between starting, skipping, and rebinding."""
+
+    def test_cold_start_binds_and_records_the_pid(self, tmp_path: Path) -> None:
+        """Nothing running yet: the bridge comes up and leaves its PID behind."""
+        backend, front = tmp_path / "backend.sock", tmp_path / "front.sock"
+        pidfile = tmp_path / "front.pid"
+        with _listening_socket(backend):
+            _start_bridge(pidfile, f"UNIX-LISTEN:{front},fork", f"UNIX-CONNECT:{backend}")
+            try:
+                assert _await_socket(front)
+                assert pidfile.read_text().strip()
+            finally:
+                _reap(int(pidfile.read_text()))
+
+    def test_second_call_keeps_the_running_bridge(self, tmp_path: Path) -> None:
+        """Sourcing the script again is a no-op while the bridge is alive."""
+        backend, front = tmp_path / "backend.sock", tmp_path / "front.sock"
+        pidfile = tmp_path / "front.pid"
+        listen = f"UNIX-LISTEN:{front},fork"
+        with _listening_socket(backend):
+            _start_bridge(pidfile, listen, f"UNIX-CONNECT:{backend}")
+            assert _await_socket(front)
+            first = int(pidfile.read_text())
+            try:
+                _start_bridge(pidfile, listen, f"UNIX-CONNECT:{backend}")
+                assert int(pidfile.read_text()) == first
+            finally:
+                _reap(first)
+
+    def test_live_bridge_without_a_pidfile_keeps_its_socket(self, tmp_path: Path) -> None:
+        """A bridge that answers is never displaced, PID file or not.
+
+        Two shells source this script concurrently, and a PID file can go
+        missing.  Removing a socket another bridge is serving would strand
+        every client on it, so a peer that answers a bare connect wins.
+        """
+        front = tmp_path / "front.sock"
+        pidfile = tmp_path / "front.pid"
+        with _listening_socket(front):
+            _start_bridge(pidfile, f"UNIX-LISTEN:{front},fork", "UNIX-CONNECT:/nonexistent")
+            assert not pidfile.exists()
+            assert front.is_socket()
+
+    def test_a_bridge_that_cannot_bind_says_so(self, tmp_path: Path) -> None:
+        """An address already in use is an error state, and it has to be audible.
+
+        Every shell retries a bridge that is down, so a silent bind failure
+        would burn a process per command and say nothing.  The PID file is
+        dropped too: one naming a process that is already gone is a lie the
+        next caller would have to see through.
+        """
+        pidfile = tmp_path / "taken.pid"
+        with socket.socket(socket.AF_INET) as occupied:
+            occupied.bind(("127.0.0.1", 0))
+            occupied.listen()
+            port = occupied.getsockname()[1]
+            status, errors = _start_bridge(
+                pidfile,
+                f"TCP-LISTEN:{port},bind=127.0.0.1,fork,reuseaddr",
+                "UNIX-CONNECT:/nonexistent",
+            )
+        assert status != 0
+        assert f"bridge TCP-LISTEN:{port} did not start" in errors
+        assert "already in use" in errors
+        assert not pidfile.exists()
+
+    def test_stale_socket_from_a_dead_bridge_is_rebound(self, tmp_path: Path) -> None:
+        """A socket nobody answers on is a corpse; clear it and bind again."""
+        backend, front = tmp_path / "backend.sock", tmp_path / "front.sock"
+        pidfile = tmp_path / "front.pid"
+        listen = f"UNIX-LISTEN:{front},fork"
+        with _listening_socket(backend):
+            _start_bridge(pidfile, listen, f"UNIX-CONNECT:{backend}")
+            assert _await_socket(front)
+            first = int(pidfile.read_text())
+            _reap(first)  # SIGKILL leaves the socket file behind
+            assert front.exists()
+
+            _start_bridge(pidfile, listen, f"UNIX-CONNECT:{backend}")
+            second = int(pidfile.read_text())
+            try:
+                assert second != first
+                assert _await_socket(front)
+            finally:
+                _reap(second)
+
+
 class TestEdgeCases:
     """Cover branches the happy-path tests don't exercise."""
 
@@ -932,8 +1148,54 @@ class TestEdgeCases:
         assert (d / "ensure-bridges.sh").is_file()
         assert (d / "ssh-agent-bridge.sh").is_file()
 
+    def test_recycled_pid_is_not_mistaken_for_a_live_bridge(self, tmp_path: Path) -> None:
+        """A PID collision after a restart does not read as a running bridge.
+
+        Container PIDs restart from 1, and ``/tmp`` survives the restart.  A
+        stale PID file therefore names whatever process inherited its number,
+        typically the entrypoint keepalive.  Trusting the number alone left the
+        vault loopback bridge unstarted, and every client on
+        ``localhost:9419`` saw a refused connection.
+        """
+        pidfile = tmp_path / "vault-loopback.pid"
+        with _spawned() as pid:
+            pidfile.write_text(str(pid))
+            assert not _bridge_alive(pidfile, _VAULT_LISTEN)
+
+    def test_running_bridge_reads_as_alive(self, tmp_path: Path) -> None:
+        """A process whose command line carries the listen address is the bridge."""
+        pidfile = tmp_path / "vault-loopback.pid"
+        with _spawned(_VAULT_LISTEN) as pid:
+            pidfile.write_text(str(pid))
+            assert _bridge_alive(pidfile, _VAULT_LISTEN)
+
+    def test_absent_and_empty_pidfiles_read_as_dead(self, tmp_path: Path) -> None:
+        """No PID file and an empty one both mean no bridge.
+
+        The empty case is not academic.  ``/proc//cmdline`` resolves to the
+        kernel's boot command line, which is readable.
+        """
+        assert not _bridge_alive(tmp_path / "absent.pid", _VAULT_LISTEN)
+        empty = tmp_path / "empty.pid"
+        empty.write_text("")
+        assert not _bridge_alive(empty, _VAULT_LISTEN)
+
+    def test_exited_pid_reads_as_dead(self, tmp_path: Path) -> None:
+        """A PID with no ``/proc`` entry left is not a bridge."""
+        proc = subprocess.Popen([sys.executable, "-c", ""])
+        proc.wait()
+        pidfile = tmp_path / "gate.pid"
+        pidfile.write_text(str(proc.pid))
+        assert not _bridge_alive(pidfile, "TCP-LISTEN:9418,")
+
     def test_vault_loopback_bridge_tolerates_late_socket_bind(self) -> None:
-        """Socket startup relies on socat retry rather than a racy existence check."""
+        """Socket startup relies on socat retry rather than a racy existence check.
+
+        The supervisor binds the vault socket after the container's first shell
+        comes up.  A bridge that refused to start on a missing path would lose
+        that race; socat's retry policy waits it out instead.  An unset path is
+        a different matter — that is a configuration error, and it is reported.
+        """
         script = (bridges_resource_dir() / "ensure-bridges.sh").read_text()
         socket_mode = script.partition("Vault loopback bridge (socket mode)")[2].partition(
             "Vault socket bridge (TCP mode)"
@@ -941,7 +1203,8 @@ class TestEdgeCases:
 
         assert '[[ ! -S "${TEROK_VAULT_SOCKET}" ]]' not in socket_mode
         assert 'if [[ -z "${TEROK_VAULT_SOCKET:-}" ]]; then' in socket_mode
-        assert 'UNIX-CONNECT:"${TEROK_VAULT_SOCKET}",retry=300,interval=0.1' in socket_mode
+        assert "UNIX-CONNECT:${TEROK_VAULT_SOCKET},${_TEROK_BRIDGE_RETRY}" in socket_mode
+        assert '_TEROK_BRIDGE_RETRY="retry=300,interval=0.1"' in script
 
     def test_reject_managed_volumes_skips_no_target(self) -> None:
         """`-v hostpath` (no colon) is skipped, not flagged."""

@@ -101,6 +101,13 @@ class TestNullContainerFixtures:
         assert rt.container("c").id == "abc123def456"
         assert rt.container("c").mounts == [("/host/work", "/workspace")]
 
+    def test_env_fixture_round_trips(self) -> None:
+        """``set_container_env`` is reflected by the handle; unset reads as ``{}``."""
+        rt = NullRuntime()
+        assert rt.container("c").env == {}
+        rt.set_container_env("c", {"TEROK_GATE_SOCKET": "/run/terok/gate/gate-server.sock"})
+        assert rt.container("c").env == {"TEROK_GATE_SOCKET": "/run/terok/gate/gate-server.sock"}
+
     def test_start_flips_state_to_running(self) -> None:
         """``start()`` flips the fixture state."""
         rt = NullRuntime()

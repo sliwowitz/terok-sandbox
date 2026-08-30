@@ -191,6 +191,47 @@ class TestContainerMounts:
         assert PodmanRuntime().container("ctr").mounts == []
 
 
+# ── Container.env ────────────────────────────────────────────────────────
+
+
+class TestContainerEnv:
+    """``Container.env`` projects ``podman inspect`` ``.Config.Env`` to a mapping."""
+
+    _JSON = (
+        '["PATH=/usr/bin","TEROK_GATE_SOCKET=/run/terok/gate/gate-server.sock",'
+        '"TEROK_VAULT_SOCKET=/run/terok/vault/vault.sock"]'
+    )
+
+    @patch("terok_sandbox.runtime.podman.subprocess.check_output")
+    def test_splits_each_entry_on_the_first_equals(self, co) -> None:
+        """``KEY=value`` becomes a mapping entry; a value may itself contain ``=``."""
+        co.return_value = self._JSON[:-1] + ',"OPTS=a=b"]\n'
+        env = PodmanRuntime().container("ctr").env
+        assert env["TEROK_GATE_SOCKET"] == "/run/terok/gate/gate-server.sock"
+        assert env["OPTS"] == "a=b"
+
+    @patch("terok_sandbox.runtime.podman.subprocess.check_output")
+    def test_entry_without_equals_is_dropped(self, co) -> None:
+        """Podman can record a bare name; it carries no value to compare against."""
+        co.return_value = '["BARE","K=v"]\n'
+        assert PodmanRuntime().container("ctr").env == {"K": "v"}
+
+    @patch("terok_sandbox.runtime.podman.subprocess.check_output", return_value="[]\n")
+    def test_no_env_is_empty(self, _co) -> None:
+        """An empty ``.Config.Env`` array → ``{}``."""
+        assert PodmanRuntime().container("ctr").env == {}
+
+    @patch("terok_sandbox.runtime.podman.subprocess.check_output", return_value="not json\n")
+    def test_unparseable_is_empty(self, _co) -> None:
+        """Malformed JSON degrades to ``{}`` rather than raising."""
+        assert PodmanRuntime().container("ctr").env == {}
+
+    @patch("terok_sandbox.runtime.podman.subprocess.check_output", side_effect=FileNotFoundError)
+    def test_no_podman_is_empty(self, _co) -> None:
+        """Missing podman → ``{}`` — the absent-is-empty contract, as for mounts."""
+        assert PodmanRuntime().container("ctr").env == {}
+
+
 # ── Copy-in ──────────────────────────────────────────────────────────────
 
 

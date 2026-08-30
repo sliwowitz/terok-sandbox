@@ -16,7 +16,9 @@ import pytest
 
 from terok_sandbox.config import SandboxConfig
 from terok_sandbox.supervision import (
+    MIN_RUNTIME_PROTOCOL,
     SupervisionStatus,
+    outdated_container_warning,
     verify_supervision,
     warn_unsupervised,
 )
@@ -165,3 +167,33 @@ class TestSupervisionStatus:
         missing = tmp_path / "run" / _NAME / "vault" / "vault.sock"
         warn_unsupervised(SupervisionStatus(_NAME, (missing,), (missing,), tmp_path / "hook.log"))
         assert "not responding" in capsys.readouterr().err
+
+
+class TestOutdatedContainer:
+    """A container's frozen protocol stamp vs the layout this sandbox binds."""
+
+    def test_current_stamp_is_silent(self) -> None:
+        """A container created against today's contract needs no warning."""
+        env = {"TEROK_CONTAINER_PROTOCOL": str(MIN_RUNTIME_PROTOCOL)}
+        assert outdated_container_warning(_NAME, env) is None
+
+    def test_older_stamp_names_both_numbers_and_the_remedy(self) -> None:
+        """The common case: a container carried over from the previous release."""
+        warning = outdated_container_warning(_NAME, {"TEROK_CONTAINER_PROTOCOL": "2"})
+        assert warning is not None
+        assert _NAME in warning
+        assert str(MIN_RUNTIME_PROTOCOL) in warning
+        assert "recreate the container" in warning
+
+    def test_unstamped_container_is_silent(self) -> None:
+        """Sidecar tool containers carry no stamp; an absent one says nothing about age."""
+        assert outdated_container_warning(_NAME, {}) is None
+
+    def test_unparseable_stamp_is_silent(self) -> None:
+        """An unreadable stamp is no more evidence of age than a missing one."""
+        assert outdated_container_warning(_NAME, {"TEROK_CONTAINER_PROTOCOL": "v2"}) is None
+
+    def test_newer_stamp_is_silent(self) -> None:
+        """A container from a newer host is not this check's business."""
+        env = {"TEROK_CONTAINER_PROTOCOL": str(MIN_RUNTIME_PROTOCOL + 1)}
+        assert outdated_container_warning(_NAME, env) is None
