@@ -12,11 +12,12 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import pytest
-from aiohttp import WSMsgType, web
+from aiohttp import ClientSession, WSMsgType, WSServerHandshakeError, web
 from multidict import CIMultiDict
 
 from terok_sandbox.vault.daemon.token_broker import (
-    _KEY_CLIENT,
+    _KEY_OAUTH_CLIENT,
+    _KEY_PROXY_CLIENT,
     _KEY_ROUTES,
     _KEY_TOKEN_DB,
     _WEBSOCKET_HEARTBEAT,
@@ -24,8 +25,11 @@ from terok_sandbox.vault.daemon.token_broker import (
     _WEBSOCKET_MAX_MSG_SIZE,
     _build_app,
     _build_upstream_url,
+    _classify_upstream_failure,
     _do_oauth_refresh,
     _extract_phantom_token,
+    _on_cleanup,
+    _on_startup,
     _path_matches_prefix,
     _proxy_websocket,
     _refresh_all,
@@ -1737,11 +1741,11 @@ class TestRefreshAll:
         app = _build_app(str(tmp_path / "test.db"), str(routes_file))
         from aiohttp import ClientSession
 
-        app[_KEY_CLIENT] = ClientSession()
+        app[_KEY_OAUTH_CLIENT] = ClientSession()
         try:
             await _refresh_all(app)
         finally:
-            await app[_KEY_CLIENT].close()
+            await app[_KEY_OAUTH_CLIENT].close()
 
         # Only claude (expired) should have been refreshed
         assert refreshed_providers == ["claude-id"]
@@ -1795,7 +1799,7 @@ class TestRefreshAll:
         pinned = tmp_path / "pinned-locks"
         app = _build_app(str(tmp_path / "test.db"), str(routes_file))
         app[_KEY_LOCK_DIR] = pinned
-        app[_KEY_CLIENT] = ClientSession()
+        app[_KEY_OAUTH_CLIENT] = ClientSession()
 
         captured: list[Path] = []
 
@@ -1810,7 +1814,7 @@ class TestRefreshAll:
             ):
                 await _refresh_all(app)
         finally:
-            await app[_KEY_CLIENT].close()
+            await app[_KEY_OAUTH_CLIENT].close()
 
         assert captured == [pinned]
 
@@ -1841,11 +1845,11 @@ class TestRefreshAll:
         app = _build_app(str(tmp_path / "test.db"), str(routes_file))
         from aiohttp import ClientSession
 
-        app[_KEY_CLIENT] = ClientSession()
+        app[_KEY_OAUTH_CLIENT] = ClientSession()
         try:
             await _refresh_all(app)  # should not raise
         finally:
-            await app[_KEY_CLIENT].close()
+            await app[_KEY_OAUTH_CLIENT].close()
 
         # Credential unchanged
         accessor = _TokenDB(str(tmp_path / "test.db"))
@@ -1918,7 +1922,7 @@ class TestServerDisconnectRetry:
                 pass
 
         async with TestClient(TestServer(app)) as client:
-            app[_KEY_CLIENT] = _MockSession()
+            app[_KEY_PROXY_CLIENT] = _MockSession()
             resp = await client.get("/v1/messages", headers={"Authorization": f"Bearer {token}"})
             assert resp.status == 200
 
@@ -1946,7 +1950,7 @@ class TestServerDisconnectRetry:
                 pass
 
         async with TestClient(TestServer(app)) as client:
-            app[_KEY_CLIENT] = _MockSession()
+            app[_KEY_PROXY_CLIENT] = _MockSession()
             resp = await client.get("/v1/messages", headers={"Authorization": f"Bearer {token}"})
             assert resp.status == 502
             assert await resp.text() == "Upstream disconnected"
@@ -2114,3 +2118,90 @@ class TestResponseHeaderRelay:
             assert "Content-Length" not in resp.headers
 
         await upstream.close()
+
+
+@pytest.mark.needs_loopback  # binds an aiohttp loopback server; krun TSI refuses it
+@pytest.mark.asyncio
+class TestUpstreamHandshakeRejection:
+    """An upstream that refuses the websocket upgrade must say so through the broker."""
+
+    @staticmethod
+    async def _reject(request: web.Request) -> web.Response:
+        """Answer a websocket upgrade the way an expired credential is answered."""
+        from compression import zstd
+
+        body = zstd.compress(b'{"error":{"code":"token_expired"}}')
+        return web.Response(
+            status=401,
+            body=body,
+            headers={"Content-Encoding": "zstd", "Content-Type": "application/json"},
+        )
+
+    async def _handshake_error(self, *, auto_decompress: bool) -> BaseException:
+        """Attempt an upgrade against the rejecting upstream; return what was raised."""
+        from aiohttp.test_utils import TestServer
+
+        app = web.Application()
+        app.router.add_get("/ws", self._reject)
+        async with (
+            TestServer(app) as server,
+            ClientSession(auto_decompress=auto_decompress) as session,
+        ):
+            try:
+                async with session.ws_connect(server.make_url("/ws")):
+                    raise AssertionError("upstream accepted an upgrade it should refuse")
+            except Exception as exc:  # noqa: BLE001 — the exception is the result
+                return exc
+
+    async def test_a_decoding_session_loses_the_upstream_status(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Why the proxy session must not decode.
+
+        The host runs a Python without a zstd codec, so a session that decodes
+        turns a 401 carrying a zstd body into a synthetic 400 about a missing
+        library.  The real status never reaches the operator, and a credential
+        problem reads as a broken bridge.
+        """
+        monkeypatch.setattr("aiohttp.http_parser.HAS_ZSTD", False)
+        exc = await self._handshake_error(auto_decompress=True)
+        assert getattr(exc, "status", None) == 400
+        assert "zstd" in str(exc)
+
+    async def test_the_proxy_session_keeps_the_upstream_status(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The broker's proxy session reports 401, codec or no codec."""
+        monkeypatch.setattr("aiohttp.http_parser.HAS_ZSTD", False)
+        exc = await self._handshake_error(auto_decompress=False)
+        assert isinstance(exc, WSServerHandshakeError)
+        assert exc.status == 401
+
+    async def test_startup_builds_a_proxy_session_that_never_decodes(self, tmp_path: Path) -> None:
+        """``ws_connect`` takes no per-request override, so the session carries it."""
+        routes_file = tmp_path / "routes.json"
+        routes_file.write_text("{}")
+        CredentialDB(tmp_path / "creds.db", passphrase="test").close()
+        app = _build_app(str(tmp_path / "creds.db"), str(routes_file))
+        await _on_startup(app)
+        try:
+            assert app[_KEY_PROXY_CLIENT].auto_decompress is False
+            assert app[_KEY_OAUTH_CLIENT].auto_decompress is True
+        finally:
+            await _on_cleanup(app)
+
+    def test_a_refused_handshake_is_named_in_the_502(self) -> None:
+        """The 502 body names the status, not just that something failed.
+
+        A refused handshake and a refused connection lead an operator to
+        opposite places; the body has to tell them apart.
+        """
+        exc = WSServerHandshakeError(
+            SimpleNamespace(real_url="https://upstream.example/ws"),  # type: ignore[arg-type]
+            (),
+            status=401,
+            message="Invalid response status",
+        )
+        tag, cause = _classify_upstream_failure(exc)
+        assert tag == ":handshake"
+        assert "401" in cause

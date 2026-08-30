@@ -55,6 +55,7 @@ from aiohttp import (
     ServerTimeoutError,
     TCPConnector,
     WSMsgType,
+    WSServerHandshakeError,
     web,
 )
 
@@ -74,7 +75,22 @@ _REFRESH_BUFFER = 600  # refresh tokens expiring within this many seconds
 # ``_RouteTable`` / ``_TokenDB`` AppKeys are declared after their class
 # bodies further down the file because ``AppKey`` evaluates its second
 # argument at runtime and can't accept a forward-reference string.
-_KEY_CLIENT = web.AppKey("client_session", ClientSession)
+_KEY_PROXY_CLIENT = web.AppKey("proxy_client_session", ClientSession)
+"""Session the proxy forwards on.  Never decodes a response body.
+
+``auto_decompress=False`` belongs on the session, not on each request: a
+websocket handshake goes through ``ws_connect``, which takes no such argument
+and so inherits whatever the session was built with.  A decoding session turns
+an upstream 401 carrying a compressed body into a synthetic 400 about a missing
+codec, and the real status is lost.
+"""
+
+_KEY_OAUTH_CLIENT = web.AppKey("oauth_client_session", ClientSession)
+"""Session the broker uses as its own OAuth client.  Reads bodies, so it decodes.
+
+Separate from the proxy session for exactly that reason: refreshing a token
+means parsing the JSON the endpoint returns, which a byte-pipe cannot do.
+"""
 _KEY_REFRESH_TASK: web.AppKey[asyncio.Task[None]] = web.AppKey("refresh_task", asyncio.Task)
 _KEY_AUDIT = web.AppKey("audit", AuditWriter)
 
@@ -252,7 +268,7 @@ class _TokenDB:
 
 
 # Typed AppKeys for ``_RouteTable`` / ``_TokenDB`` are declared down here
-# (not next to ``_KEY_CLIENT`` further up) because ``web.AppKey`` evaluates
+# (not next to the client-session keys further up) because ``web.AppKey`` evaluates
 # its second argument at runtime and would forward-reference fail if these
 # stood above the class bodies.
 _KEY_ROUTES = web.AppKey("routes", _RouteTable)
@@ -497,6 +513,11 @@ def _classify_upstream_failure(exc: BaseException) -> tuple[str, str]:
     no addresses, no certificate details, no secrets.  An unrecognized
     exception keeps the bare legacy text.
     """
+    if isinstance(exc, WSServerHandshakeError):
+        # The upstream answered; it just refused the upgrade.  Its status is the
+        # whole diagnosis — a 401 here is an expired or rejected credential, not
+        # a broken connection, and the two lead an operator to opposite places.
+        return ":handshake", f": upstream refused the handshake (HTTP {exc.status})"
     for exc_type, tag, cause in _UPSTREAM_FAILURE_CLASSES:
         if isinstance(exc, exc_type):
             if exc_type is ClientConnectorError:
@@ -740,7 +761,7 @@ async def _handle_request(request: web.Request) -> web.StreamResponse:
             if value not in existing_values:
                 headers[header] = ",".join([*existing_values, value])
 
-    session: ClientSession = request.app[_KEY_CLIENT]
+    session: ClientSession = request.app[_KEY_PROXY_CLIENT]
     if request.headers.get("Upgrade", "").lower() == "websocket":
         # WebSocket sessions deliberately bypass the audit log in v1 — the
         # streaming loop has no single status / duration we can record
@@ -884,7 +905,7 @@ async def _refresh_all(app: web.Application) -> None:
     """
     token_db: _TokenDB = app[_KEY_TOKEN_DB]
     routes: _RouteTable = app[_KEY_ROUTES]
-    session: ClientSession = app[_KEY_CLIENT]
+    session: ClientSession = app[_KEY_OAUTH_CLIENT]
     # The lock dir is resolved once at app-build / supervisor-start time
     # and stashed on the app — never recomputed from ambient env per
     # tick, which would misroute the path under crun's rootless userns.
@@ -949,12 +970,20 @@ async def _on_startup(app: web.Application) -> None:
     # keepalive_timeout=30 ensures we retire connections before upstream servers
     # close them (~60-90s typical for Anthropic/OpenAI), preventing stale-pool 502s.
     connector = TCPConnector(enable_cleanup_closed=True, keepalive_timeout=30)
-    app[_KEY_CLIENT] = ClientSession(connector=connector)
+    app[_KEY_PROXY_CLIENT] = ClientSession(connector=connector, auto_decompress=False)
+    app[_KEY_OAUTH_CLIENT] = ClientSession(
+        connector=TCPConnector(enable_cleanup_closed=True, keepalive_timeout=30)
+    )
     app[_KEY_REFRESH_TASK] = asyncio.create_task(_refresh_loop(app))
 
 
 async def _on_cleanup(app: web.Application) -> None:
-    """Close client session, cancel background tasks, and close token DB."""
+    """Close both client sessions, cancel background tasks, and close token DB.
+
+    Each session is closed only if startup created it, matching how the refresh
+    task and the audit writer are handled here: a test that replaces startup to
+    inject its own fakes must not fail in teardown over the halves it left out.
+    """
     task = app.get(_KEY_REFRESH_TASK)
     if task is not None:
         task.cancel()
@@ -963,7 +992,10 @@ async def _on_cleanup(app: web.Application) -> None:
         # not the cleanup task's own cancellation, so it must not propagate.
         with contextlib.suppress(asyncio.CancelledError):
             await task
-    await app[_KEY_CLIENT].close()
+    for key in (_KEY_PROXY_CLIENT, _KEY_OAUTH_CLIENT):
+        session = app.get(key)
+        if session is not None:
+            await session.close()
     app[_KEY_TOKEN_DB].close()
     audit = app.get(_KEY_AUDIT)
     if audit is not None:

@@ -24,8 +24,9 @@ from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
 from terok_sandbox.vault.daemon.token_broker import (
-    _KEY_CLIENT,
     _KEY_LOCK_DIR,  # noqa: PLC2701
+    _KEY_OAUTH_CLIENT,
+    _KEY_PROXY_CLIENT,
     _KEY_REFRESH_TASK,  # noqa: PLC2701
     _KEY_ROUTES,  # noqa: PLC2701
     _KEY_TOKEN_DB,  # noqa: PLC2701
@@ -198,7 +199,7 @@ class TestRefreshAll:
         app = web.Application()
         app[_KEY_TOKEN_DB] = token_db
         app[_KEY_ROUTES] = routes
-        app[_KEY_CLIENT] = MagicMock()
+        app[_KEY_OAUTH_CLIENT] = MagicMock()
         app[_KEY_LOCK_DIR] = tmp_path / "locks"
         return app
 
@@ -365,7 +366,7 @@ class TestHandleRequestApiKeyEdges:
 
         # Skip the on_startup handler so we can inject our fake session.
         app.on_startup.clear()
-        app[_KEY_CLIENT] = _Session()
+        app[_KEY_PROXY_CLIENT] = _Session()
         app[_KEY_REFRESH_TASK] = asyncio.create_task(asyncio.sleep(0))
 
         async with TestClient(TestServer(app)) as client:
