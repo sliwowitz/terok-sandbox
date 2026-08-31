@@ -67,6 +67,7 @@ _LAZY: dict[str, str] = {
     "selinux_install_script": "_util._selinux:install_script_path",
     # Interactive per-component hardening setup (the ``setup selinux`` /
     # ``setup apparmor`` verbs every frontend routes to)
+    "EXIT_MANUAL_STEP_NEEDED": "_exit_codes:EXIT_MANUAL_STEP_NEEDED",
     "SETUP_COMPONENTS": "_setup_manual:SETUP_COMPONENTS",
     "handle_setup_apparmor": "_setup_manual:handle_setup_apparmor",
     "handle_setup_component": "_setup_manual:handle_setup_component",
@@ -260,6 +261,7 @@ if TYPE_CHECKING:
     # statically-typed handle.
     __version__: str
 
+    from ._exit_codes import EXIT_MANUAL_STEP_NEEDED
     from ._setup_manual import (
         SETUP_COMPONENTS,
         handle_setup_apparmor,
@@ -552,6 +554,7 @@ __all__ = [
     "SelinuxCheckResult",
     "SelinuxStatus",
     "check_selinux_status",
+    "EXIT_MANUAL_STEP_NEEDED",
     "SETUP_COMPONENTS",
     "handle_setup_apparmor",
     "handle_setup_component",
