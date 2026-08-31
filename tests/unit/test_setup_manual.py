@@ -35,6 +35,27 @@ _SETTLED = _Component(
 )
 
 
+def _stub_probes(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Answer both host probes from memory.
+
+    The flow's inputs are the operator's config and the bundled
+    resources; the host's own SELinux/AppArmor state is exactly what a
+    unit test must not consult.
+    """
+    from terok_sandbox._util import _apparmor, _selinux
+
+    monkeypatch.setattr(
+        _setup_manual,
+        "_check_apparmor",
+        lambda: _apparmor.AppArmorCheckResult(_apparmor.AppArmorStatus.PROFILE_MISSING),
+    )
+    monkeypatch.setattr(
+        _setup_manual,
+        "_check_selinux",
+        lambda **_kw: _selinux.SelinuxCheckResult(_selinux.SelinuxStatus.POLICY_MISSING),
+    )
+
+
 def _flow(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
@@ -211,13 +232,14 @@ class TestHandleSetupComponent:
     def test_every_component_in_the_roster_routes(
         self, monkeypatch: pytest.MonkeyPatch, component: str
     ) -> None:
-        """--show is the side-effect-free path, so it exercises routing end to end."""
-        printed: list[str] = []
+        """Every roster entry reaches a builder — no host probes involved."""
+        _stub_probes(monkeypatch)
+        seen: list[_Component] = []
         monkeypatch.setattr(
-            _setup_manual, "_run_component", lambda comp, *, show_only: printed.append(comp.source)
+            _setup_manual, "_run_component", lambda comp, *, show_only: seen.append(comp) or 0
         )
-        assert handle_setup_component(component, show_only=True) is None or True
-        assert printed and printed[0].strip()
+        assert handle_setup_component(component, show_only=True) == 0
+        assert seen[0].source.strip(), "a component must have rules to show"
 
 
 class TestComponents:
@@ -292,10 +314,13 @@ class TestComponents:
         assert f"semodule -r {_selinux.SELINUX_MODULE_NAME}" in comp.destination
         assert comp.action_needed is True
 
-    def test_selinux_source_is_the_policy_file_verbatim(self) -> None:
+    def test_selinux_source_is_the_policy_file_verbatim(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         """The reviewed text and the compiler's input are the same bytes."""
         from terok_sandbox._util._selinux import policy_source_path
 
+        _stub_probes(monkeypatch)
         comp = _setup_manual._selinux_component(mock.MagicMock(services_mode="tcp"))
         assert comp.source == policy_source_path().read_text()
         assert "module terok_socket" in comp.source

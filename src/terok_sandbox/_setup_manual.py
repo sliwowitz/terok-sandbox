@@ -83,6 +83,34 @@ _APPARMOR_STATUS_LINES = {
 }
 
 
+def handle_setup_component(
+    component: str | None,
+    *,
+    show_only: bool = False,
+    cfg: SandboxConfig | None = None,
+) -> int:
+    """Run the interactive installer for one hardening component.
+
+    The whole ``setup <component>`` contract lives here, so every
+    frontend is one routing line: a missing or unknown component name is
+    answered from here too, spelled with the caller's own invocation.
+    """
+    from .config import SandboxConfig
+
+    if component == "selinux":
+        comp = _selinux_component(cfg or SandboxConfig())
+    elif component == "apparmor":
+        comp = _apparmor_component()
+    else:
+        from .operator_cli import setup_invocation
+
+        named = (
+            f"unknown setup component {component!r}" if component else "--show needs a component"
+        )
+        raise SystemExit(f"{named}: {setup_invocation()} <{'|'.join(SETUP_COMPONENTS)}>")
+    return _run_component(comp, show_only=show_only)
+
+
 @dataclass(frozen=True)
 class _Component:
     """One hardening component the interactive flow can install."""
@@ -211,34 +239,6 @@ def _run_component(comp: _Component, *, show_only: bool) -> int:
             if comp.action_needed:
                 print("Cancelled. You can run the command above yourself at any time.")
             return declined
-
-
-def handle_setup_component(
-    component: str | None,
-    *,
-    show_only: bool = False,
-    cfg: SandboxConfig | None = None,
-) -> int:
-    """Run the interactive installer for one hardening component.
-
-    The whole ``setup <component>`` contract lives here, so every
-    frontend is one routing line: a missing or unknown component name is
-    answered from here too, spelled with the caller's own invocation.
-    """
-    from .config import SandboxConfig
-
-    if component == "selinux":
-        comp = _selinux_component(cfg or SandboxConfig())
-    elif component == "apparmor":
-        comp = _apparmor_component()
-    else:
-        from .operator_cli import setup_invocation
-
-        named = (
-            f"unknown setup component {component!r}" if component else "--show needs a component"
-        )
-        raise SystemExit(f"{named}: {setup_invocation()} <{'|'.join(SETUP_COMPONENTS)}>")
-    return _run_component(comp, show_only=show_only)
 
 
 __all__ = [

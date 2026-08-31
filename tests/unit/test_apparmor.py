@@ -18,6 +18,13 @@ from terok_sandbox._util._apparmor import (
 )
 
 
+def _prologue_of(script: Path) -> str:
+    """The shared ``_reject_unsafe`` block of a bundled sudo installer."""
+    text = script.read_text()
+    start = text.index("# Defence-in-depth")
+    return text[start : text.index("\n}\n", start) + 3]
+
+
 def _arrange(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -105,7 +112,10 @@ def test_profile_outdated_when_revision_is_a_superstring(
     """
     _arrange(monkeypatch, tmp_path, addendum=True)
     local = tmp_path / "etc" / "apparmor.d" / "local" / "dnsmasq"
-    local.write_text(_apparmor._addendum_header().replace(" r2 ", " r20 ") + "\nowner x r,\n")
+    header = _apparmor._addendum_header()
+    revision = header.split(f"{_apparmor._ADDENDUM_MARKER} ", 1)[1].split(" ", 1)[0]
+    future = header.replace(f" {revision} ", f" {revision}0 ", 1)
+    local.write_text(f"{future}\nowner x r,\n")
     assert check_status().status is AppArmorStatus.PROFILE_OUTDATED
 
 
@@ -133,6 +143,50 @@ def test_installer_renders_the_template_not_its_own_rules() -> None:
     # and the actual rules must live only in the template.
     assert "rwk," not in script
     assert _apparmor._addendum_header() not in script
+
+
+def test_installers_reject_a_writable_ancestor(tmp_path: Path) -> None:
+    """The tamper gate walks every ancestor, exempting sticky dirs.
+
+    A writable grandparent lets another user rename the parent and
+    substitute the whole tree, so checking only the immediate parent
+    left the sudo input swappable; ``/tmp``-style sticky dirs must not
+    trip it, since the sticky bit is exactly that rename restriction.
+    """
+    import subprocess
+
+    guard = "\n".join(
+        [
+            _prologue_of(_apparmor.install_script_path()),
+            '_red=""; _reset=""',
+            '_reject_unsafe "$1" && echo ACCEPTED',
+        ]
+    )
+
+    def _verdict(target: Path) -> str:
+        done = subprocess.run(
+            ["bash", "-c", guard, "-", str(target)], capture_output=True, text=True
+        )
+        return done.stdout + done.stderr
+
+    nested = tmp_path / "parent" / "child"
+    nested.mkdir(parents=True)
+    target = nested / "install.sh"
+    target.write_text("#!/usr/bin/env bash\n")
+    assert "ACCEPTED" in _verdict(target)
+
+    (tmp_path / "parent").chmod(0o777)
+    assert "Refusing to run" in _verdict(target)
+
+    (tmp_path / "parent").chmod(0o1777)  # sticky: only the owner may rename
+    assert "ACCEPTED" in _verdict(target)
+
+
+def test_both_installers_share_one_tamper_prologue() -> None:
+    """An auditor who reads one installer's refusal rules has read the other's."""
+    from terok_sandbox._util._selinux import install_script_path as selinux_script
+
+    assert _prologue_of(_apparmor.install_script_path()) == _prologue_of(selinux_script())
 
 
 def test_render_addendum_substitutes_the_state_root(tmp_path: Path) -> None:

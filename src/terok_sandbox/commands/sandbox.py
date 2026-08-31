@@ -96,16 +96,22 @@ def _handle_sandbox_setup(
         cfg = SandboxConfig()
 
     if component is not None or show:
-        rejected = [
-            flag
-            for flag, given in (
-                ("--no-shield", no_shield),
-                ("--no-vault", no_vault),
-                ("--echo-passphrase", echo_passphrase),
-                ("--passphrase-tier", passphrase_tier is not None),
-            )
-            if given
-        ]
+        # Only meaningful against a named component; without one, the flow
+        # below answers the real problem ("--show needs a component").
+        rejected = (
+            []
+            if component is None
+            else [
+                flag
+                for flag, given in (
+                    ("--no-shield", no_shield),
+                    ("--no-vault", no_vault),
+                    ("--echo-passphrase", echo_passphrase),
+                    ("--passphrase-tier", passphrase_tier is not None),
+                )
+                if given
+            ]
+        )
         if rejected:
             raise SystemExit(
                 f"{', '.join(rejected)} belongs to the full setup, not to 'setup {component}'"

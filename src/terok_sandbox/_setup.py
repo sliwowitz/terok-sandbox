@@ -189,26 +189,6 @@ def print_selinux_install_hint(result: SelinuxCheckResult) -> None:
     print()
 
 
-def _report_apparmor() -> AppArmorCheckResult:
-    """Print AppArmor dnsmasq-profile status; silent when not applicable.
-
-    Mirrors `_report_selinux` for the per-container dnsmasq AppArmor
-    addendum.  Non-fatal: a missing addendum only degrades the DNS tier
-    (shield falls back to lookup), so this never blocks or sets an exit code.
-    """
-    result = check_apparmor_status()
-    if result.status is AppArmorStatus.NOT_APPLICABLE:
-        return result
-    with _stage_line("AppArmor profile") as s:
-        if result.status is AppArmorStatus.OK:
-            s.ok("installed")
-        elif result.status is AppArmorStatus.PROFILE_OUTDATED:
-            s.missing(f"outdated — reinstall: {setup_invocation()} apparmor")
-        else:
-            s.missing(f"install: {setup_invocation()} apparmor")
-    return result
-
-
 def print_apparmor_install_hint(result: AppArmorCheckResult) -> None:
     """Print the AppArmor addendum install command at end of setup, if needed.
 
@@ -227,6 +207,26 @@ def print_apparmor_install_hint(result: AppArmorCheckResult) -> None:
     print()
     print(f"  {setup_invocation()} apparmor")
     print()
+
+
+def _report_apparmor() -> AppArmorCheckResult:
+    """Print AppArmor dnsmasq-profile status; silent when not applicable.
+
+    Mirrors `_report_selinux` for the per-container dnsmasq AppArmor
+    addendum.  Non-fatal: a missing addendum only degrades the DNS tier
+    (shield falls back to lookup), so this never blocks or sets an exit code.
+    """
+    result = check_apparmor_status()
+    if result.status is AppArmorStatus.NOT_APPLICABLE:
+        return result
+    with _stage_line("AppArmor profile") as s:
+        if result.status is AppArmorStatus.OK:
+            s.ok("installed")
+        elif result.status is AppArmorStatus.PROFILE_OUTDATED:
+            s.missing(f"outdated — reinstall: {setup_invocation()} apparmor")
+        else:
+            s.missing(f"install: {setup_invocation()} apparmor")
+    return result
 
 
 # ── Service install phases ────────────────────────────────────────────

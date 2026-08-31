@@ -58,12 +58,21 @@ _reject_unsafe() {
         echo "       Reinstall the package into a location you control (e.g. pipx install --force)." >&2
         exit 1
     fi
-    _dir_perm=$(stat -c '%a' "$(dirname "$f")")
-    if (( 8#$_dir_perm & 8#022 )); then
-        echo "${_red}Refusing to run:${_reset} parent of $f is group- or world-writable (mode $_dir_perm)." >&2
-        echo "       A writable parent lets another user replace the file via 'mv'." >&2
-        exit 1
-    fi
+    # Every ancestor, not just the immediate parent: a writable
+    # grandparent lets another user rename the parent directory and
+    # substitute the whole tree.  Sticky directories (/tmp) are exempt —
+    # the sticky bit is exactly the rule that only the owner may rename.
+    _dir=$(dirname "$f")
+    while :; do
+        _dir_perm=$(stat -c '%a' "$_dir")
+        if (( 8#$_dir_perm & 8#022 )) && (( ! (8#$_dir_perm & 8#1000) )); then
+            echo "${_red}Refusing to run:${_reset} $_dir is group- or world-writable (mode $_dir_perm)." >&2
+            echo "       A writable ancestor lets another user replace the file via 'mv'." >&2
+            exit 1
+        fi
+        [[ "$_dir" == "/" ]] && break
+        _dir=$(dirname "$_dir")
+    done
 }
 _reject_unsafe "${BASH_SOURCE[0]}"
 _reject_unsafe "$te_source"

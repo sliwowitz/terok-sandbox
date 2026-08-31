@@ -164,6 +164,18 @@ def install_script_path() -> Path:
     return Path(str(_resource_files("terok_sandbox.resources.apparmor") / "install_profile.sh"))
 
 
+def render_addendum(state_root: Path) -> str:
+    """Render the managed addendum block exactly as the installer writes it.
+
+    Same template, same substitution as ``install_profile.sh`` (a lone
+    ``@STATE_ROOT@`` token, trailing slash stripped) — rendered on the
+    unprivileged side, where the operator's paths are known.  What the
+    ``setup apparmor`` show option prints is therefore byte-identical to
+    what a subsequent ``sudo bash`` install appends to the profile.
+    """
+    return _addendum_template().replace("@STATE_ROOT@", str(state_root).rstrip("/"))
+
+
 @lru_cache(maxsize=1)
 def _addendum_template() -> str:
     """The raw ``dnsmasq_addendum.template`` text (single ``@STATE_ROOT@`` token)."""
@@ -175,15 +187,3 @@ def _addendum_template() -> str:
 def _addendum_header() -> str:
     """The template's marker line — the current revision, verbatim."""
     return _addendum_template().splitlines()[0]
-
-
-def render_addendum(state_root: Path) -> str:
-    """Render the managed addendum block exactly as the installer writes it.
-
-    Same template, same substitution as ``install_profile.sh`` (a lone
-    ``@STATE_ROOT@`` token, trailing slash stripped) — rendered on the
-    unprivileged side, where the operator's paths are known.  What the
-    ``setup apparmor`` show option prints is therefore byte-identical to
-    what a subsequent ``sudo bash`` install appends to the profile.
-    """
-    return _addendum_template().replace("@STATE_ROOT@", str(state_root).rstrip("/"))

@@ -84,7 +84,9 @@ def sandbox_live_root() -> Path:
     """
     env = os.getenv("TEROK_SANDBOX_LIVE_DIR")
     if env:
-        return Path(env).expanduser()
+        # Absolute, like the config branch: AppArmor mediates by pathname,
+        # so a relative override would render rules that match nothing.
+        return Path(env).expanduser().resolve()
     val = _read_config_paths().get("sandbox_live_dir")
     if val:
         return Path(val).expanduser().resolve()
