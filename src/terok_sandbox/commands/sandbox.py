@@ -30,13 +30,20 @@ if TYPE_CHECKING:
 
 def _handle_sandbox_setup(
     *,
+    component: str | None = None,
+    show: bool = False,
     no_shield: bool = False,
     no_vault: bool = False,
     echo_passphrase: bool = False,
     passphrase_tier: str | None = None,
     cfg: SandboxConfig | None = None,
-) -> None:
+) -> int | None:
     """Install supervisor hooks + shield in one idempotent bootstrap.
+
+    With a *component* (``setup selinux`` / ``setup apparmor``) the
+    aggregate bootstrap is skipped entirely and the interactive
+    per-component installer runs instead — see
+    [`handle_setup_component`][terok_sandbox._setup_manual.handle_setup_component].
 
     Runs the legacy-install cleanup phase first to sweep systemd units
     and sockets installed by pre-supervisor versions (including the
@@ -88,6 +95,11 @@ def _handle_sandbox_setup(
 
     if cfg is None:
         cfg = SandboxConfig()
+
+    if component is not None:
+        from .._setup_manual import handle_setup_component
+
+        return handle_setup_component(component, show_only=show, cfg=cfg)
 
     # Fail-fast on an unknown / unsupported ``--passphrase-tier`` *before*
     # any host-mutating phase runs.  Without this check, a typo would let
@@ -166,6 +178,7 @@ def _handle_sandbox_setup(
         from .credentials import _post_setup_recovery_hint
 
         _post_setup_recovery_hint(cfg)
+    return None
 
 
 def _validate_passphrase_tier(tier: str) -> None:
@@ -249,6 +262,20 @@ SETUP_COMMANDS: tuple[CommandDef, ...] = (
         help="Install supervisor hooks + shield hooks in one step",
         handler=LazyHandler("terok_sandbox.commands.sandbox:_handle_sandbox_setup"),
         args=(
+            ArgDef(
+                name="component",
+                nargs="?",
+                help=(
+                    "Install one hardening prerequisite interactively"
+                    " (selinux | apparmor): shows the exact sudo command and"
+                    " the rules before anything runs"
+                ),
+            ),
+            ArgDef(
+                name="--show",
+                action="store_true",
+                help="With a component: print the rules it would install, then exit",
+            ),
             ArgDef(name="--no-shield", action="store_true", help="Skip shield install"),
             ArgDef(
                 name="--no-vault",

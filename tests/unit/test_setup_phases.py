@@ -723,8 +723,38 @@ class TestSelinuxOutdatedReporting:
     def test_install_hint_banner_for_outdated_policy(
         self, capsys: pytest.CaptureFixture[str]
     ) -> None:
-        """The banner names the stale policy and the rebuild command."""
+        """The banner names the stale policy and the rebuild subcommand."""
         print_selinux_install_hint(MagicMock(status=SelinuxStatus.POLICY_OUTDATED))
         out = capsys.readouterr().out
         assert "predates the per-container" in out
         assert "Rebuild the policy" in out
+        assert "terok-sandbox setup selinux" in out
+        assert "sudo bash" not in out
+
+    def test_hint_spelling_follows_the_declared_invocation(
+        self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """Under terok, the banner names terok's own setup verb."""
+        from terok_sandbox.operator_cli import SETUP_INVOCATION_ENV
+
+        monkeypatch.setenv(SETUP_INVOCATION_ENV, "terok setup")
+        print_selinux_install_hint(MagicMock(status=SelinuxStatus.POLICY_MISSING))
+        out = capsys.readouterr().out
+        assert "terok setup selinux" in out
+
+    def test_apparmor_hint_banner_names_the_subcommand(
+        self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """The AppArmor banner points at the interactive verb, not a sudo line."""
+        from terok_sandbox import _setup
+        from terok_sandbox._util._apparmor import AppArmorCheckResult, AppArmorStatus
+
+        monkeypatch.setattr(
+            _setup,
+            "check_apparmor_status",
+            lambda: AppArmorCheckResult(AppArmorStatus.PROFILE_MISSING),
+        )
+        _setup.print_apparmor_install_hint()
+        out = capsys.readouterr().out
+        assert "terok-sandbox setup apparmor" in out
+        assert "sudo bash" not in out

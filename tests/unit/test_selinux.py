@@ -375,6 +375,29 @@ class TestPolicySourcePath:
         assert path.name == "terok_socket.te"
 
 
+class TestPolicySourceDisplay:
+    """``policy_source_display`` shows only what reaches the kernel."""
+
+    def test_strips_comments_and_blank_runs(self) -> None:
+        from terok_sandbox._util._selinux import policy_source_display
+
+        out = policy_source_display()
+        assert "#" not in out
+        assert "\n\n" not in out
+        assert out.endswith("\n")
+
+    def test_keeps_every_statement(self) -> None:
+        """Every non-comment statement of the shipped .te survives the strip."""
+        from terok_sandbox._util._selinux import policy_source_display, policy_source_path
+
+        out = policy_source_display()
+        assert "module terok_socket" in out
+        for raw in policy_source_path().read_text().splitlines():
+            statement = raw.split("#", 1)[0].strip()
+            if statement:
+                assert statement in out
+
+
 class TestCheckStatus:
     """Verify the single decision tree exposed as ``check_selinux_status``."""
 

@@ -38,15 +38,16 @@ _DNSMASQ_PROFILES = (
     Path("/etc/apparmor.d/dnsmasq"),  # apparmor.d project / Arch
 )
 
-# Marker the installer writes into the local include (see install_profile.sh),
-# and the revision suffix that identifies the CURRENT rule set.  Bump the
-# revision whenever install_profile.sh's rules change: an older on-disk block
-# still carries the base marker but not the current revision, so it reads as
-# installed-but-outdated and the operator is prompted to reinstall — the rules
-# live in the shell installer, so this revision is the single fact the two
-# sides share.  ``r2`` = the one ``dnsmasq.*`` glob that replaced the per-file
-# (conf/pid/log) rules, which broke DNS whenever shield added a file
-# (terok-ai/terok#1246).
+# Marker the installer writes into the local include, and the revision
+# suffix that identifies the CURRENT rule set.  The rules themselves live in
+# ``resources/apparmor/dnsmasq_addendum.template`` — the single source of truth
+# that both ``install_profile.sh`` and [`render_addendum`][terok_sandbox._util._apparmor.render_addendum]
+# render.  Bump the revision there and here whenever the rules change: an
+# older on-disk block still carries the base marker but not the current
+# revision, so it reads as installed-but-outdated and the operator is
+# prompted to reinstall.  ``r2`` = the one ``dnsmasq.*`` glob that replaced
+# the per-file (conf/pid/log) rules, which broke DNS whenever shield added a
+# file (terok-ai/terok#1246).
 _ADDENDUM_MARKER = "terok-shield apparmor"
 _ADDENDUM_REVISION = "r2"
 
@@ -121,6 +122,17 @@ def check_status() -> AppArmorCheckResult:
     return AppArmorCheckResult(AppArmorStatus.OK)
 
 
+def default_state_root() -> Path:
+    """The conventional sandbox-live root the addendum rules must permit.
+
+    Matches terok's default ``sandbox_live_dir()``; a frontend with an
+    overridden root passes its own resolved path instead.
+    """
+    from ..paths import namespace_state_dir
+
+    return namespace_state_dir("sandbox-live")
+
+
 @lru_cache(maxsize=1)
 def install_script_path() -> Path:
     """Return the path to the bundled ``install_profile.sh`` AppArmor installer.
@@ -140,3 +152,23 @@ def install_command(state_root: Path) -> str:
     script runs under ``sudo`` and cannot resolve the operator's home.
     """
     return f"sudo bash {install_script_path()} {state_root}"
+
+
+@lru_cache(maxsize=1)
+def _addendum_template() -> str:
+    """The raw ``dnsmasq_addendum.template`` text (single ``@STATE_ROOT@`` token)."""
+    return Path(
+        str(_resource_files("terok_sandbox.resources.apparmor") / "dnsmasq_addendum.template")
+    ).read_text()
+
+
+def render_addendum(state_root: Path) -> str:
+    """Render the managed addendum block exactly as the installer writes it.
+
+    Same template, same substitution as ``install_profile.sh`` (a lone
+    ``@STATE_ROOT@`` token, trailing slash stripped) — rendered on the
+    unprivileged side, where the operator's paths are known.  What the
+    ``setup apparmor`` show option prints is therefore byte-identical to
+    what a subsequent ``sudo bash`` install appends to the profile.
+    """
+    return _addendum_template().replace("@STATE_ROOT@", str(state_root).rstrip("/"))

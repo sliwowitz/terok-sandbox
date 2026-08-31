@@ -65,6 +65,11 @@ _LAZY: dict[str, str] = {
     "check_selinux_status": "_util._selinux:check_status",
     "selinux_install_command": "_util._selinux:install_command",
     "selinux_install_script": "_util._selinux:install_script_path",
+    # Interactive per-component hardening setup (the ``setup selinux`` /
+    # ``setup apparmor`` verbs every frontend routes to)
+    "handle_setup_apparmor": "_setup_manual:handle_setup_apparmor",
+    "handle_setup_component": "_setup_manual:handle_setup_component",
+    "handle_setup_selinux": "_setup_manual:handle_setup_selinux",
     # YAML section writer
     "yaml_update_section": "_yaml:update_section",
     # CLI registry + vault passphrase workflows
@@ -254,6 +259,11 @@ if TYPE_CHECKING:
     # statically-typed handle.
     __version__: str
 
+    from ._setup_manual import (
+        handle_setup_apparmor,
+        handle_setup_component,
+        handle_setup_selinux,
+    )
     from ._stage import bold, red, stage_line, yellow
     from ._util._selinux import (
         SelinuxCheckResult,
@@ -540,6 +550,9 @@ __all__ = [
     "SelinuxCheckResult",
     "SelinuxStatus",
     "check_selinux_status",
+    "handle_setup_apparmor",
+    "handle_setup_component",
+    "handle_setup_selinux",
     "selinux_install_command",
     "selinux_install_script",
     # CLI + cross-package utilities

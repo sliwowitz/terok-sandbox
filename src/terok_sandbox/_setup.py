@@ -37,21 +37,19 @@ from ._util._apparmor import (
     AppArmorCheckResult,
     AppArmorStatus,
     check_status as check_apparmor_status,
-    install_command as apparmor_install_command,
 )
 from ._util._selinux import (
     SelinuxCheckResult,
     SelinuxStatus,
     check_status as check_selinux_status,
-    install_command as selinux_install_command,
 )
+from .operator_cli import setup_invocation
 
 # Re-export so existing callers ``from ._setup import EXIT_MANUAL_STEP_NEEDED``
 # keep working without reaching for the new foundation module.
 __all__ = ["EXIT_MANUAL_STEP_NEEDED"]
 from .config import SandboxConfig
 from .integrations.shield import BinaryCheck
-from .paths import namespace_state_dir
 
 _HOST_BINARIES: tuple[str, ...] = ("podman", "git", "ssh-keygen")
 
@@ -155,9 +153,9 @@ def _report_selinux(cfg: SandboxConfig) -> SelinuxCheckResult:
             case SelinuxStatus.OK:
                 s.ok("installed")
             case SelinuxStatus.POLICY_MISSING:
-                s.missing(f"install: {selinux_install_command()}")
+                s.missing(f"install: {setup_invocation()} selinux")
             case SelinuxStatus.POLICY_OUTDATED:
-                s.missing(f"outdated — rebuild: {selinux_install_command()}")
+                s.missing(f"outdated — rebuild: {setup_invocation()} selinux")
             case SelinuxStatus.LIBSELINUX_MISSING:
                 s.missing("libselinux.so.1 not loadable")
     return result
@@ -191,23 +189,15 @@ def print_selinux_install_hint(result: SelinuxCheckResult) -> None:
     print()
     print("Rebuild the policy (recommended):" if outdated else "Install the policy (recommended):")
     print()
-    print(f"  {selinux_install_command()}")
+    print(f"  {setup_invocation()} selinux")
+    print()
+    print("It shows the exact sudo command and the policy rules before anything runs.")
     print()
     print("Or switch to TCP mode (no SELinux policy needed):")
     print()
     print("  yq -yi '.services.mode = \"tcp\"' ~/.config/terok/config.yml")
-    print("  terok-sandbox setup")
+    print(f"  {setup_invocation()}")
     print()
-
-
-def _apparmor_state_root() -> Path:
-    """The conventional sandbox-live root the AppArmor rules must permit.
-
-    Matches terok's default ``sandbox_live_dir()``; terok passes its own
-    resolved root (honouring overrides) when it renders the command in
-    sickbay.
-    """
-    return namespace_state_dir("sandbox-live")
 
 
 def _report_apparmor() -> AppArmorCheckResult:
@@ -224,9 +214,9 @@ def _report_apparmor() -> AppArmorCheckResult:
         if result.status is AppArmorStatus.OK:
             s.ok("installed")
         elif result.status is AppArmorStatus.PROFILE_OUTDATED:
-            s.missing(f"outdated — reinstall: {apparmor_install_command(_apparmor_state_root())}")
+            s.missing(f"outdated — reinstall: {setup_invocation()} apparmor")
         else:
-            s.missing(f"install: {apparmor_install_command(_apparmor_state_root())}")
+            s.missing(f"install: {setup_invocation()} apparmor")
     return result
 
 
@@ -255,7 +245,9 @@ def print_apparmor_install_hint() -> None:
         f"{'Reinstall' if outdated else 'Install'} the addendum (keeps dnsmasq otherwise confined):"
     )
     print()
-    print(f"  {apparmor_install_command(_apparmor_state_root())}")
+    print(f"  {setup_invocation()} apparmor")
+    print()
+    print("It shows the exact sudo command and the added rules before anything runs.")
     print()
 
 

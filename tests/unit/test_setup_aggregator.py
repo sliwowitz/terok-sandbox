@@ -173,7 +173,7 @@ class TestSandboxSetup:
         # at the end of output, each on its own line so the operator
         # can copy-paste either without bleed.
         assert "SELinux policy required" in out
-        assert "install_policy.sh" in out
+        assert "terok-sandbox setup selinux" in out
         assert 'services.mode = "tcp"' in out
 
     def test_policy_missing_skipped_when_phases_already_failed(self, install_spies) -> None:

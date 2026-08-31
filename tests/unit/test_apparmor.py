@@ -106,14 +106,65 @@ def test_profile_outdated_when_revision_is_a_superstring(
     assert check_status().status is AppArmorStatus.PROFILE_OUTDATED
 
 
-def test_installer_stamps_the_current_revision_marker() -> None:
-    """The bundled installer writes the exact marker check_status treats as current.
+def test_template_stamps_the_current_revision_marker() -> None:
+    """The addendum template carries the exact marker check_status treats as current.
 
-    The staleness check hinges on the shell installer and this module agreeing
-    on the marker text, so pin that contract.
+    The staleness check hinges on the template and this module agreeing on
+    the marker text, so pin that contract at the source of truth.
+    """
+    template = _apparmor._addendum_template()
+    assert f">>> {_apparmor._ADDENDUM_MARKER} {_apparmor._ADDENDUM_REVISION} " in template
+
+
+def test_installer_renders_the_template_not_its_own_rules() -> None:
+    """The installer consumes the sibling template — no rules of its own.
+
+    An ``owner`` rule or a marker line inside the script would mean two
+    sources of truth again; the show option would stop being truthful.
     """
     script = _apparmor.install_script_path().read_text()
-    assert f">>> {_apparmor._ADDENDUM_MARKER} {_apparmor._ADDENDUM_REVISION} " in script
+    assert "dnsmasq_addendum.template" in script
+    # The strip-old-block sed keeps the base marker; the revisioned marker
+    # and the actual rules must live only in the template.
+    assert "rwk," not in script
+    assert f"{_apparmor._ADDENDUM_MARKER} {_apparmor._ADDENDUM_REVISION}" not in script
+
+
+def test_render_addendum_substitutes_the_state_root(tmp_path: Path) -> None:
+    """render_addendum swaps the token, strips a trailing slash, leaves no residue."""
+    root = tmp_path / "sandbox-live"
+    rendered = _apparmor.render_addendum(root)
+    assert f"owner {root}/tasks/*/*/shield/dnsmasq.* rwk," in rendered
+    assert "@STATE_ROOT@" not in rendered
+    assert rendered == _apparmor.render_addendum(Path(str(root) + "/"))
+
+
+def test_render_addendum_matches_the_shell_substitution(tmp_path: Path) -> None:
+    """Python's rendering is byte-identical to the installer's bash rendering.
+
+    The show option's whole promise is "this is exactly what the install
+    appends" — lock the two substitution implementations together by
+    running the script's own expansion over the shipped template.
+    """
+    import subprocess
+
+    root = tmp_path / "sandbox-live"
+    template = _apparmor.install_script_path().parent / "dnsmasq_addendum.template"
+    shell = subprocess.run(
+        [
+            "bash",
+            "-c",
+            'state_root="${2%/}"; _content="$(<"$1")"; '
+            'printf "%s\\n" "${_content//@STATE_ROOT@/$state_root}"',
+            "-",
+            str(template),
+            str(root) + "/",
+        ],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    assert shell.stdout == _apparmor.render_addendum(root)
 
 
 def test_install_command_shape(tmp_path: Path) -> None:
@@ -168,7 +219,7 @@ def test_report_apparmor_missing_shows_install_command(
     """A confined-but-unpatched host gets the installer invocation in its stage line."""
     _patch_status(monkeypatch, AppArmorStatus.PROFILE_MISSING)
     _setup._report_apparmor()
-    assert "install_profile.sh" in capsys.readouterr().out
+    assert "terok-sandbox setup apparmor" in capsys.readouterr().out
 
 
 def test_report_apparmor_outdated_flags_reinstall(
@@ -179,7 +230,7 @@ def test_report_apparmor_outdated_flags_reinstall(
     _setup._report_apparmor()
     out = capsys.readouterr().out
     assert "outdated" in out
-    assert "install_profile.sh" in out
+    assert "terok-sandbox setup apparmor" in out
 
 
 def test_install_hint_fires_for_missing_and_outdated(
@@ -190,13 +241,13 @@ def test_install_hint_fires_for_missing_and_outdated(
     _setup.print_apparmor_install_hint()
     out = capsys.readouterr().out
     assert "AppArmor profile recommended" in out
-    assert "install_profile.sh" in out
+    assert "terok-sandbox setup apparmor" in out
 
     _patch_status(monkeypatch, AppArmorStatus.PROFILE_OUTDATED)
     _setup.print_apparmor_install_hint()
     out = capsys.readouterr().out
     assert "older revision" in out
-    assert "install_profile.sh" in out
+    assert "terok-sandbox setup apparmor" in out
 
     for quiet in (AppArmorStatus.OK, AppArmorStatus.NOT_APPLICABLE):
         _patch_status(monkeypatch, quiet)
@@ -205,5 +256,5 @@ def test_install_hint_fires_for_missing_and_outdated(
 
 
 def test_apparmor_state_root_is_sandbox_live() -> None:
-    """The reported state root is the conventional sandbox-live namespace dir."""
-    assert _setup._apparmor_state_root() == namespace_state_dir("sandbox-live")
+    """The default state root is the conventional sandbox-live namespace dir."""
+    assert _apparmor.default_state_root() == namespace_state_dir("sandbox-live")
