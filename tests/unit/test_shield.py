@@ -225,8 +225,14 @@ def test_manager_dns_tier_reads_recorded_value(tmp_path: Path) -> None:
 
     tier_file = StateBundle(manager.state_dir).dns_tier
     tier_file.parent.mkdir(parents=True)
+    tier_file.write_text("lookup\n")
+    assert manager.dns_tier == "lookup"
+
+    # A container launched before terok-shield renamed the tier recorded "dig".
+    # Shield reads an unrecognised value as no tier at all, so this reports None
+    # rather than a name that no longer means anything.
     tier_file.write_text("dig\n")
-    assert manager.dns_tier == "dig"
+    assert manager.dns_tier is None
 
 
 def test_manager_down_passes_disengaged() -> None:

@@ -8,7 +8,7 @@ the sandbox-live ``tasks/<project>/<task>/shield`` tree in the operator's
 home.  Distros that ship an enforcing AppArmor profile for
 ``/usr/sbin/dnsmasq`` (Arch/Manjaro, the apparmor.d set) confine it to the
 conventional server paths and deny that tree, so shield falls back to the
-dig tier.  This module detects that confinement and points the operator at
+lookup tier.  This module detects that confinement and points the operator at
 the bundled installer that adds an addendum permitting the shield tree.
 
 Detection is by file presence — unprivileged, no ``aa-status``/root: an
@@ -84,7 +84,7 @@ class AppArmorStatus(Enum):
     PROFILE_OUTDATED = "profile_outdated"
     """The terok addendum is installed but at an older revision whose rules no
     longer cover what shield writes — dnsmasq stays confined and DNS silently
-    rides the dig tier until the operator reinstalls (terok-ai/terok#1246)."""
+    rides the lookup tier until the operator reinstalls (terok-ai/terok#1246)."""
 
     OK = "ok"
     """The terok addendum is installed at the current revision."""
