@@ -44,7 +44,10 @@ if TYPE_CHECKING:
 
 # ---------- Constants ----------
 
-SELINUX_SOCKET_TYPE = "terok_socket_t"
+SELINUX_MODULE_NAME = "terok_socket"
+"""Policy module the installer compiles and loads (``semodule -l`` name)."""
+
+SELINUX_SOCKET_TYPE = f"{SELINUX_MODULE_NAME}_t"
 """Custom SELinux type applied to terok service sockets."""
 
 _SELINUX_CONTEXT = f"system_u:object_r:{SELINUX_SOCKET_TYPE}:s0"
@@ -172,22 +175,6 @@ def policy_source_path() -> Path:
     return Path(str(_resource_files("terok_sandbox.resources.selinux") / "terok_socket.te"))
 
 
-def policy_source_display() -> str:
-    """Return the ``terok_socket.te`` source with comments stripped.
-
-    The display behind the ``setup selinux`` show option: the exact file
-    ``install_policy.sh`` compiles, minus ``#`` comments and the blank
-    lines they leave, so the operator reviews only the statements that
-    reach the kernel.
-    """
-    lines = []
-    for raw in policy_source_path().read_text().splitlines():
-        line = raw.split("#", 1)[0].rstrip()
-        if line:
-            lines.append(line)
-    return "\n".join(lines) + "\n"
-
-
 @lru_cache(maxsize=1)
 def install_script_path() -> Path:
     """Return the path to the bundled ``install_policy.sh`` installer.
@@ -199,15 +186,6 @@ def install_script_path() -> Path:
     before the privilege escalation.
     """
     return Path(str(_resource_files("terok_sandbox.resources.selinux") / "install_policy.sh"))
-
-
-def install_command() -> str:
-    """Return the full ``sudo bash <path>`` shell command for the installer.
-
-    Single source for the command string so the setup hint, the sickbay
-    check, and any future caller all render the same invocation.
-    """
-    return f"sudo bash {install_script_path()}"
 
 
 # ---------- Socket context labeling ----------
@@ -338,6 +316,11 @@ class SelinuxStatus(Enum):
 
     OK = "ok"
     """Enforcing, policy installed, libselinux loadable — all good."""
+
+    @property
+    def action_needed(self) -> bool:
+        """Whether this status calls for an operator install."""
+        return self in (SelinuxStatus.POLICY_MISSING, SelinuxStatus.POLICY_OUTDATED)
 
 
 @dataclass(frozen=True)

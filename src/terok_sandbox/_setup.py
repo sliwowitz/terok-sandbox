@@ -30,7 +30,6 @@ import shutil
 from collections.abc import Callable, Iterable
 from pathlib import Path
 
-from ._exit_codes import EXIT_MANUAL_STEP_NEEDED
 from ._stage import stage_line as _stage_line
 from ._util import _systemctl
 from ._util._apparmor import (
@@ -43,13 +42,9 @@ from ._util._selinux import (
     SelinuxStatus,
     check_status as check_selinux_status,
 )
-from .operator_cli import setup_invocation
-
-# Re-export so existing callers ``from ._setup import EXIT_MANUAL_STEP_NEEDED``
-# keep working without reaching for the new foundation module.
-__all__ = ["EXIT_MANUAL_STEP_NEEDED"]
 from .config import SandboxConfig
 from .integrations.shield import BinaryCheck
+from .operator_cli import setup_invocation
 
 _HOST_BINARIES: tuple[str, ...] = ("podman", "git", "ssh-keygen")
 
@@ -57,12 +52,13 @@ _HOST_BINARIES: tuple[str, ...] = ("podman", "git", "ssh-keygen")
 # ── Prereq reporting (host binaries, firewall binaries, SELinux) ─────
 
 
-def run_prereq_report(cfg: SandboxConfig) -> SelinuxCheckResult:
-    """Print host prerequisites and return the SELinux check result.
+def run_prereq_report(cfg: SandboxConfig) -> tuple[SelinuxCheckResult, AppArmorCheckResult]:
+    """Print host prerequisites; return the SELinux and AppArmor results.
 
-    The result lets the caller decide whether to fail the setup or
-    re-surface the install hint at the end of output — sandbox#854's
-    fix for the install command getting buried mid-output.  Purely
+    The results let the caller decide whether to fail the setup and
+    re-surface each install hint at the end of output — sandbox#854's
+    fix for the install command getting buried mid-output — from the
+    same observation the stage lines above reported.  Purely
     informational for the binary checks; never blocks on those.
     ``cfg.experimental`` gates the krun-only probes (currently ``ip``).
     """
@@ -72,8 +68,8 @@ def run_prereq_report(cfg: SandboxConfig) -> SelinuxCheckResult:
     _report_firewall_binaries()
     if cfg.experimental:
         _report_krun_binaries()
-    _report_apparmor()
-    return _report_selinux(cfg)
+    apparmor = _report_apparmor()
+    return _report_selinux(cfg), apparmor
 
 
 def _report_host_binaries() -> None:
@@ -148,6 +144,7 @@ def _report_selinux(cfg: SandboxConfig) -> SelinuxCheckResult:
         SelinuxStatus.NOT_APPLICABLE_PERMISSIVE,
     ):
         return result
+
     with _stage_line("SELinux policy") as s:
         match result.status:
             case SelinuxStatus.OK:
@@ -172,26 +169,18 @@ def print_selinux_install_hint(result: SelinuxCheckResult) -> None:
     Called *after* all install phases finish so the hint is the last
     thing the operator sees — sandbox#854's complaint was that the
     install command landed mid-output and scrolled out of view by the
-    time the install banner printed at the bottom.
+    time the install banner printed at the bottom.  The verb it names
+    owns the detail (state, destination, exact command, rules), so this
+    stays a pointer plus the alternative the verb does not offer.
     """
-    if result.status not in (SelinuxStatus.POLICY_MISSING, SelinuxStatus.POLICY_OUTDATED):
+    if not result.status.action_needed:
         return
-    outdated = result.status is SelinuxStatus.POLICY_OUTDATED
     print()
     print("─ SELinux policy required ─────────────────────────────────────")
-    if outdated:
-        print("The loaded terok_socket policy predates the per-container")
-        print("supervisor and is missing the rule it binds its sockets with;")
-        print("rebuild it so the supervisor can serve the vault / gate / ssh.")
-    else:
-        print("Socket-transport services need the terok_socket_t policy to be")
-        print("loaded; without it, containers can't reach the host sockets.")
-    print()
-    print("Rebuild the policy (recommended):" if outdated else "Install the policy (recommended):")
+    print("Socket-transport services need the terok_socket_t policy loaded;")
+    print("without it, containers cannot reach the host sockets.")
     print()
     print(f"  {setup_invocation()} selinux")
-    print()
-    print("It shows the exact sudo command and the policy rules before anything runs.")
     print()
     print("Or switch to TCP mode (no SELinux policy needed):")
     print()
@@ -220,34 +209,23 @@ def _report_apparmor() -> AppArmorCheckResult:
     return result
 
 
-def print_apparmor_install_hint() -> None:
+def print_apparmor_install_hint(result: AppArmorCheckResult) -> None:
     """Print the AppArmor addendum install command at end of setup, if needed.
 
     No-op unless the dnsmasq profile addendum is missing or outdated.
     Rendered last (alongside the SELinux hint) so the command isn't
-    scrolled away.
+    scrolled away.  Takes the result
+    [`run_prereq_report`][terok_sandbox._setup.run_prereq_report]
+    already observed — one probe, one verdict.
     """
-    status = check_apparmor_status().status
-    if status not in (AppArmorStatus.PROFILE_MISSING, AppArmorStatus.PROFILE_OUTDATED):
+    if not result.status.action_needed:
         return
-    outdated = status is AppArmorStatus.PROFILE_OUTDATED
     print()
     print("─ AppArmor profile recommended ────────────────────────────────")
-    if outdated:
-        print("Your terok dnsmasq AppArmor addendum is an older revision; until")
-        print("it is refreshed the per-container DNS drops to the lookup tier (no")
-        print("live IP-rotation).")
-    else:
-        print("dnsmasq is AppArmor-confined here; without the terok addendum the")
-        print("per-container DNS drops to the lookup tier (no live IP-rotation).")
-    print()
-    print(
-        f"{'Reinstall' if outdated else 'Install'} the addendum (keeps dnsmasq otherwise confined):"
-    )
+    print("dnsmasq is AppArmor-confined here; without the terok addendum the")
+    print("per-container DNS drops to the lookup tier (no live IP-rotation).")
     print()
     print(f"  {setup_invocation()} apparmor")
-    print()
-    print("It shows the exact sudo command and the added rules before anything runs.")
     print()
 
 

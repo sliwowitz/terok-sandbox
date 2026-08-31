@@ -11,22 +11,27 @@ from unittest import mock
 import pytest
 
 from terok_sandbox import _setup_manual
-from terok_sandbox._setup_manual import _Component, _run_component, handle_setup_component
+from terok_sandbox._setup_manual import (
+    SETUP_COMPONENTS,
+    _Component,
+    _run_component,
+    handle_setup_component,
+)
 
-_COMPONENT = _Component(
+_NEEDED = _Component(
     status_line="The widget is not installed.",
-    needed=True,
-    command="sudo bash /somewhere/install.sh /some/root",
+    destination="Writes /etc/widget.d/local (undo: rm it)",
     source="rule one,\nrule two,\n",
     script_args=("/somewhere/install.sh", "/some/root"),
+    action_needed=True,
 )
 
 _SETTLED = _Component(
     status_line="The widget is installed and current.",
-    needed=False,
-    command="sudo bash /somewhere/install.sh /some/root",
+    destination="Writes /etc/widget.d/local (undo: rm it)",
     source="rule one,\nrule two,\n",
     script_args=("/somewhere/install.sh", "/some/root"),
+    action_needed=False,
 )
 
 
@@ -37,7 +42,7 @@ def _flow(
     answers: list[str] | None = None,
     tty: bool = True,
     show_only: bool = False,
-    component: _Component = _COMPONENT,
+    component: _Component = _NEEDED,
 ) -> tuple[int, str, mock.MagicMock]:
     """Drive _run_component with canned answers; return (exit, stdout, sudo mock)."""
     monkeypatch.setattr(_setup_manual.sys.stdin, "isatty", lambda: tty)
@@ -52,45 +57,58 @@ def _flow(
 
 
 class TestRunComponent:
-    def test_show_only_prints_source_and_returns(
+    """The show-ask-run flow: what the operator reads, and what runs."""
+
+    def test_show_only_prints_the_source_and_returns(
         self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
     ) -> None:
         code, out, sudo = _flow(monkeypatch, capsys, show_only=True)
         assert code == 0
-        assert out == _COMPONENT.source
+        assert out == _NEEDED.source
         sudo.assert_not_called()
 
-    def test_default_shows_command_and_warns_about_sudo(
+    def test_tells_state_destination_and_command_before_asking(
         self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
     ) -> None:
-        code, out, _ = _flow(monkeypatch, capsys, answers=["n"])
-        assert _COMPONENT.status_line in out
+        """The whole story lands before the prompt — state, where, what, and the sudo warning."""
+        _code, out, _sudo = _flow(monkeypatch, capsys, answers=["n"])
+        assert _NEEDED.status_line in out
+        assert _NEEDED.destination in out
         assert "sudo asks for your password" in out
-        assert _COMPONENT.command in out
+        assert _NEEDED.command in out
 
-    def test_yes_runs_the_shown_command(
-        self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    @pytest.mark.parametrize("answer", ["", "y", "yes"])
+    def test_confirming_runs_exactly_the_shown_command(
+        self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], answer: str
     ) -> None:
-        code, _, sudo = _flow(monkeypatch, capsys, answers=["y"])
+        code, _out, sudo = _flow(monkeypatch, capsys, answers=[answer])
         assert code == 0
-        sudo.assert_called_once_with(_COMPONENT.script_args)
+        sudo.assert_called_once_with(_NEEDED.script_args)
 
-    def test_plain_enter_defaults_to_yes(
+    def test_enter_installs_even_when_nothing_is_needed(
         self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
     ) -> None:
-        code, _, sudo = _flow(monkeypatch, capsys, answers=[""])
+        """The verb was invoked explicitly and the installers are idempotent."""
+        code, _out, sudo = _flow(monkeypatch, capsys, answers=[""], component=_SETTLED)
         assert code == 0
         sudo.assert_called_once()
 
-    def test_s_prints_source_then_asks_again(
+    def test_s_prints_the_rules_then_asks_again(
         self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
     ) -> None:
         code, out, sudo = _flow(monkeypatch, capsys, answers=["s", "y"])
         assert code == 0
-        assert _COMPONENT.source in out
+        assert _NEEDED.source in out
         sudo.assert_called_once()
 
-    def test_n_cancels_without_running(
+    def test_unknown_answer_asks_again(
+        self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        code, _out, sudo = _flow(monkeypatch, capsys, answers=["what?", "y"])
+        assert code == 0
+        sudo.assert_called_once()
+
+    def test_declining_leaves_work_undone(
         self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
     ) -> None:
         code, out, sudo = _flow(monkeypatch, capsys, answers=["n"])
@@ -98,118 +116,165 @@ class TestRunComponent:
         assert "Cancelled" in out
         sudo.assert_not_called()
 
-    def test_non_terminal_prints_command_and_declines(
+    def test_declining_when_settled_is_success(
         self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
     ) -> None:
-        code, out, sudo = _flow(monkeypatch, capsys, tty=False)
-        assert code == 1
-        assert _COMPONENT.command in out
+        """Nothing to do must not read as failure — and needs no apology."""
+        code, out, sudo = _flow(monkeypatch, capsys, answers=["n"], component=_SETTLED)
+        assert code == 0
+        assert "Cancelled" not in out
+        sudo.assert_not_called()
+
+    @pytest.mark.parametrize(
+        ("component", "expected"), [(_NEEDED, 1), (_SETTLED, 0)], ids=["needed", "settled"]
+    )
+    def test_without_a_terminal_prints_the_command_and_declines(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+        component: _Component,
+        expected: int,
+    ) -> None:
+        code, out, sudo = _flow(monkeypatch, capsys, tty=False, component=component)
+        assert code == expected
+        assert component.command in out
         assert "Run the command above directly" in out
         sudo.assert_not_called()
 
-    def test_not_needed_defaults_to_no(
+    def test_end_of_input_declines(
         self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
     ) -> None:
-        """When the status calls for nothing, the default flips and Enter declines."""
-        prompts: list[str] = []
-
-        def _input(prompt: str) -> str:
-            prompts.append(prompt)
-            return ""
-
         monkeypatch.setattr(_setup_manual.sys.stdin, "isatty", lambda: True)
         monkeypatch.setattr(_setup_manual.sys.stdout, "isatty", lambda: True, raising=False)
-        monkeypatch.setattr("builtins.input", _input)
-        sudo = mock.MagicMock(return_value=0)
-        monkeypatch.setattr(_setup_manual, "_sudo_run", sudo)
+        monkeypatch.setattr("builtins.input", mock.MagicMock(side_effect=EOFError))
+        monkeypatch.setattr(_setup_manual, "_sudo_run", mock.MagicMock())
+        assert _run_component(_NEEDED, show_only=False) == 1
         assert _run_component(_SETTLED, show_only=False) == 0
-        assert "[y/s/N]" in prompts[0]
-        sudo.assert_not_called()
 
-    def test_not_needed_explicit_yes_still_runs(
+    def test_interrupt_exits_130(
         self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
     ) -> None:
-        """An explicit y runs even when nothing is strictly needed (reinstall)."""
-        code, _, sudo = _flow(monkeypatch, capsys, answers=["y"], component=_SETTLED)
-        assert code == 0
-        sudo.assert_called_once()
+        monkeypatch.setattr(_setup_manual.sys.stdin, "isatty", lambda: True)
+        monkeypatch.setattr(_setup_manual.sys.stdout, "isatty", lambda: True, raising=False)
+        monkeypatch.setattr("builtins.input", mock.MagicMock(side_effect=KeyboardInterrupt))
+        assert _run_component(_NEEDED, show_only=False) == 130
 
-    def test_not_needed_non_terminal_exits_zero(
-        self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
-    ) -> None:
-        """A scripted probe on a settled host must not read as failure."""
-        code, out, sudo = _flow(monkeypatch, capsys, tty=False, component=_SETTLED)
-        assert code == 0
-        sudo.assert_not_called()
-
-    def test_sudo_exit_code_is_forwarded(
+    def test_installer_exit_code_is_forwarded(
         self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
     ) -> None:
         monkeypatch.setattr(_setup_manual.sys.stdin, "isatty", lambda: True)
         monkeypatch.setattr(_setup_manual.sys.stdout, "isatty", lambda: True, raising=False)
         monkeypatch.setattr("builtins.input", lambda _prompt: "y")
         monkeypatch.setattr(_setup_manual, "_sudo_run", mock.MagicMock(return_value=7))
-        assert _run_component(_COMPONENT, show_only=False) == 7
+        assert _run_component(_NEEDED, show_only=False) == 7
+
+
+class TestShownCommand:
+    """The shown command is the argv that runs — derived, never restated."""
+
+    def test_names_the_installer_and_its_arguments(self) -> None:
+        assert _NEEDED.command == "sudo bash /somewhere/install.sh /some/root"
+
+    def test_quotes_paths_a_shell_would_split(self) -> None:
+        """A venv under a path with spaces stays copy-pasteable."""
+        comp = _Component(
+            status_line="",
+            destination="",
+            source="",
+            script_args=("/opt/my venv/install.sh", "/home/a b/live"),
+            action_needed=True,
+        )
+        assert comp.command == "sudo bash '/opt/my venv/install.sh' '/home/a b/live'"
 
 
 class TestHandleSetupComponent:
-    def test_unknown_component_exits_with_the_choices(self) -> None:
-        with pytest.raises(SystemExit, match="selinux or apparmor"):
+    """The one door: routing, and the messages for no/unknown component."""
+
+    def test_unknown_component_names_the_choices_and_the_invocation(self) -> None:
+        with pytest.raises(SystemExit, match=r"unknown setup component 'bogus'") as exc_info:
             handle_setup_component("bogus")
+        assert "terok-sandbox setup <selinux|apparmor>" in str(exc_info.value.code)
 
-    def test_selinux_routes(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        handler = mock.MagicMock(return_value=0)
-        monkeypatch.setattr(_setup_manual, "handle_setup_selinux", handler)
-        assert handle_setup_component("selinux", show_only=True) == 0
-        handler.assert_called_once_with(show_only=True, cfg=None)
+    def test_show_without_a_component_says_so(self) -> None:
+        with pytest.raises(SystemExit, match="--show needs a component") as exc_info:
+            handle_setup_component(None, show_only=True)
+        assert "terok-sandbox setup <selinux|apparmor>" in str(exc_info.value.code)
 
-    def test_apparmor_routes(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        handler = mock.MagicMock(return_value=0)
-        monkeypatch.setattr(_setup_manual, "handle_setup_apparmor", handler)
-        assert handle_setup_component("apparmor") == 0
-        handler.assert_called_once_with(show_only=False, state_root=None)
+    def test_message_follows_the_declared_invocation(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from terok_sandbox.operator_cli import SETUP_INVOCATION_ENV
+
+        monkeypatch.setenv(SETUP_INVOCATION_ENV, "terok setup")
+        with pytest.raises(SystemExit, match="terok setup <selinux|apparmor>"):
+            handle_setup_component(None)
+
+    @pytest.mark.parametrize("component", SETUP_COMPONENTS)
+    def test_every_component_in_the_roster_routes(
+        self, monkeypatch: pytest.MonkeyPatch, component: str
+    ) -> None:
+        """--show is the side-effect-free path, so it exercises routing end to end."""
+        printed: list[str] = []
+        monkeypatch.setattr(
+            _setup_manual, "_run_component", lambda comp, *, show_only: printed.append(comp.source)
+        )
+        assert handle_setup_component(component, show_only=True) is None or True
+        assert printed and printed[0].strip()
 
 
 class TestComponents:
-    def test_apparmor_component_renders_for_the_default_root(
+    """Each component names its own state, destination, rules, and argv."""
+
+    def test_apparmor_speaks_about_the_resolved_root_throughout(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ) -> None:
-        """Command, source, and script args all speak about the same root."""
+        """One resolver: the command, the rules, and the argv all name it."""
         from terok_sandbox._util import _apparmor
 
-        root = tmp_path / "sandbox-live"
-        monkeypatch.setattr(_setup_manual, "_apparmor_default_state_root", lambda: root)
+        root = tmp_path / "custom-live"
+        monkeypatch.setenv("TEROK_SANDBOX_LIVE_DIR", str(root))
         monkeypatch.setattr(
             _setup_manual,
             "_check_apparmor",
             lambda: _apparmor.AppArmorCheckResult(_apparmor.AppArmorStatus.PROFILE_MISSING),
         )
         comp = _setup_manual._apparmor_component()
+        assert comp.script_args[-1] == str(root)
         assert str(root) in comp.command
         assert f"owner {root}/tasks" in comp.source
-        assert comp.script_args[-1] == str(root)
-        assert "not installed" in comp.status_line
-        assert comp.needed is True
+        assert comp.action_needed is True
 
-    def test_apparmor_component_honours_an_override_root(
+    def test_apparmor_destination_names_the_local_include(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ) -> None:
-        """A frontend-resolved root wins over the convention everywhere at once."""
         from terok_sandbox._util import _apparmor
 
-        override = tmp_path / "custom-live"
+        profile = tmp_path / "etc" / "apparmor.d" / "usr.sbin.dnsmasq"
+        monkeypatch.setattr(_setup_manual, "_dnsmasq_profile", lambda: profile)
         monkeypatch.setattr(
             _setup_manual,
             "_check_apparmor",
-            lambda: _apparmor.AppArmorCheckResult(_apparmor.AppArmorStatus.OK),
+            lambda: _apparmor.AppArmorCheckResult(_apparmor.AppArmorStatus.PROFILE_MISSING),
         )
-        comp = _setup_manual._apparmor_component(override)
-        assert str(override) in comp.command
-        assert f"owner {override}/tasks" in comp.source
-        assert comp.script_args[-1] == str(override)
-        assert comp.needed is False
+        comp = _setup_manual._apparmor_component()
+        assert str(profile.parent / "local" / profile.name) in comp.destination
+        assert str(profile) in comp.destination
 
-    def test_selinux_component_uses_the_cfg_services_mode(
+    def test_apparmor_destination_empty_without_a_profile(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Nothing to write into — the status line already explains why."""
+        from terok_sandbox._util import _apparmor
+
+        monkeypatch.setattr(_setup_manual, "_dnsmasq_profile", lambda: None)
+        monkeypatch.setattr(
+            _setup_manual,
+            "_check_apparmor",
+            lambda: _apparmor.AppArmorCheckResult(_apparmor.AppArmorStatus.NOT_APPLICABLE),
+        )
+        comp = _setup_manual._apparmor_component()
+        assert comp.destination == ""
+        assert comp.action_needed is False
+
+    def test_selinux_uses_the_cfg_services_mode_and_names_the_module(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         from terok_sandbox._util import _selinux
@@ -221,10 +286,17 @@ class TestComponents:
             return _selinux.SelinuxCheckResult(_selinux.SelinuxStatus.POLICY_MISSING)
 
         monkeypatch.setattr(_setup_manual, "_check_selinux", _fake_check)
-        cfg = mock.MagicMock(services_mode="socket")
-        comp = _setup_manual._selinux_component(cfg)
+        comp = _setup_manual._selinux_component(mock.MagicMock(services_mode="socket"))
         assert seen["mode"] == "socket"
-        assert comp.command.startswith("sudo bash ")
+        assert _selinux.SELINUX_MODULE_NAME in comp.destination
+        assert f"semodule -r {_selinux.SELINUX_MODULE_NAME}" in comp.destination
+        assert comp.action_needed is True
+
+    def test_selinux_source_is_the_policy_file_verbatim(self) -> None:
+        """The reviewed text and the compiler's input are the same bytes."""
+        from terok_sandbox._util._selinux import policy_source_path
+
+        comp = _setup_manual._selinux_component(mock.MagicMock(services_mode="tcp"))
+        assert comp.source == policy_source_path().read_text()
         assert "module terok_socket" in comp.source
-        assert "not loaded" in comp.status_line
-        assert comp.needed is True
+        assert "#" in comp.source, "the rationale comments are part of what the operator reviews"

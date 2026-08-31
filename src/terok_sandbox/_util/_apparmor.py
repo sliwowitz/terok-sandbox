@@ -38,18 +38,20 @@ _DNSMASQ_PROFILES = (
     Path("/etc/apparmor.d/dnsmasq"),  # apparmor.d project / Arch
 )
 
-# Marker the installer writes into the local include, and the revision
-# suffix that identifies the CURRENT rule set.  The rules themselves live in
-# ``resources/apparmor/dnsmasq_addendum.template`` — the single source of truth
-# that both ``install_profile.sh`` and [`render_addendum`][terok_sandbox._util._apparmor.render_addendum]
-# render.  Bump the revision there and here whenever the rules change: an
-# older on-disk block still carries the base marker but not the current
-# revision, so it reads as installed-but-outdated and the operator is
-# prompted to reinstall.  ``r2`` = the one ``dnsmasq.*`` glob that replaced
-# the per-file (conf/pid/log) rules, which broke DNS whenever shield added a
-# file (terok-ai/terok#1246).
+# The rules, their revision, and the marker that frames them all live in
+# ``resources/apparmor/dnsmasq_addendum.template`` — the single source of
+# truth both ``install_profile.sh`` and
+# [`render_addendum`][terok_sandbox._util._apparmor.render_addendum] render.
+# Bump the revision in that template's header line when the rules change:
+# an older on-disk block carries the base marker but a different header, so
+# it reads as installed-but-outdated and the operator is prompted to
+# reinstall.  ``r2`` = the one ``dnsmasq.*`` glob that replaced the per-file
+# (conf/pid/log) rules, which broke DNS whenever shield added a file
+# (terok-ai/terok#1246).
+#
+# The bare marker is the one fact that must NOT move on a bump: the
+# installer's strip range and the staleness probe both key on it.
 _ADDENDUM_MARKER = "terok-shield apparmor"
-_ADDENDUM_REVISION = "r2"
 
 
 def is_apparmor_enabled() -> bool:
@@ -60,15 +62,25 @@ def is_apparmor_enabled() -> bool:
         return False
 
 
-def _dnsmasq_profile() -> Path | None:
+def dnsmasq_profile() -> Path | None:
     """Return the stock dnsmasq AppArmor profile present on this host, if any."""
     return next((p for p in _DNSMASQ_PROFILES if p.is_file()), None)
+
+
+def local_include_path(profile: Path) -> Path:
+    """Return the ``local/`` include *profile* is extended through.
+
+    AppArmor profiles include ``local/<profile name>`` for site changes;
+    that file — not the distro profile — is where the managed block
+    lands, and what the interactive flow names before installing.
+    """
+    return profile.parent / "local" / profile.name
 
 
 def _local_include_text(profile: Path) -> str:
     """Return *profile*'s local-include text, or ``""`` if absent/unreadable."""
     try:
-        return (profile.parent / "local" / profile.name).read_text()
+        return local_include_path(profile).read_text()
     except OSError:
         return ""
 
@@ -90,6 +102,11 @@ class AppArmorStatus(Enum):
     OK = "ok"
     """The terok addendum is installed at the current revision."""
 
+    @property
+    def action_needed(self) -> bool:
+        """Whether this status calls for an operator install."""
+        return self in (AppArmorStatus.PROFILE_MISSING, AppArmorStatus.PROFILE_OUTDATED)
+
 
 @dataclass(frozen=True)
 class AppArmorCheckResult:
@@ -109,28 +126,31 @@ def check_status() -> AppArmorCheckResult:
     """
     if not is_apparmor_enabled() or shutil.which("dnsmasq") is None:
         return AppArmorCheckResult(AppArmorStatus.NOT_APPLICABLE)
-    profile = _dnsmasq_profile()
+    profile = dnsmasq_profile()
     if profile is None:
         return AppArmorCheckResult(AppArmorStatus.NOT_APPLICABLE)
     addendum = _local_include_text(profile)
     if _ADDENDUM_MARKER not in addendum:
         return AppArmorCheckResult(AppArmorStatus.PROFILE_MISSING)
-    # Match the revision as a whole token (trailing space), so a future ``r20``
-    # is not read as the current ``r2`` and wrongly reported OK.
-    if f"{_ADDENDUM_MARKER} {_ADDENDUM_REVISION} " not in addendum:
+    # An install is a verbatim template render, so the template's own
+    # header line is the current-revision test — and comparing whole
+    # lines keeps a future ``r20`` from reading as today's ``r2``.
+    if _addendum_header() not in addendum.splitlines():
         return AppArmorCheckResult(AppArmorStatus.PROFILE_OUTDATED)
     return AppArmorCheckResult(AppArmorStatus.OK)
 
 
-def default_state_root() -> Path:
-    """The conventional sandbox-live root the addendum rules must permit.
+def state_root() -> Path:
+    """The sandbox-live root the addendum rules must permit.
 
-    Matches terok's default ``sandbox_live_dir()``; a frontend with an
-    overridden root passes its own resolved path instead.
+    Full precedence (env, config, default) via
+    [`sandbox_live_root`][terok_sandbox.paths.sandbox_live_root], so
+    the rules name the tree the shield actually writes no matter which
+    frontend asks.
     """
-    from ..paths import namespace_state_dir
+    from ..paths import sandbox_live_root
 
-    return namespace_state_dir("sandbox-live")
+    return sandbox_live_root()
 
 
 @lru_cache(maxsize=1)
@@ -144,22 +164,17 @@ def install_script_path() -> Path:
     return Path(str(_resource_files("terok_sandbox.resources.apparmor") / "install_profile.sh"))
 
 
-def install_command(state_root: Path) -> str:
-    """Return the ``sudo bash <script> <state_root>`` installer invocation.
-
-    *state_root* is the sandbox-live root whose ``tasks/*/*/shield`` tree
-    the rendered profile must permit.  The caller supplies it because the
-    script runs under ``sudo`` and cannot resolve the operator's home.
-    """
-    return f"sudo bash {install_script_path()} {state_root}"
-
-
 @lru_cache(maxsize=1)
 def _addendum_template() -> str:
     """The raw ``dnsmasq_addendum.template`` text (single ``@STATE_ROOT@`` token)."""
     return Path(
         str(_resource_files("terok_sandbox.resources.apparmor") / "dnsmasq_addendum.template")
     ).read_text()
+
+
+def _addendum_header() -> str:
+    """The template's marker line — the current revision, verbatim."""
+    return _addendum_template().splitlines()[0]
 
 
 def render_addendum(state_root: Path) -> str:

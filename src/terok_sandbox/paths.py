@@ -37,6 +37,7 @@ __all__ = [
     "read_config_section",
     "read_config_top_level",
     "runtime_root",
+    "sandbox_live_root",
     "state_root",
     "vault_root",
 ]
@@ -68,6 +69,26 @@ def state_root() -> Path:
     → ``~/.local/share/terok/sandbox``.
     """
     return namespace_state_dir("sandbox", env_var="TEROK_SANDBOX_STATE_DIR")
+
+
+def sandbox_live_root() -> Path:
+    """Container-writable runtime data root (per-task trees, agent mounts).
+
+    Priority: ``TEROK_SANDBOX_LIVE_DIR`` env var
+    → ``config.yml`` ``paths.sandbox_live_dir``
+    → the namespace default (``<state root>/sandbox-live``).
+
+    The same precedence every frontend resolves, in the package that
+    owns the tree — so the AppArmor rules permitting it name the root
+    the shield actually writes, whichever CLI asks.
+    """
+    env = os.getenv("TEROK_SANDBOX_LIVE_DIR")
+    if env:
+        return Path(env).expanduser()
+    val = _read_config_paths().get("sandbox_live_dir")
+    if val:
+        return Path(val).expanduser().resolve()
+    return namespace_state_dir("sandbox-live")
 
 
 def port_registry_dir() -> Path:

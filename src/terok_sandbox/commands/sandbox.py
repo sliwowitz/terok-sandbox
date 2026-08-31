@@ -21,7 +21,6 @@ from typing import TYPE_CHECKING
 
 from terok_util import LazyHandler
 
-from .._util._selinux import SelinuxStatus
 from ._types import ArgDef, CommandDef
 
 if TYPE_CHECKING:
@@ -80,8 +79,8 @@ def _handle_sandbox_setup(
             override.  Defaults to the layered config — passed through
             so terok's config stays the single source of truth for paths.
     """
+    from .._exit_codes import EXIT_MANUAL_STEP_NEEDED
     from .._setup import (
-        EXIT_MANUAL_STEP_NEEDED,
         print_apparmor_install_hint,
         print_selinux_install_hint,
         run_legacy_install_cleanup_phase,
@@ -96,7 +95,7 @@ def _handle_sandbox_setup(
     if cfg is None:
         cfg = SandboxConfig()
 
-    if component is not None:
+    if component is not None or show:
         rejected = [
             flag
             for flag, given in (
@@ -114,10 +113,6 @@ def _handle_sandbox_setup(
         from .._setup_manual import handle_setup_component
 
         return handle_setup_component(component, show_only=show, cfg=cfg)
-    if show:
-        from .._setup_manual import SETUP_COMPONENTS
-
-        raise SystemExit(f"--show needs a component ({' or '.join(SETUP_COMPONENTS)})")
 
     # Fail-fast on an unknown / unsupported ``--passphrase-tier`` *before*
     # any host-mutating phase runs.  Without this check, a typo would let
@@ -129,7 +124,7 @@ def _handle_sandbox_setup(
     if passphrase_tier is not None and not no_vault:
         _validate_passphrase_tier(passphrase_tier)
 
-    selinux_result = run_prereq_report(cfg)
+    selinux_result, apparmor_result = run_prereq_report(cfg)
     print()
     print("Services:")
 
@@ -172,11 +167,11 @@ def _handle_sandbox_setup(
     print_selinux_install_hint(selinux_result)
     # Likewise the AppArmor dnsmasq-profile addendum (non-fatal: shield
     # falls back to the lookup tier without it, so no exit-code change).
-    print_apparmor_install_hint()
+    print_apparmor_install_hint(apparmor_result)
 
     if failed:
         raise SystemExit(1)
-    if selinux_result.status in (SelinuxStatus.POLICY_MISSING, SelinuxStatus.POLICY_OUTDATED):
+    if selinux_result.status.action_needed:
         # All install phases succeeded but the host still can't reach
         # the sockets without the policy — missing entirely, or a stale
         # revision lacking the supervisor's rule.  Either way setup is

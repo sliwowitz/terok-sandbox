@@ -28,50 +28,45 @@ fi
 script_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" &>/dev/null && pwd)
 te_source="${script_dir}/terok_socket.te"
 
-if [[ ! -f "$te_source" ]]; then
-    echo "${_red}Policy source not found:${_reset} $te_source" >&2
-    exit 1
-fi
-
-# Defence-in-depth against sudo executing attacker-tampered content.
-# Verify that neither this script nor the .te it compiles (nor their
-# containing directories) can be swapped or rewritten by any user other
-# than the owner before ``sudo bash`` reaches them.  Covers:
+# Defence-in-depth against sudo executing attacker-tampered content: every
+# file this sudo run consumes must not be swappable or rewritable by any
+# user other than its owner.  Covers:
 #
-#  * symlink redirection — reject symlinks outright (follow would trust
-#    a target we didn't stat);
+#  * symlink redirection — reject symlinks outright (following one would
+#    trust a target we did not stat);
 #  * file rewrite — reject group/world-writable file mode bits;
-#  * file replacement via directory — reject group/world-writable
-#    parent directory (``mv newfile oldfile`` works if the dir is
-#    writable even when the file itself is read-only).
+#  * file replacement via directory — reject a group/world-writable parent
+#    ("mv newfile oldfile" works there even on a read-only file).
 #
 # The files *are* legitimately user-owned (pipx, pip --user, editable
-# checkouts), so we accept that but require their owner is the only
-# writer.
-for _f in "${BASH_SOURCE[0]}" "$te_source"; do
-    if [[ -L "$_f" ]]; then
-        echo "${_red}Refusing to run:${_reset} $_f is a symlink." >&2
+# checkouts), so we accept that but require their owner is the only writer.
+_reject_unsafe() {
+    local f="$1"
+    if [[ -L "$f" ]]; then
+        echo "${_red}Refusing to run:${_reset} $f is a symlink." >&2
         echo "       A file sudo-bash'd must be a concrete regular file, not a link." >&2
         exit 1
     fi
-    if [[ ! -f "$_f" ]]; then
-        echo "${_red}Refusing to run:${_reset} $_f is not a regular file." >&2
+    if [[ ! -f "$f" ]]; then
+        echo "${_red}Refusing to run:${_reset} $f is not a regular file." >&2
         exit 1
     fi
-    _perm=$(stat -c '%a' "$_f")
+    _perm=$(stat -c '%a' "$f")
     if (( 8#$_perm & 8#022 )); then
-        echo "${_red}Refusing to run:${_reset} $_f is group- or world-writable (mode $_perm)." >&2
+        echo "${_red}Refusing to run:${_reset} $f is group- or world-writable (mode $_perm)." >&2
         echo "       A file sudo-bash'd must not be writable by any user other than its owner." >&2
-        echo "       Reinstall the package into a location you control (e.g. ``pipx install --force``)." >&2
+        echo "       Reinstall the package into a location you control (e.g. pipx install --force)." >&2
         exit 1
     fi
-    _dir_perm=$(stat -c '%a' "$(dirname "$_f")")
+    _dir_perm=$(stat -c '%a' "$(dirname "$f")")
     if (( 8#$_dir_perm & 8#022 )); then
-        echo "${_red}Refusing to run:${_reset} parent of $_f is group- or world-writable (mode $_dir_perm)." >&2
+        echo "${_red}Refusing to run:${_reset} parent of $f is group- or world-writable (mode $_dir_perm)." >&2
         echo "       A writable parent lets another user replace the file via 'mv'." >&2
         exit 1
     fi
-done
+}
+_reject_unsafe "${BASH_SOURCE[0]}"
+_reject_unsafe "$te_source"
 
 for tool in checkmodule semodule_package semodule; do
     if ! command -v "$tool" >/dev/null 2>&1; then

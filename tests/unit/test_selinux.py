@@ -19,7 +19,6 @@ from terok_sandbox._util._selinux import (
     _try_getsockcreatecon,
     _try_setsockcreatecon,
     check_status,
-    install_command,
     install_script_path,
     is_libselinux_available,
     is_policy_installed,
@@ -234,17 +233,6 @@ class TestInstallScriptPath:
         assert path.name == "install_policy.sh"
 
 
-class TestInstallCommand:
-    """Verify the ``sudo bash <script>`` command string helper."""
-
-    def test_shape(self) -> None:
-        """Returns ``sudo bash`` plus the resolved installer path."""
-        cmd = install_command()
-        assert cmd.startswith("sudo bash ")
-        assert cmd.endswith("install_policy.sh")
-        assert str(install_script_path()) in cmd
-
-
 # ---------- Socket context manager ----------
 
 
@@ -373,29 +361,6 @@ class TestPolicySourcePath:
         path = policy_source_path()
         assert path.is_file()
         assert path.name == "terok_socket.te"
-
-
-class TestPolicySourceDisplay:
-    """``policy_source_display`` shows only what reaches the kernel."""
-
-    def test_strips_comments_and_blank_runs(self) -> None:
-        from terok_sandbox._util._selinux import policy_source_display
-
-        out = policy_source_display()
-        assert "#" not in out
-        assert "\n\n" not in out
-        assert out.endswith("\n")
-
-    def test_keeps_every_statement(self) -> None:
-        """Every non-comment statement of the shipped .te survives the strip."""
-        from terok_sandbox._util._selinux import policy_source_display, policy_source_path
-
-        out = policy_source_display()
-        assert "module terok_socket" in out
-        for raw in policy_source_path().read_text().splitlines():
-            statement = raw.split("#", 1)[0].strip()
-            if statement:
-                assert statement in out
 
 
 class TestCheckStatus:

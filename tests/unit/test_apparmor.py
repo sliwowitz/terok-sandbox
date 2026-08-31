@@ -15,9 +15,7 @@ from terok_sandbox._util._apparmor import (
     AppArmorCheckResult,
     AppArmorStatus,
     check_status,
-    install_command,
 )
-from terok_sandbox.paths import namespace_state_dir
 
 
 def _arrange(
@@ -48,8 +46,11 @@ def _arrange(
         if addendum or outdated:
             # Build the markers from the module constants so bumping the
             # revision never silently rots this fixture.
-            revision = "" if outdated else f" {_apparmor._ADDENDUM_REVISION}"
-            marker = f"# >>> {_apparmor._ADDENDUM_MARKER}{revision} (managed) >>>"
+            marker = (
+                f"# >>> {_apparmor._ADDENDUM_MARKER} (older revision) >>>"
+                if outdated
+                else _apparmor._addendum_header()
+            )
             local = prof.parent / "local" / "dnsmasq"
             local.parent.mkdir(parents=True, exist_ok=True)
             local.write_text(f"{marker}\nowner x r,\n")
@@ -97,23 +98,27 @@ def test_profile_outdated_when_addendum_is_old_revision(
 def test_profile_outdated_when_revision_is_a_superstring(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    """A future revision like r20 must not read as the current r2 (token boundary)."""
+    """A future revision like r20 must not read as the current r2.
+
+    Whole-line matching makes this structural: the r20 header is simply a
+    different line, so no token-boundary reasoning is needed.
+    """
     _arrange(monkeypatch, tmp_path, addendum=True)
     local = tmp_path / "etc" / "apparmor.d" / "local" / "dnsmasq"
-    local.write_text(
-        f"# >>> {_apparmor._ADDENDUM_MARKER} {_apparmor._ADDENDUM_REVISION}0 (managed) >>>\nowner x r,\n"
-    )
+    local.write_text(_apparmor._addendum_header().replace(" r2 ", " r20 ") + "\nowner x r,\n")
     assert check_status().status is AppArmorStatus.PROFILE_OUTDATED
 
 
-def test_template_stamps_the_current_revision_marker() -> None:
-    """The addendum template carries the exact marker check_status treats as current.
+def test_header_is_the_only_revision_authority() -> None:
+    """The template's header line carries the marker check_status keys on.
 
-    The staleness check hinges on the template and this module agreeing on
-    the marker text, so pin that contract at the source of truth.
+    One bump site: the revision lives in the template and nowhere else,
+    so this pins the shape the probe relies on rather than an agreement
+    between two constants.
     """
-    template = _apparmor._addendum_template()
-    assert f">>> {_apparmor._ADDENDUM_MARKER} {_apparmor._ADDENDUM_REVISION} " in template
+    header = _apparmor._addendum_header()
+    assert header.startswith(f"# >>> {_apparmor._ADDENDUM_MARKER} ")
+    assert header == _apparmor._addendum_template().splitlines()[0]
 
 
 def test_installer_renders_the_template_not_its_own_rules() -> None:
@@ -124,10 +129,10 @@ def test_installer_renders_the_template_not_its_own_rules() -> None:
     """
     script = _apparmor.install_script_path().read_text()
     assert "dnsmasq_addendum.template" in script
-    # The strip-old-block sed keeps the base marker; the revisioned marker
+    # The strip-old-block sed keeps the base marker; the revisioned header
     # and the actual rules must live only in the template.
     assert "rwk," not in script
-    assert f"{_apparmor._ADDENDUM_MARKER} {_apparmor._ADDENDUM_REVISION}" not in script
+    assert _apparmor._addendum_header() not in script
 
 
 def test_render_addendum_substitutes_the_state_root(tmp_path: Path) -> None:
@@ -179,15 +184,6 @@ def test_render_addendum_matches_the_shell_substitution(tmp_path: Path, subdir: 
         check=True,
     )
     assert shell.stdout == _apparmor.render_addendum(root)
-
-
-def test_install_command_shape(tmp_path: Path) -> None:
-    """install_command renders a sudo invocation with the script and the state root."""
-    root = tmp_path / "sandbox-live"
-    cmd = install_command(root)
-    assert cmd.startswith("sudo bash ")
-    assert "install_profile.sh" in cmd
-    assert str(root) in cmd
 
 
 def test_is_apparmor_enabled_false_when_sysfs_absent(
@@ -248,27 +244,31 @@ def test_report_apparmor_outdated_flags_reinstall(
 
 
 def test_install_hint_fires_for_missing_and_outdated(
-    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    capsys: pytest.CaptureFixture[str],
 ) -> None:
     """The end-of-setup hint block fires for a missing OR outdated addendum, quiet otherwise."""
-    _patch_status(monkeypatch, AppArmorStatus.PROFILE_MISSING)
-    _setup.print_apparmor_install_hint()
-    out = capsys.readouterr().out
-    assert "AppArmor profile recommended" in out
-    assert "terok-sandbox setup apparmor" in out
-
-    _patch_status(monkeypatch, AppArmorStatus.PROFILE_OUTDATED)
-    _setup.print_apparmor_install_hint()
-    out = capsys.readouterr().out
-    assert "older revision" in out
-    assert "terok-sandbox setup apparmor" in out
+    for needs_work in (AppArmorStatus.PROFILE_MISSING, AppArmorStatus.PROFILE_OUTDATED):
+        _setup.print_apparmor_install_hint(AppArmorCheckResult(needs_work))
+        out = capsys.readouterr().out
+        assert "AppArmor profile recommended" in out
+        assert "terok-sandbox setup apparmor" in out
 
     for quiet in (AppArmorStatus.OK, AppArmorStatus.NOT_APPLICABLE):
-        _patch_status(monkeypatch, quiet)
-        _setup.print_apparmor_install_hint()
+        _setup.print_apparmor_install_hint(AppArmorCheckResult(quiet))
         assert capsys.readouterr().out == ""
 
 
-def test_apparmor_state_root_is_sandbox_live() -> None:
-    """The default state root is the conventional sandbox-live namespace dir."""
-    assert _apparmor.default_state_root() == namespace_state_dir("sandbox-live")
+def test_state_root_follows_the_sandbox_live_resolver() -> None:
+    """The rules name whatever root the package resolves — one resolver, full precedence."""
+    from terok_sandbox.paths import sandbox_live_root
+
+    assert _apparmor.state_root() == sandbox_live_root()
+
+
+def test_state_root_honours_the_env_override(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """An overridden sandbox-live root reaches the rules (terok-parity)."""
+    monkeypatch.setenv("TEROK_SANDBOX_LIVE_DIR", str(tmp_path / "custom"))
+    assert _apparmor.state_root() == tmp_path / "custom"
+    assert f"owner {tmp_path / 'custom'}/tasks" in _apparmor.render_addendum(_apparmor.state_root())
