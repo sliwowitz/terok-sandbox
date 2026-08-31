@@ -38,3 +38,13 @@ def test_nested_container_socket_paths_are_public() -> None:
     assert terok_sandbox.CONTAINER_VAULT_SOCKET == "/run/terok/vault/vault.sock"
     assert terok_sandbox.CONTAINER_SSH_SIGNER_SOCKET == "/run/terok/signer/ssh-agent.sock"
     assert terok_sandbox.CONTAINER_GATE_SOCKET == "/run/terok/gate/gate-server.sock"
+
+
+def test_combined_annotations_resolver_is_public_alias() -> None:
+    """The renamed re-export pins to shield's combined resolver and rides ``__all__``."""
+    from terok_shield.container import ShieldAnnotations, resolve_annotations
+
+    assert terok_sandbox.resolve_container_annotations is resolve_annotations
+    assert terok_sandbox.ShieldAnnotations is ShieldAnnotations
+    assert "resolve_container_annotations" in terok_sandbox.__all__
+    assert "ShieldAnnotations" in terok_sandbox.__all__
