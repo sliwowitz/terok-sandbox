@@ -229,10 +229,11 @@ def test_manager_dns_tier_reads_recorded_value(tmp_path: Path) -> None:
     assert manager.dns_tier == "lookup"
 
     # A container launched before terok-shield renamed the tier recorded "dig".
-    # Shield reads an unrecognised value as no tier at all, so this reports None
-    # rather than a name that no longer means anything.
+    # That rename was nominal — the same tier, under a name that stopped
+    # privileging one of two interchangeable tools — so shield carries it
+    # forward, and such a container restarts instead of being recreated.
     tier_file.write_text("dig\n")
-    assert manager.dns_tier is None
+    assert manager.dns_tier == "lookup"
 
 
 def test_manager_down_passes_disengaged() -> None:
