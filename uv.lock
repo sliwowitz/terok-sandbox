@@ -2526,8 +2526,8 @@ test = [
 
 [[package]]
 name = "terok-shield"
-version = "0.8.0a15.dev370+ga07b1b952"
-source = { git = "https://github.com/sliwowitz/terok-shield.git?rev=feat%2Fcontainer-arg-predicate-and-combined-resolver#a07b1b952e623385cad2df3fc2e9f053666549e3" }
+version = "0.8.0a15.dev371+gd1a639c8e"
+source = { git = "https://github.com/sliwowitz/terok-shield.git?rev=feat%2Fcontainer-arg-predicate-and-combined-resolver#d1a639c8e01958ea5259a8af11c6ffea3cce1948" }
 dependencies = [
     { name = "pydantic" },
     { name = "pyyaml" },
