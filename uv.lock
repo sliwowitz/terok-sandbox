@@ -2534,7 +2534,7 @@ dependencies = [
     { name = "terok-util" },
 ]
 wheels = [
-    { url = "https://github.com/terok-ai/terok-shield/releases/download/v0.8.0a14/terok_shield-0.8.0a14-py3-none-any.whl", hash = "sha256:ab34f3b35642547628269c782ab162998614596a03509013d5c4c22e0770cf15" },
+    { url = "https://github.com/terok-ai/terok-shield/releases/download/v0.8.0a14/terok_shield-0.8.0a14-py3-none-any.whl", hash = "sha256:304acb0bc9b3610be34384ad5b9d211b774f7c2879b5b5809030e21851e1f352" },
 ]
 
 [package.metadata]

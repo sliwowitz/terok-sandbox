@@ -130,6 +130,8 @@ _LAZY: dict[str, str] = {
     "BUNDLE_VERSION": "integrations.shield:BUNDLE_VERSION",
     "ShieldManager": "integrations.shield:ShieldManager",
     "check_environment": "integrations.shield:check_environment",
+    "ShieldAnnotations": "integrations.shield:ShieldAnnotations",
+    "resolve_container_annotations": "integrations.shield:resolve_container_annotations",
     "resolve_container_shield_version": "integrations.shield:resolve_container_shield_version",
     "resolve_container_state_dir": "integrations.shield:resolve_container_state_dir",
     # Per-container launch/state
@@ -314,9 +316,11 @@ if TYPE_CHECKING:
     from .integrations.shield import (
         BUNDLE_VERSION,
         EnvironmentCheck,
+        ShieldAnnotations,
         ShieldHooks,
         ShieldManager,
         check_environment,
+        resolve_container_annotations,
         resolve_container_shield_version,
         resolve_container_state_dir,
     )
@@ -461,7 +465,9 @@ __all__ = [
     "ShieldHooks",
     "BUNDLE_VERSION",
     "ShieldManager",
+    "ShieldAnnotations",
     "check_environment",
+    "resolve_container_annotations",
     "resolve_container_shield_version",
     "resolve_container_state_dir",
     # Git gate
