@@ -141,7 +141,7 @@ def _handle_sandbox_setup(
     # so it isn't scrolled away by service install banners.  Sandbox#854.
     print_selinux_install_hint(selinux_result)
     # Likewise the AppArmor dnsmasq-profile addendum (non-fatal: shield
-    # falls back to the dig tier without it, so no exit-code change).
+    # falls back to the lookup tier without it, so no exit-code change).
     print_apparmor_install_hint()
 
     if failed:

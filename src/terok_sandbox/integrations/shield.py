@@ -300,13 +300,14 @@ class ShieldManager:
 
     @property
     def dns_tier(self) -> str | None:
-        """DNS tier this task launched with (``dnsmasq``/``dig``/``getent``).
+        """DNS tier this task launched with (``dnsmasq``/``lookup``/``getent``).
 
         Reads only the recorded tier file — like
         [`status`][terok_sandbox.integrations.shield.ShieldManager.status], it
-        pays no Shield wire-up cost.  ``None`` when the task recorded no tier (never
-        shielded, or predates tier recording).  A degraded tier
-        (``dig``/``getent``) tells the operator this task's egress
+        pays no Shield wire-up cost.  ``None`` when the task recorded no tier —
+        never shielded, predating tier recording, or predating the rename of
+        ``dig`` to ``lookup``, whose old value no longer names a tier.  A degraded
+        (``lookup``/``getent``) tells the operator this task's egress
         allowlist resolves statically, without IP-rotation handling.
         """
         return recorded_dns_tier(self.state_dir)

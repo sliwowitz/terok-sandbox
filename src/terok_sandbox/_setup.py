@@ -215,7 +215,7 @@ def _report_apparmor() -> AppArmorCheckResult:
 
     Mirrors `_report_selinux` for the per-container dnsmasq AppArmor
     addendum.  Non-fatal: a missing addendum only degrades the DNS tier
-    (shield falls back to dig), so this never blocks or sets an exit code.
+    (shield falls back to lookup), so this never blocks or sets an exit code.
     """
     result = check_apparmor_status()
     if result.status is AppArmorStatus.NOT_APPLICABLE:
@@ -245,11 +245,11 @@ def print_apparmor_install_hint() -> None:
     print("─ AppArmor profile recommended ────────────────────────────────")
     if outdated:
         print("Your terok dnsmasq AppArmor addendum is an older revision; until")
-        print("it is refreshed the per-container DNS drops to the dig tier (no")
+        print("it is refreshed the per-container DNS drops to the lookup tier (no")
         print("live IP-rotation).")
     else:
         print("dnsmasq is AppArmor-confined here; without the terok addendum the")
-        print("per-container DNS drops to the dig tier (no live IP-rotation).")
+        print("per-container DNS drops to the lookup tier (no live IP-rotation).")
     print()
     print(
         f"{'Reinstall' if outdated else 'Install'} the addendum (keeps dnsmasq otherwise confined):"
