@@ -2481,7 +2481,7 @@ test = [
 [package.metadata]
 requires-dist = [
     { name = "aiohttp", specifier = "~=3.14.3" },
-    { name = "cryptography", specifier = ">=49,<51" },
+    { name = "cryptography", specifier = "~=50.0" },
     { name = "jinja2", specifier = "~=3.1" },
     { name = "keyring", specifier = "~=25.7" },
     { name = "packaging", specifier = "~=26.3" },
