@@ -67,6 +67,7 @@ _LAZY: dict[str, str] = {
     "selinux_install_script": "_util._selinux:install_script_path",
     # Interactive per-component hardening setup (the ``setup selinux`` /
     # ``setup apparmor`` verbs every frontend routes to)
+    "SETUP_COMPONENTS": "_setup_manual:SETUP_COMPONENTS",
     "handle_setup_apparmor": "_setup_manual:handle_setup_apparmor",
     "handle_setup_component": "_setup_manual:handle_setup_component",
     "handle_setup_selinux": "_setup_manual:handle_setup_selinux",
@@ -260,6 +261,7 @@ if TYPE_CHECKING:
     __version__: str
 
     from ._setup_manual import (
+        SETUP_COMPONENTS,
         handle_setup_apparmor,
         handle_setup_component,
         handle_setup_selinux,
@@ -550,6 +552,7 @@ __all__ = [
     "SelinuxCheckResult",
     "SelinuxStatus",
     "check_selinux_status",
+    "SETUP_COMPONENTS",
     "handle_setup_apparmor",
     "handle_setup_component",
     "handle_setup_selinux",

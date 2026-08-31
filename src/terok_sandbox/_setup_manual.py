@@ -46,6 +46,10 @@ from ._util._selinux import (
 if TYPE_CHECKING:
     from .config import SandboxConfig
 
+#: The hardening components ``setup <component>`` can install — the single
+#: roster every frontend's argument validation and hint rendering consume.
+SETUP_COMPONENTS: tuple[str, ...] = ("selinux", "apparmor")
+
 _SELINUX_STATUS_LINES = {
     SelinuxStatus.OK: "The terok_socket policy is loaded and current.",
     SelinuxStatus.POLICY_MISSING: "The terok_socket policy is not loaded.",
@@ -190,10 +194,13 @@ def handle_setup_component(
         return handle_setup_selinux(show_only=show_only, cfg=cfg)
     if component == "apparmor":
         return handle_setup_apparmor(show_only=show_only)
-    raise SystemExit(f"unknown setup component {component!r} (expected: selinux or apparmor)")
+    raise SystemExit(
+        f"unknown setup component {component!r} (expected: {' or '.join(SETUP_COMPONENTS)})"
+    )
 
 
 __all__ = [
+    "SETUP_COMPONENTS",
     "handle_setup_apparmor",
     "handle_setup_component",
     "handle_setup_selinux",
