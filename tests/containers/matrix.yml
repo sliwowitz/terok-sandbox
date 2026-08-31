@@ -12,7 +12,7 @@
 
 image-prefix: terok-sandbox-test
 flavor: podman
-expect: [podman, nft, dnsmasq, dig, getent, git, internet]
+expect: [podman, nft, dnsmasq, lookup, getent, git, internet]
 groups: [test]
 
 slots:

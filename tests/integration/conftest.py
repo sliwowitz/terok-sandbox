@@ -94,7 +94,9 @@ _CAPABILITY_PROBES = {
     "podman": lambda: binary_on_path("podman"),
     "nft": lambda: binary_on_path("nft"),
     "dnsmasq": lambda: binary_on_path("dnsmasq"),
-    "dig": lambda: binary_on_path("dig"),
+    # A lookup tool, not one particular binary: terok-shield's resolver takes
+    # dig or drill, and the Arch/Manjaro images ship the latter.
+    "lookup": lambda: binary_on_path("dig") or binary_on_path("drill"),
     "getent": lambda: binary_on_path("getent"),
     "git": lambda: binary_on_path("git"),
     "internet": lambda: tcp_reachable(*PUBLIC_DNS_PROBE),
