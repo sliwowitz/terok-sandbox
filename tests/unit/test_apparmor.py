@@ -139,23 +139,37 @@ def test_render_addendum_substitutes_the_state_root(tmp_path: Path) -> None:
     assert rendered == _apparmor.render_addendum(Path(str(root) + "/"))
 
 
-def test_render_addendum_matches_the_shell_substitution(tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    "subdir",
+    [
+        "sandbox-live",
+        "a&b",  # bash >= 5.2 patsub_replacement: unquoted '&' becomes the pattern
+        "back\\slash",  # unquoted replacement also consumes backslashes
+        "with space",
+    ],
+)
+def test_render_addendum_matches_the_shell_substitution(tmp_path: Path, subdir: str) -> None:
     """Python's rendering is byte-identical to the installer's bash rendering.
 
     The show option's whole promise is "this is exactly what the install
     appends" — lock the two substitution implementations together by
-    running the script's own expansion over the shipped template.
+    running the script's own expansion over the shipped template, with
+    roots exercising the patsub_replacement metacharacters.
     """
     import subprocess
 
-    root = tmp_path / "sandbox-live"
+    root = tmp_path / subdir
     template = _apparmor.install_script_path().parent / "dnsmasq_addendum.template"
+    substitution = '"${_content//@STATE_ROOT@/"$state_root"}"'
+    # The snippet below must be the script's own expansion — pin it, so
+    # neither side can drift to the unquoted form (bash >= 5.2 treats an
+    # unquoted replacement's '&' as the matched pattern).
+    assert substitution in _apparmor.install_script_path().read_text()
     shell = subprocess.run(
         [
             "bash",
             "-c",
-            'state_root="${2%/}"; _content="$(<"$1")"; '
-            'printf "%s\\n" "${_content//@STATE_ROOT@/$state_root}"',
+            f'state_root="${{2%/}}"; _content="$(<"$1")"; printf "%s\\n" {substitution}',
             "-",
             str(template),
             str(root) + "/",

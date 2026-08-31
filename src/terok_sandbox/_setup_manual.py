@@ -25,6 +25,7 @@ import shutil
 import subprocess  # nosec B404 — runs the bundled, audited installer via sudo
 import sys
 from dataclasses import dataclass
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 from ._util._apparmor import (
@@ -82,6 +83,11 @@ class _Component:
     status_line: str
     """One-sentence current state, printed first."""
 
+    needed: bool
+    """Whether the current status calls for an install.  Drives the
+    prompt default (``[Y/s/n]`` vs ``[y/s/N]``) and the non-terminal
+    exit code — "nothing to do" must not read as failure."""
+
     command: str
     """The exact ``sudo bash …`` invocation a ``y`` answer runs."""
 
@@ -97,18 +103,25 @@ def _selinux_component(cfg: SandboxConfig) -> _Component:
     status = _check_selinux(services_mode=cfg.services_mode).status
     return _Component(
         status_line=_SELINUX_STATUS_LINES[status],
+        needed=status in (SelinuxStatus.POLICY_MISSING, SelinuxStatus.POLICY_OUTDATED),
         command=_selinux_install_command(),
         source=_policy_source_display(),
         script_args=(str(_selinux_install_script()),),
     )
 
 
-def _apparmor_component() -> _Component:
-    """Assemble the AppArmor addendum component for the default state root."""
+def _apparmor_component(state_root: Path | None = None) -> _Component:
+    """Assemble the AppArmor addendum component for *state_root*.
+
+    ``None`` means the conventional default; a frontend with an
+    overridden sandbox-live root passes its own resolved path so the
+    rendered rules, the shown command, and the install all name it.
+    """
     status = _check_apparmor().status
-    root = _apparmor_default_state_root()
+    root = state_root or _apparmor_default_state_root()
     return _Component(
         status_line=_APPARMOR_STATUS_LINES[status],
+        needed=status in (AppArmorStatus.PROFILE_MISSING, AppArmorStatus.PROFILE_OUTDATED),
         command=_apparmor_install_command(root),
         source=_render_addendum(root),
         script_args=(str(_apparmor_install_script()), str(root)),
@@ -134,11 +147,13 @@ def _run_component(comp: _Component, *, show_only: bool) -> int:
     """The shared show-ask-run flow.  Returns the process exit code.
 
     ``--show`` prints the rules and returns.  Otherwise the exact sudo
-    command is printed first and a terminal gets the ``[Y/s/n]``
+    command is printed first and a terminal gets the yes/show/no
     question (``s`` prints the rules, then the question is asked
-    again); a non-terminal only gets the command — the install needs a
-    terminal for the sudo password.  ``n`` and end-of-input cancel with
-    exit 1; Ctrl-C cancels with exit 130.
+    again); plain Enter installs when the status calls for it and
+    declines when it does not.  A non-terminal (either side of the
+    pipe) only gets the command — the install needs a terminal for the
+    sudo password — and exits 0 when there was nothing to do.  ``n``
+    and end-of-input cancel; Ctrl-C cancels with exit 130.
     """
     if show_only:
         print(comp.source, end="")
@@ -147,21 +162,24 @@ def _run_component(comp: _Component, *, show_only: bool) -> int:
     print()
     print("This will run (sudo asks for your password):")
     print(f"  {comp.command}")
-    if not sys.stdin.isatty():
+    if not (sys.stdin.isatty() and sys.stdout.isatty()):
         print()
         print("Not a terminal. Run the command above directly to install.")
-        return 1
+        return 0 if not comp.needed else 1
     print()
+    prompt = "Proceed? [Y/s/n] (s = show the rules first): "
+    if not comp.needed:
+        prompt = "Run anyway? [y/s/N] (s = show the rules first): "
     while True:
         try:
-            answer = input("Proceed? [Y/s/n] (s = show the rules first): ").strip().lower()
+            answer = input(prompt).strip().lower()
         except EOFError:
             print()
-            return 1
+            return 0 if not comp.needed else 1
         except KeyboardInterrupt:
             print()
             return 130
-        if answer in ("", "y", "yes"):
+        if answer in ("y", "yes") or (answer == "" and comp.needed):
             print()
             return _sudo_run(comp.script_args)
         if answer == "s":
@@ -169,7 +187,9 @@ def _run_component(comp: _Component, *, show_only: bool) -> int:
             print(comp.source, end="")
             print()
             continue
-        if answer in ("n", "no"):
+        if answer in ("n", "no") or (answer == "" and not comp.needed):
+            if not comp.needed:
+                return 0
             print("Cancelled. You can run the command above yourself at any time.")
             return 1
 
@@ -181,19 +201,28 @@ def handle_setup_selinux(*, show_only: bool = False, cfg: SandboxConfig | None =
     return _run_component(_selinux_component(cfg or SandboxConfig()), show_only=show_only)
 
 
-def handle_setup_apparmor(*, show_only: bool = False) -> int:
-    """``setup apparmor`` — show, confirm, and run the addendum installer."""
-    return _run_component(_apparmor_component(), show_only=show_only)
+def handle_setup_apparmor(*, show_only: bool = False, state_root: Path | None = None) -> int:
+    """``setup apparmor`` — show, confirm, and run the addendum installer.
+
+    *state_root* overrides the conventional sandbox-live root — a
+    frontend that resolves its own (terok honours path overrides)
+    passes it so the rules match what its shield actually writes.
+    """
+    return _run_component(_apparmor_component(state_root), show_only=show_only)
 
 
 def handle_setup_component(
-    component: str, *, show_only: bool = False, cfg: SandboxConfig | None = None
+    component: str,
+    *,
+    show_only: bool = False,
+    cfg: SandboxConfig | None = None,
+    state_root: Path | None = None,
 ) -> int:
     """Route a ``setup <component>`` verb to its interactive installer."""
     if component == "selinux":
         return handle_setup_selinux(show_only=show_only, cfg=cfg)
     if component == "apparmor":
-        return handle_setup_apparmor(show_only=show_only)
+        return handle_setup_apparmor(show_only=show_only, state_root=state_root)
     raise SystemExit(
         f"unknown setup component {component!r} (expected: {' or '.join(SETUP_COMPONENTS)})"
     )

@@ -91,7 +91,7 @@ if [[ -f "$local_include" ]]; then
     sed -i '/# >>> terok-shield apparmor/,/# <<< terok-shield apparmor/d' "$local_include"
 fi
 _content="$(<"$_tmpl")"
-printf '%s\n' "${_content//@STATE_ROOT@/$state_root}" >> "$local_include"
+printf '%s\n' "${_content//@STATE_ROOT@/"$state_root"}" >> "$local_include"
 
 echo "Reloading ${profile} ..."
 apparmor_parser -r -W "$profile"

@@ -97,9 +97,27 @@ def _handle_sandbox_setup(
         cfg = SandboxConfig()
 
     if component is not None:
+        rejected = [
+            flag
+            for flag, given in (
+                ("--no-shield", no_shield),
+                ("--no-vault", no_vault),
+                ("--echo-passphrase", echo_passphrase),
+                ("--passphrase-tier", passphrase_tier is not None),
+            )
+            if given
+        ]
+        if rejected:
+            raise SystemExit(
+                f"{', '.join(rejected)} belongs to the full setup, not to 'setup {component}'"
+            )
         from .._setup_manual import handle_setup_component
 
         return handle_setup_component(component, show_only=show, cfg=cfg)
+    if show:
+        from .._setup_manual import SETUP_COMPONENTS
+
+        raise SystemExit(f"--show needs a component ({' or '.join(SETUP_COMPONENTS)})")
 
     # Fail-fast on an unknown / unsupported ``--passphrase-tier`` *before*
     # any host-mutating phase runs.  Without this check, a typo would let

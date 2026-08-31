@@ -95,6 +95,30 @@ def uninstall_spies():
 # ── Setup aggregator ──────────────────────────────────────────────────────
 
 
+class TestComponentGuards:
+    """The component branch rejects aggregate flags; ``--show`` needs a component."""
+
+    def test_aggregate_flags_are_rejected_with_a_component(self, install_spies) -> None:
+        from unittest import mock
+
+        from terok_sandbox.commands.sandbox import _handle_sandbox_setup
+
+        with (
+            mock.patch("terok_sandbox._setup_manual.handle_setup_component") as handler,
+            pytest.raises(SystemExit, match="--no-vault"),
+        ):
+            _handle_sandbox_setup(component="selinux", no_vault=True)
+        handler.assert_not_called()
+        install_spies["legacy"].assert_not_called()
+
+    def test_show_without_component_is_rejected(self, install_spies) -> None:
+        from terok_sandbox.commands.sandbox import _handle_sandbox_setup
+
+        with pytest.raises(SystemExit, match="needs a component"):
+            _handle_sandbox_setup(show=True)
+        install_spies["legacy"].assert_not_called()
+
+
 class TestSandboxSetup:
     """``sandbox setup`` orchestrates the install phases in fixed order."""
 
