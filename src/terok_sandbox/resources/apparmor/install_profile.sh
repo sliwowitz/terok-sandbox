@@ -33,27 +33,57 @@ if [[ -z "$state_root" ]]; then
 fi
 state_root="${state_root%/}"
 
-# Defence-in-depth against sudo executing attacker-tampered content: a file
-# sudo-bash'd must not be swappable or rewritable by any user other than its
-# owner.  Reject symlinks, non-regular files, group/world-writable files,
-# and group/world-writable parent dirs (a writable parent allows 'mv').
+# Defence-in-depth against sudo executing attacker-tampered content: every
+# file this sudo run consumes must not be swappable or rewritable by any
+# user other than its owner.  Covers:
+#
+#  * symlink redirection — reject symlinks outright (following one would
+#    trust a target we did not stat);
+#  * file rewrite — reject group/world-writable file mode bits;
+#  * file replacement via directory — reject a group/world-writable parent
+#    ("mv newfile oldfile" works there even on a read-only file).
+#
+# The files *are* legitimately user-owned (pipx, pip --user, editable
+# checkouts), so we accept that but require their owner is the only writer.
+_reject_unsafe() {
+    local f="$1"
+    if [[ -L "$f" ]]; then
+        echo "${_red}Refusing to run:${_reset} $f is a symlink." >&2
+        echo "       A file sudo-bash'd must be a concrete regular file, not a link." >&2
+        exit 1
+    fi
+    if [[ ! -f "$f" ]]; then
+        echo "${_red}Refusing to run:${_reset} $f is not a regular file." >&2
+        exit 1
+    fi
+    _perm=$(stat -c '%a' "$f")
+    if (( 8#$_perm & 8#022 )); then
+        echo "${_red}Refusing to run:${_reset} $f is group- or world-writable (mode $_perm)." >&2
+        echo "       A file sudo-bash'd must not be writable by any user other than its owner." >&2
+        echo "       Reinstall the package into a location you control (e.g. pipx install --force)." >&2
+        exit 1
+    fi
+    # Every ancestor, not just the immediate parent: a writable
+    # grandparent lets another user rename the parent directory and
+    # substitute the whole tree.  Sticky directories (/tmp) are exempt —
+    # the sticky bit is exactly the rule that only the owner may rename.
+    _dir=$(dirname "$f")
+    while :; do
+        _dir_perm=$(stat -c '%a' "$_dir")
+        if (( 8#$_dir_perm & 8#022 )) && (( ! (8#$_dir_perm & 8#1000) )); then
+            echo "${_red}Refusing to run:${_reset} $_dir is group- or world-writable (mode $_dir_perm)." >&2
+            echo "       A writable ancestor lets another user replace the file via 'mv'." >&2
+            exit 1
+        fi
+        [[ "$_dir" == "/" ]] && break
+        _dir=$(dirname "$_dir")
+    done
+}
+
 _self="${BASH_SOURCE[0]}"
-if [[ -L "$_self" ]]; then
-    echo "${_red}Refusing to run:${_reset} $_self is a symlink." >&2
-    exit 1
-fi
-if [[ ! -f "$_self" ]]; then
-    echo "${_red}Refusing to run:${_reset} $_self is not a regular file." >&2
-    exit 1
-fi
-if (( 8#$(stat -c '%a' "$_self") & 8#022 )); then
-    echo "${_red}Refusing to run:${_reset} $_self is group- or world-writable." >&2
-    exit 1
-fi
-if (( 8#$(stat -c '%a' "$(dirname "$_self")") & 8#022 )); then
-    echo "${_red}Refusing to run:${_reset} parent of $_self is group- or world-writable." >&2
-    exit 1
-fi
+_tmpl="$(dirname "$_self")/dnsmasq_addendum.template"
+_reject_unsafe "$_self"
+_reject_unsafe "$_tmpl"
 
 if ! command -v apparmor_parser >/dev/null 2>&1; then
     echo "${_red}apparmor_parser not found.${_reset} Install the 'apparmor' package." >&2
@@ -73,24 +103,17 @@ fi
 local_include="/etc/apparmor.d/local/$(basename "$profile")"
 
 # Idempotent: strip any prior managed block, then append the freshly
-# rendered one.  Owner-scoping limits the grant to files dnsmasq owns; the
-# glob covers every per-task shield dir under STATE_ROOT.
+# rendered one.  The rules come from the sibling template — the single
+# source of truth the show option prints — with @STATE_ROOT@ substituted
+# here (pure bash: no sed delimiter or envsubst availability traps).
+# Owner-scoping limits the grant to files dnsmasq owns; the glob covers
+# every per-task shield dir under STATE_ROOT.
 mkdir -p "$(dirname "$local_include")"
 if [[ -f "$local_include" ]]; then
     sed -i '/# >>> terok-shield apparmor/,/# <<< terok-shield apparmor/d' "$local_include"
 fi
-cat >> "$local_include" <<EOF
-# >>> terok-shield apparmor r2 (managed; do not edit between markers) >>>
-# The revision (r2) lets terok detect a stale addendum and prompt a reinstall;
-# bump it here and in _util/_apparmor.py:_ADDENDUM_REVISION when these rules
-# change.  One glob covers dnsmasq's config, pid, log, and any future
-# per-container dnsmasq artifact under a shield state dir. The old rules named
-# each file, so when shield added a new file (such as the query log) DNS broke
-# again on AppArmor hosts until the operator reinstalled (terok-ai/terok#1246).
-owner ${state_root}/tasks/*/*/shield/dnsmasq.* rwk,
-/usr/share/iproute2/* r,
-# <<< terok-shield apparmor (managed) <<<
-EOF
+_content="$(<"$_tmpl")"
+printf '%s\n' "${_content//@STATE_ROOT@/"$state_root"}" >> "$local_include"
 
 echo "Reloading ${profile} ..."
 apparmor_parser -r -W "$profile"

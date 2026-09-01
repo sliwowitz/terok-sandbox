@@ -18,6 +18,8 @@ from unittest.mock import patch
 
 import pytest
 
+from terok_sandbox._util._apparmor import AppArmorCheckResult, AppArmorStatus
+from terok_sandbox._util._selinux import SelinuxCheckResult, SelinuxStatus
 from terok_sandbox.commands import (
     _handle_sandbox_setup,
     _handle_sandbox_uninstall,
@@ -37,15 +39,16 @@ def install_spies():
     — it shells out for host binaries which would noisily poll the CI
     runner's PATH.
     """
-    from terok_sandbox._util._selinux import SelinuxCheckResult, SelinuxStatus
-
     # Default prereq result: TCP-mode equivalent ("no SELinux policy needed").
     # Tests that exercise the SELinux POLICY_MISSING branch override this.
-    _no_selinux_concern = SelinuxCheckResult(SelinuxStatus.NOT_APPLICABLE_TCP_MODE)
+    _no_concern = (
+        SelinuxCheckResult(SelinuxStatus.NOT_APPLICABLE_TCP_MODE),
+        AppArmorCheckResult(AppArmorStatus.NOT_APPLICABLE),
+    )
     with (
         patch(
             "terok_sandbox._setup.run_prereq_report",
-            return_value=_no_selinux_concern,
+            return_value=_no_concern,
         ) as prereq,
         patch(
             "terok_sandbox._setup.run_legacy_install_cleanup_phase",
@@ -95,15 +98,43 @@ def uninstall_spies():
 # ── Setup aggregator ──────────────────────────────────────────────────────
 
 
+class TestComponentGuards:
+    """The component branch rejects aggregate flags; ``--show`` needs a component."""
+
+    def test_aggregate_flags_are_rejected_with_a_component(self, install_spies) -> None:
+        from unittest import mock
+
+        from terok_sandbox.commands.sandbox import _handle_sandbox_setup
+
+        with (
+            mock.patch("terok_sandbox._setup_manual.handle_setup_component") as handler,
+            pytest.raises(SystemExit, match="--no-vault"),
+        ):
+            _handle_sandbox_setup(component="selinux", no_vault=True)
+        handler.assert_not_called()
+        install_spies["legacy"].assert_not_called()
+
+    def test_show_without_component_is_rejected(self, install_spies) -> None:
+        from terok_sandbox.commands.sandbox import _handle_sandbox_setup
+
+        with pytest.raises(SystemExit, match="needs a component"):
+            _handle_sandbox_setup(show=True)
+        install_spies["legacy"].assert_not_called()
+
+
 class TestSandboxSetup:
     """``sandbox setup`` orchestrates the install phases in fixed order."""
 
     def test_default_runs_all_phases_in_order(self, install_spies) -> None:
-        from terok_sandbox._util._selinux import SelinuxCheckResult, SelinuxStatus
-
         order: list[str] = []
         no_selinux = SelinuxCheckResult(SelinuxStatus.NOT_APPLICABLE_TCP_MODE)
-        install_spies["prereq"].side_effect = lambda _cfg: order.append("prereq") or no_selinux
+        install_spies["prereq"].side_effect = lambda _cfg: (
+            order.append("prereq")
+            or (
+                no_selinux,
+                AppArmorCheckResult(AppArmorStatus.NOT_APPLICABLE),
+            )
+        )
         install_spies["legacy"].side_effect = lambda: order.append("legacy") or True
         install_spies["shield"].side_effect = lambda **_: order.append("shield") or True
         install_spies["credentials"].side_effect = lambda *_a, **_kw: (
@@ -159,7 +190,10 @@ class TestSandboxSetup:
         """``POLICY_MISSING`` re-surfaces the install command + TCP alternative and exits 5."""
         from terok_sandbox._util._selinux import SelinuxCheckResult, SelinuxStatus
 
-        install_spies["prereq"].return_value = SelinuxCheckResult(SelinuxStatus.POLICY_MISSING)
+        install_spies["prereq"].return_value = (
+            SelinuxCheckResult(SelinuxStatus.POLICY_MISSING),
+            AppArmorCheckResult(AppArmorStatus.NOT_APPLICABLE),
+        )
 
         with pytest.raises(SystemExit) as exc:
             _handle_sandbox_setup()
@@ -173,14 +207,17 @@ class TestSandboxSetup:
         # at the end of output, each on its own line so the operator
         # can copy-paste either without bleed.
         assert "SELinux policy required" in out
-        assert "install_policy.sh" in out
+        assert "terok-sandbox setup selinux" in out
         assert 'services.mode = "tcp"' in out
 
     def test_policy_missing_skipped_when_phases_already_failed(self, install_spies) -> None:
         """A prior phase failure exits 1; the SELinux exit-5 path doesn't override that."""
         from terok_sandbox._util._selinux import SelinuxCheckResult, SelinuxStatus
 
-        install_spies["prereq"].return_value = SelinuxCheckResult(SelinuxStatus.POLICY_MISSING)
+        install_spies["prereq"].return_value = (
+            SelinuxCheckResult(SelinuxStatus.POLICY_MISSING),
+            AppArmorCheckResult(AppArmorStatus.NOT_APPLICABLE),
+        )
         install_spies["credentials"].return_value = False
 
         with pytest.raises(SystemExit) as exc:

@@ -40,6 +40,18 @@ class TestValidatePassphraseTier:
             _validate_passphrase_tier("systemd-creds")
 
 
+class _FakeStatus:
+    """Stand-in status: nothing to install, so no hint or exit-5 branch fires."""
+
+    action_needed = False
+
+
+class _FakeResult:
+    """Stand-in prereq result carrying only what the aggregator reads."""
+
+    status = _FakeStatus()
+
+
 class TestSetupRejectsBeforeMutation:
     """``_handle_sandbox_setup`` validates the tier before shield runs."""
 
@@ -71,10 +83,14 @@ class TestSetupRejectsBeforeMutation:
         # patch it to a no-op so the test doesn't depend on the host.
         monkeypatch.setattr(
             "terok_sandbox._setup.run_prereq_report",
-            lambda _cfg: type("R", (), {"status": "OK"})(),
+            lambda _cfg: (_FakeResult(), _FakeResult()),
         )
         monkeypatch.setattr(
             "terok_sandbox._setup.print_selinux_install_hint",
+            lambda _result: None,
+        )
+        monkeypatch.setattr(
+            "terok_sandbox._setup.print_apparmor_install_hint",
             lambda _result: None,
         )
 
@@ -94,10 +110,14 @@ class TestSetupRejectsBeforeMutation:
         monkeypatch.setattr("terok_sandbox._setup.run_supervisor_install_phase", lambda: True)
         monkeypatch.setattr(
             "terok_sandbox._setup.run_prereq_report",
-            lambda _cfg: type("R", (), {"status": "OK"})(),
+            lambda _cfg: (_FakeResult(), _FakeResult()),
         )
         monkeypatch.setattr(
             "terok_sandbox._setup.print_selinux_install_hint",
+            lambda _result: None,
+        )
+        monkeypatch.setattr(
+            "terok_sandbox._setup.print_apparmor_install_hint",
             lambda _result: None,
         )
         # write_stamp is imported lazily inside the handler; patch its

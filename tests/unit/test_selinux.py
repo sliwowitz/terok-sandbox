@@ -19,7 +19,6 @@ from terok_sandbox._util._selinux import (
     _try_getsockcreatecon,
     _try_setsockcreatecon,
     check_status,
-    install_command,
     install_script_path,
     is_libselinux_available,
     is_policy_installed,
@@ -232,17 +231,6 @@ class TestInstallScriptPath:
         path = install_script_path()
         assert path.is_file()
         assert path.name == "install_policy.sh"
-
-
-class TestInstallCommand:
-    """Verify the ``sudo bash <script>`` command string helper."""
-
-    def test_shape(self) -> None:
-        """Returns ``sudo bash`` plus the resolved installer path."""
-        cmd = install_command()
-        assert cmd.startswith("sudo bash ")
-        assert cmd.endswith("install_policy.sh")
-        assert str(install_script_path()) in cmd
 
 
 # ---------- Socket context manager ----------

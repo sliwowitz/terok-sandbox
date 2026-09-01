@@ -1,0 +1,4 @@
+# >>> terok-shield apparmor r2 (managed; do not edit between markers) >>>
+owner @STATE_ROOT@/tasks/*/*/shield/dnsmasq.* rwk,
+/usr/share/iproute2/* r,
+# <<< terok-shield apparmor (managed) <<<

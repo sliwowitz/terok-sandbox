@@ -720,11 +720,55 @@ class TestSelinuxOutdatedReporting:
     with the Fedora 44 fixes.
     """
 
-    def test_install_hint_banner_for_outdated_policy(
+    @pytest.mark.parametrize(
+        "status", [SelinuxStatus.POLICY_MISSING, SelinuxStatus.POLICY_OUTDATED]
+    )
+    def test_install_hint_banner_points_at_the_verb(
+        self, capsys: pytest.CaptureFixture[str], status: SelinuxStatus
+    ) -> None:
+        """The banner states the consequence, names the verb, and keeps the opt-out.
+
+        The detail (state, destination, exact command, rules) belongs to
+        the verb, so the banner must not re-tell it — including the raw
+        sudo line it used to print.
+        """
+        print_selinux_install_hint(MagicMock(status=status))
+        out = capsys.readouterr().out
+        assert "cannot reach the host sockets" in out
+        assert "terok-sandbox setup selinux" in out
+        assert "sudo bash" not in out
+        assert 'services.mode = "tcp"' in out
+
+    def test_install_hint_banner_is_quiet_when_nothing_is_needed(
         self, capsys: pytest.CaptureFixture[str]
     ) -> None:
-        """The banner names the stale policy and the rebuild command."""
-        print_selinux_install_hint(MagicMock(status=SelinuxStatus.POLICY_OUTDATED))
+        for quiet in (SelinuxStatus.OK, SelinuxStatus.NOT_APPLICABLE_TCP_MODE):
+            print_selinux_install_hint(MagicMock(status=quiet))
+            assert capsys.readouterr().out == ""
+
+    def test_hint_spelling_follows_the_declared_invocation(
+        self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """Under terok, the banner names terok's own setup verb."""
+        from terok_sandbox.operator_cli import SETUP_INVOCATION_ENV
+
+        monkeypatch.setenv(SETUP_INVOCATION_ENV, "terok setup")
+        print_selinux_install_hint(MagicMock(status=SelinuxStatus.POLICY_MISSING))
         out = capsys.readouterr().out
-        assert "predates the per-container" in out
-        assert "Rebuild the policy" in out
+        assert "terok setup selinux" in out
+
+    def test_apparmor_hint_banner_names_the_subcommand(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """The AppArmor banner points at the interactive verb, not a sudo line.
+
+        It renders the result the prereq report already observed — no
+        second probe of the host.
+        """
+        from terok_sandbox import _setup
+        from terok_sandbox._util._apparmor import AppArmorCheckResult, AppArmorStatus
+
+        _setup.print_apparmor_install_hint(AppArmorCheckResult(AppArmorStatus.PROFILE_MISSING))
+        out = capsys.readouterr().out
+        assert "terok-sandbox setup apparmor" in out
+        assert "sudo bash" not in out

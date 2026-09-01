@@ -381,6 +381,7 @@ path = "terok_sandbox.commands.sandbox"
 layer = "surface"
 depends_on = [
     "terok_sandbox._setup",
+    "terok_sandbox._setup_manual",
     "terok_sandbox.commands.credentials",
 ]
 
@@ -528,6 +529,15 @@ depends_on = [
     "terok_sandbox.integrations.clearance",
 ]
 
+# Interactive per-component hardening setup — the ``setup selinux`` /
+# ``setup apparmor`` verbs every frontend routes to.  Surface layer: it
+# renders operator-facing prompts and runs the sudo installers; its
+# probe/render inputs are all foundation (implicit).
+[[modules]]
+path = "terok_sandbox._setup_manual"
+layer = "surface"
+depends_on = []
+
 # Foundation-level constants shared by the surface layer (orchestrators
 # that raise them) and the package init (re-exports them as public
 # API).  Zero internal imports.
@@ -549,6 +559,7 @@ depends_on = [
 path = "terok_sandbox"
 layer = "surface"
 depends_on = [
+    "terok_sandbox._setup_manual",
     "terok_sandbox.cli",
     "terok_sandbox.commands",
     "terok_sandbox.launch",
