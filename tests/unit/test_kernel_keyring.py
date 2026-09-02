@@ -97,12 +97,6 @@ class FakeKeyutils:
         self._holds: dict[int, set[bytes]] = {r: set() for r in self._rings.values()}
         self._nested: dict[int, set[int]] = {r: set() for r in self._rings.values()}
 
-    def _new_ring(self) -> int:
-        """Return a fresh keyring identity."""
-        ring = self._next_ring
-        self._next_ring += 1
-        return ring
-
     def enter_user_namespace(self) -> None:
         """Re-resolve ``@u`` to a fresh empty keyring, leaving ``@s`` as it was.
 
@@ -113,6 +107,12 @@ class FakeKeyutils:
         self._rings[_UID_RING] = ring
         self._holds[ring] = set()
         self._nested[ring] = set()
+
+    def _new_ring(self) -> int:
+        """Return a fresh keyring identity."""
+        ring = self._next_ring
+        self._next_ring += 1
+        return ring
 
     def keyctl_get_keyring_ID(self, _ring: int, _create: int) -> int:  # noqa: N802
         if self._get_keyring_id < 0:

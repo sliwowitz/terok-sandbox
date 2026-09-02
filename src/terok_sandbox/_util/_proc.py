@@ -28,9 +28,12 @@ from typing import TYPE_CHECKING, Final
 if TYPE_CHECKING:
     from collections.abc import Iterator
 
-#: argv fingerprints of a process-per-service child.
-CHILD_MODULE_MARK: Final = b"terok_sandbox"
-CHILD_VERB_MARK: Final = b"supervise-child"
+#: The argv elements that identify a process-per-service child, in the
+#: order the launcher writes them.  Matched as a contiguous run, not as
+#: three memberships: a text editor opened on this file has every one of
+#: these words somewhere in its argv, and the uninstall sweep sends
+#: SIGKILL to what this module reports.
+CHILD_INVOCATION: Final = (b"-m", b"terok_sandbox", b"supervise-child")
 
 #: Where the sweeps read process argvs from (patchable in tests).
 PROC_DIR = Path("/proc")
@@ -53,9 +56,9 @@ def iter_service_children() -> Iterator[tuple[int, str, str]]:
     when it cannot say which one it is.
     """
     for pid, args in iter_process_argvs():
-        if CHILD_MODULE_MARK not in args or CHILD_VERB_MARK not in args:
+        verb = _verb_index(args)
+        if verb is None:
             continue
-        verb = args.index(CHILD_VERB_MARK)
         yield pid, _argv_field(args, verb + 1), _argv_field(args, verb + 2)
 
 
@@ -71,6 +74,21 @@ def service_children(container_id: str) -> tuple[str, ...]:
     return tuple(
         sorted(service for _pid, service, cid in iter_service_children() if cid == container_id)
     )
+
+
+def _verb_index(args: list[bytes]) -> int | None:
+    """Index of ``supervise-child`` in a real child invocation, else ``None``.
+
+    The whole run must be there and in order.  The fields after the verb
+    are read by position, so a process that merely mentions these words
+    would hand its neighbouring argv elements over as a service name and
+    a container ID.
+    """
+    run = len(CHILD_INVOCATION)
+    for start in range(len(args) - run + 1):
+        if tuple(args[start : start + run]) == CHILD_INVOCATION:
+            return start + run - 1
+    return None
 
 
 def _argv_field(args: list[bytes], index: int) -> str:

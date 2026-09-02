@@ -78,6 +78,24 @@ def test_foreign_processes_are_ignored(fake_proc: Path) -> None:
     assert _proc.service_children(_CID) == ()
 
 
+def test_the_words_alone_are_not_a_child(fake_proc: Path) -> None:
+    """The uninstall sweep kills what this reports, so a near miss must not match.
+
+    An editor opened on the launcher has every word of the invocation in
+    its argv. The words are also read by position after the verb, so a
+    loose match would take the neighbours of those words for a service
+    name and a container ID.
+    """
+    _add_process(
+        fake_proc, 101, ["/usr/bin/vim", "terok_sandbox", "supervise-child", "vault", _CID]
+    )
+    _add_process(
+        fake_proc, 102, ["python", "-m", "terok_sandbox.tools", "supervise-child", "vault", _CID]
+    )
+    assert _proc.service_children(_CID) == ()
+    assert list(_proc.iter_service_children()) == []
+
+
 def test_truncated_argv_keeps_the_child_visible(fake_proc: Path) -> None:
     """A child that cannot say which service it is still counts as one of ours."""
     _add_process(fake_proc, 101, ["python", "-m", "terok_sandbox", "supervise-child"])

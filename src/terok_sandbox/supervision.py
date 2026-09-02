@@ -46,6 +46,7 @@ recreate it when that suits them.
 
 from __future__ import annotations
 
+import ipaddress
 import stat
 import sys
 import time
@@ -315,12 +316,42 @@ def _listening_ports() -> frozenset[int] | None:
             fields = line.split()
             if len(fields) < 4 or fields[3] != _TCP_LISTEN:
                 continue
-            _, _, port_hex = fields[1].rpartition(":")
+            address, _, port_hex = fields[1].rpartition(":")
+            if not _serves_loopback(address):
+                continue
             try:
                 ports.add(int(port_hex, 16))
             except ValueError:
                 continue
     return frozenset(ports) if read_any else None
+
+
+def _serves_loopback(address: str) -> bool:
+    """Does a listener on this local address answer a container's host loopback?
+
+    The port alone is not the endpoint.  A listener held on one interface
+    of the host would otherwise report a supervisor service as bound,
+    while the loopback address the container dials has nothing on it.
+
+    Loopback and the wildcard both qualify: the supervisor binds
+    ``127.0.0.1``, and a wildcard listener accepts there too.  Every
+    other address is a different endpoint that happens to share a port.
+
+    The kernel writes each 32-bit word of the address in host byte
+    order, so the words are reversed before the address is read.
+    """
+    try:
+        raw = bytes.fromhex(address)
+    except ValueError:
+        return False
+    packed = b"".join(raw[word : word + 4][::-1] for word in range(0, len(raw), 4))
+    try:
+        parsed = ipaddress.ip_address(packed)
+    except ValueError:
+        return False
+    if isinstance(parsed, ipaddress.IPv6Address) and parsed.ipv4_mapped:
+        parsed = parsed.ipv4_mapped
+    return parsed.is_loopback or parsed.is_unspecified
 
 
 __all__ = [

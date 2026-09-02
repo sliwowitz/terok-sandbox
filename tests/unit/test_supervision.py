@@ -14,6 +14,7 @@ from pathlib import Path
 
 import pytest
 
+from terok_sandbox import supervision
 from terok_sandbox.config import SandboxConfig
 from terok_sandbox.supervision import (
     MIN_RUNTIME_PROTOCOL,
@@ -232,6 +233,76 @@ class TestVerifySupervisionOverTcp:
         )
         status = verify_supervision(_cfg(tmp_path), _NAME, timeout=_FAST)
         assert status.skipped and status.ok
+
+
+class TestListeningPorts:
+    """Reading the kernel's TCP tables — the port alone is not the endpoint."""
+
+    @staticmethod
+    def _table(tmp_path: Path, name: str, rows: list[tuple[str, str]]) -> Path:
+        """Write a ``/proc/net/tcp``-shaped table of ``(local_address, state)`` rows."""
+        header = "  sl  local_address rem_address   st tx_queue rx_queue tr tm->when retrnsmt\n"
+        lines = [
+            f"   {n}: {address} 00000000:0000 {state} 00000000:00000000 00:00000000 00000000"
+            for n, (address, state) in enumerate(rows)
+        ]
+        table = tmp_path / name
+        table.write_text(header + "\n".join(lines) + "\n")
+        return table
+
+    def _ports(
+        self, monkeypatch: pytest.MonkeyPatch, tables: tuple[Path, ...]
+    ) -> frozenset[int] | None:
+        """Read *tables* through the module's own reader."""
+        monkeypatch.setattr("terok_sandbox.supervision._PROC_NET_TCP", tables)
+        return supervision._listening_ports()
+
+    def test_loopback_listener_counts(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        table = self._table(tmp_path, "tcp", [("0100007F:B6C1", "0A")])
+        assert self._ports(monkeypatch, (table,)) == frozenset({46785})
+
+    def test_a_listener_on_another_interface_does_not_count(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The container dials the host loopback. Another interface is another endpoint."""
+        table = self._table(tmp_path, "tcp", [("0500A8C0:B6C1", "0A")])
+        assert self._ports(monkeypatch, (table,)) == frozenset()
+
+    def test_a_wildcard_listener_counts(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """It is not how the supervisor binds, but it does answer on the loopback."""
+        table = self._table(tmp_path, "tcp", [("00000000:B6C1", "0A")])
+        assert self._ports(monkeypatch, (table,)) == frozenset({46785})
+
+    def test_a_connection_is_not_a_listener(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """State 01 is ESTABLISHED. Only 0A binds the port."""
+        table = self._table(tmp_path, "tcp", [("0100007F:B6C1", "01")])
+        assert self._ports(monkeypatch, (table,)) == frozenset()
+
+    def test_ipv6_loopback_and_mapped_addresses_count(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        table = self._table(
+            tmp_path,
+            "tcp6",
+            [
+                ("00000000000000000000000001000000:B6C1", "0A"),
+                ("0000000000000000FFFF00000100007F:1F90", "0A"),
+                ("0000000000000000FFFF00000500A8C0:1F91", "0A"),
+            ],
+        )
+        assert self._ports(monkeypatch, (table,)) == frozenset({46785, 8080})
+
+    def test_no_readable_table_is_an_unknown(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """``None``, not an empty set: the difference is a false alarm on every start."""
+        assert self._ports(monkeypatch, (tmp_path / "absent",)) is None
 
 
 class TestSupervisionStatus:

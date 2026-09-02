@@ -302,6 +302,15 @@ def forget(db_path: str | os.PathLike[str]) -> bool:
     gone.  Any same-uid terminal may call it, not only the one that
     cached the passphrase.
 
+    The key is anchored in ``@u`` and this unlinks it from there, so
+    clearing the cache is an operator-context operation.  Called from
+    inside another user namespace — where the search now reaches the key
+    through ``@s`` but ``@u`` holds nothing to unlink — it reports
+    failure, which is the honest answer: the cache is still there.
+    Before the ``@s`` leg existed such a call found no key at all and
+    reported the cache cleared, which was the same call telling the
+    opposite story.
+
     Returns:
         True when no passphrase remains cached for this vault.
     """
