@@ -19,10 +19,19 @@ naming the container, the unbound socket(s), and the hook diary to read;
 the caller shouts it but the launch still succeeds (soft-fail preserved),
 and an orchestrator may escalate on the structured result.
 
-TCP-mode wiring binds per-container loopback ports rather than sockets, so
-there is nothing on disk to poll — the check reports *skipped* there rather
-than guessing.  The pure-Python file poll never runs a subprocess and never
-raises.
+Both transports are covered.  Socket-mode wiring binds sockets under
+``/run/terok``; TCP-mode wiring binds per-container loopback ports, and
+``/proc/net/tcp`` says which ports are listening — one read answers for
+every service at once, and it contacts none of them (an accept-and-close
+probe on each start would put a stray connection in three service logs to
+learn what a file already says).  The pure-Python file poll never runs a
+subprocess and never raises.
+
+Every service the sidecar wires is checked, the SSH signer included.  A
+dead signer costs the task its git access, and it is the child most likely
+to die alone: it and the vault are the only two that must open the
+credential store, so a passphrase the supervisor cannot resolve takes out
+exactly those two and leaves the rest of the bundle looking healthy.
 
 [`outdated_container_warning`][terok_sandbox.supervision.outdated_container_warning]
 closes the mirror-image gap.  A container's environment is frozen when it is
@@ -37,18 +46,19 @@ recreate it when that suits them.
 
 from __future__ import annotations
 
+import ipaddress
 import stat
 import sys
 import time
 from dataclasses import dataclass
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 from .supervisor.sidecar import SupervisorPaths, load_sidecar
 
 if TYPE_CHECKING:
-    from pathlib import Path
-
     from .config import SandboxConfig
+    from .supervisor.sidecar import SidecarConfig
 
 #: How long to wait for the supervisor to bind its sockets before declaring
 #: it unresponsive.  The gate binds early and the vault right after, so a
@@ -58,6 +68,13 @@ _DEFAULT_TIMEOUT_S = 5.0
 
 #: Filesystem poll cadence while waiting for the sockets to appear.
 _POLL_INTERVAL_S = 0.1
+
+#: The kernel's TCP tables, one per address family.  Read to learn which
+#: loopback ports have a listener in TCP mode.
+_PROC_NET_TCP = (Path("/proc/net/tcp"), Path("/proc/net/tcp6"))
+
+#: ``TCP_LISTEN`` in the ``st`` column of those tables.
+_TCP_LISTEN = "0A"
 
 MIN_RUNTIME_PROTOCOL = 3
 """Lowest ``TEROK_CONTAINER_PROTOCOL`` whose socket layout this sandbox still binds.
@@ -71,34 +88,54 @@ move.  terok-executor stamps the containers, so this value tracks
 
 
 @dataclass(frozen=True)
+class ServiceEndpoint:
+    """One supervisor service and the address its child binds.
+
+    Exactly one of *socket* and *port* is set — the sidecar's transport
+    decides which — so the poll can test either kind and the warning can
+    name the address the operator will look for.
+    """
+
+    service: str
+    socket: Path | None = None
+    port: int | None = None
+
+    def __str__(self) -> str:
+        """``service (address)``, for a warning line."""
+        address = self.socket if self.socket is not None else f"127.0.0.1:{self.port}"
+        return f"{self.service} ({address})"
+
+
+@dataclass(frozen=True)
 class SupervisionStatus:
     """The result of a post-start supervision check for one container.
 
-    ``missing`` is the subset of ``checked`` sockets still absent when the
-    poll gave up — empty on a healthy start.  ``skipped`` marks the cases
-    with nothing to verify (no sidecar, or TCP-mode wiring that binds ports
-    instead of sockets), which is *not* a failure.
+    ``missing`` is the subset of ``checked`` endpoints still unbound when
+    the poll gave up — empty on a healthy start.  ``skipped`` marks the
+    cases with nothing to verify (no sidecar, or a host whose listening
+    ports cannot be read), which is *not* a failure.
     """
 
     container_name: str
-    checked: tuple[Path, ...]
-    missing: tuple[Path, ...]
+    checked: tuple[ServiceEndpoint, ...]
+    missing: tuple[ServiceEndpoint, ...]
     hook_log: Path
     skipped: bool = False
 
     @property
     def ok(self) -> bool:
-        """``True`` when every required socket was bound (or nothing needed checking)."""
+        """``True`` when every required endpoint was bound (or nothing needed checking)."""
         return not self.missing
 
     def warning(self) -> str:
         """A loud, multi-line operator warning naming the failure and where to look."""
-        sockets = "\n".join(f"warning:     {p}" for p in self.missing)
+        endpoints = "\n".join(f"warning:     {endpoint}" for endpoint in self.missing)
         return (
-            f"warning: container {self.container_name!r} started but its supervisor is "
-            "not responding\n"
-            f"{sockets}\n"
-            "warning:   vault-routed providers and/or the git gate are dead in this container\n"
+            f"warning: container {self.container_name!r} started but these supervisor "
+            "services never bound\n"
+            f"{endpoints}\n"
+            "warning:   what they serve is dead in this container — the vault routes every\n"
+            "warning:   provider token, the signer holds the git keys, the gate serves the repo\n"
             f"warning:   hook diary: {self.hook_log} "
             "(absent or empty ⇒ the OCI supervisor hook never fired)"
         )
@@ -129,23 +166,53 @@ def verify_supervision(
     if sidecar is None:
         return SupervisionStatus(container_name, (), (), hook_log, skipped=True)
 
-    if sidecar.ipc_mode != "socket":
-        # TCP-mode services bind per-container loopback ports, not sockets —
-        # there is nothing on disk to poll, so don't pretend to check.
-        return SupervisionStatus(container_name, (), (), hook_log, skipped=True)
-
     paths = SupervisorPaths.for_container(
-        container_id="",  # vault/gate sockets key on the name, not the id
+        container_id="",  # the service sockets key on the name, not the id
         container_name=container_name,
         sidecar_path=sidecar_path,
         runtime_dir=sidecar.runtime_dir,
     )
-    expected = [paths.vault_socket]
-    if sidecar.gate_base_path and sidecar.gate_token:
-        expected.append(paths.gate_socket)
+    expected = _expected_endpoints(sidecar, paths)
+    if not expected:
+        return SupervisionStatus(container_name, (), (), hook_log, skipped=True)
 
-    missing = _poll_until_bound(tuple(expected), timeout)
-    return SupervisionStatus(container_name, tuple(expected), missing, hook_log)
+    missing = _poll_until_bound(expected, timeout)
+    if missing is None:
+        # This host will not say which ports listen, so the TCP-mode
+        # answer is unknown rather than bad.  Reporting every service
+        # missing would be a false alarm on every start.
+        return SupervisionStatus(container_name, expected, (), hook_log, skipped=True)
+    return SupervisionStatus(container_name, expected, missing, hook_log)
+
+
+def _expected_endpoints(
+    sidecar: SidecarConfig, paths: SupervisorPaths
+) -> tuple[ServiceEndpoint, ...]:
+    """The addresses this container's supervisor children must bind.
+
+    Vault and signer always; the gate only when the sidecar wired one.
+    The clearance and verdict children bind at the cross-package runtime
+    root shared by every container, so a bound socket there does not
+    belong to this container and is not evidence about it.
+
+    An endpoint whose port the sidecar never recorded is dropped rather
+    than guessed at — a TCP-mode sidecar written before the port existed
+    would otherwise report a service permanently missing.
+    """
+    endpoints: list[ServiceEndpoint] = []
+    socket_mode = sidecar.ipc_mode == "socket"
+    wiring: list[tuple[str, Path, int | None]] = [
+        ("vault", paths.vault_socket, sidecar.tcp_port),
+        ("signer", paths.ssh_signer_socket, sidecar.ssh_signer_port),
+    ]
+    if sidecar.gate_base_path and sidecar.gate_token:
+        wiring.append(("gate", paths.gate_socket, sidecar.gate_port))
+    for service, socket_path, port in wiring:
+        if socket_mode:
+            endpoints.append(ServiceEndpoint(service, socket=socket_path))
+        elif port is not None:
+            endpoints.append(ServiceEndpoint(service, port=port))
+    return tuple(endpoints)
 
 
 def warn_unsupervised(status: SupervisionStatus) -> None:
@@ -180,15 +247,43 @@ def outdated_container_warning(container_name: str, env: dict[str, str]) -> str 
     )
 
 
-def _poll_until_bound(expected: tuple[Path, ...], timeout: float) -> tuple[Path, ...]:
-    """Return the sockets from *expected* still unbound when *timeout* elapses."""
+def _poll_until_bound(
+    expected: tuple[ServiceEndpoint, ...], timeout: float
+) -> tuple[ServiceEndpoint, ...] | None:
+    """Return the endpoints from *expected* still unbound when *timeout* elapses.
+
+    ``None`` when a TCP-mode endpoint cannot be answered at all because
+    this host's listening ports are unreadable — an unknown, which the
+    caller reports as skipped rather than as a failure.
+
+    A healthy start returns on the first pass and waits for nothing; the
+    budget elapses in full only when a service genuinely never binds.
+    """
     deadline = time.monotonic() + timeout
     remaining = expected
     while True:
-        remaining = tuple(p for p in remaining if not _is_socket(p))
+        listening = (
+            _listening_ports() if any(e.port is not None for e in remaining) else frozenset()
+        )
+        if listening is None:
+            return None
+        remaining = tuple(e for e in remaining if not _is_bound(e, listening))
         if not remaining or time.monotonic() >= deadline:
             return remaining
         time.sleep(_POLL_INTERVAL_S)
+
+
+def _is_bound(endpoint: ServiceEndpoint, listening: frozenset[int]) -> bool:
+    """Is *endpoint* bound — its socket present, or its port listening?
+
+    Neither half proves the binder is *ours*: a stolen port and a
+    leftover socket file both read as bound.  The check answers "did
+    anything come up here", which is the question a silent start leaves
+    open; ownership is the supervisor log's to answer.
+    """
+    if endpoint.socket is not None:
+        return _is_socket(endpoint.socket)
+    return endpoint.port in listening
 
 
 def _is_socket(path: Path) -> bool:
@@ -199,8 +294,69 @@ def _is_socket(path: Path) -> bool:
         return False
 
 
+def _listening_ports() -> frozenset[int] | None:
+    """Local ports with a listening TCP socket in this network namespace.
+
+    One read per address family answers for every service at once and
+    touches none of them.  The supervisor binds on the host loopback and
+    this runs on the host, so both see the same table.
+
+    ``None`` when neither file could be read — the honest answer is that
+    this host will not say, not that nothing is listening.
+    """
+    ports: set[int] = set()
+    read_any = False
+    for path in _PROC_NET_TCP:
+        try:
+            table = path.read_text(encoding="ascii", errors="replace")
+        except OSError:
+            continue
+        read_any = True
+        for line in table.splitlines()[1:]:
+            fields = line.split()
+            if len(fields) < 4 or fields[3] != _TCP_LISTEN:
+                continue
+            address, _, port_hex = fields[1].rpartition(":")
+            if not _serves_loopback(address):
+                continue
+            try:
+                ports.add(int(port_hex, 16))
+            except ValueError:
+                continue
+    return frozenset(ports) if read_any else None
+
+
+def _serves_loopback(address: str) -> bool:
+    """Does a listener on this local address answer a container's host loopback?
+
+    The port alone is not the endpoint.  A listener held on one interface
+    of the host would otherwise report a supervisor service as bound,
+    while the loopback address the container dials has nothing on it.
+
+    Loopback and the wildcard both qualify: the supervisor binds
+    ``127.0.0.1``, and a wildcard listener accepts there too.  Every
+    other address is a different endpoint that happens to share a port.
+
+    The kernel writes each 32-bit word of the address in host byte
+    order, so the words are reversed before the address is read.
+    """
+    try:
+        raw = bytes.fromhex(address)
+    except ValueError:
+        return False
+    packed = b"".join(raw[word : word + 4][::-1] for word in range(0, len(raw), 4))
+    try:
+        parsed = ipaddress.ip_address(packed)
+    except ValueError:
+        return False
+    if isinstance(parsed, ipaddress.IPv6Address) and parsed.ipv4_mapped:
+        parsed = parsed.ipv4_mapped
+    return parsed.is_loopback or parsed.is_unspecified
+
+
 __all__ = [
     "MIN_RUNTIME_PROTOCOL",
+    "ServiceEndpoint",
     "SupervisionStatus",
     "outdated_container_warning",
     "verify_supervision",

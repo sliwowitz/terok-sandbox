@@ -42,7 +42,7 @@ def install_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict[str, Pa
     proc = tmp_path / "proc"
     proc.mkdir()
     monkeypatch.setattr("terok_sandbox.supervisor.install.state_root", lambda: state)
-    monkeypatch.setattr("terok_sandbox.supervisor.install._PROC_DIR", proc)
+    monkeypatch.setattr("terok_sandbox._util._proc.PROC_DIR", proc)
     monkeypatch.setattr(
         "terok_sandbox.supervisor.install.ensure_user_hooks_dir_configured",
         lambda _dir: None,

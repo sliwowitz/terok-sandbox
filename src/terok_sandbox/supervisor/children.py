@@ -49,7 +49,7 @@ from typing import TYPE_CHECKING
 
 from terok_util import confine_filesystem, harden_self
 
-from .sidecar import SupervisorPaths, load_sidecar
+from .sidecar import SERVICE_NAMES as _SERVICE_NAMES, SupervisorPaths, load_sidecar
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
@@ -290,7 +290,10 @@ _RUNNERS: dict[str, _Runner] = {
 }
 
 #: The service names, in launch order — consumed by the parent supervisor.
-SERVICE_NAMES: tuple[str, ...] = tuple(_RUNNERS)
+#: Defined with the sidecar (readers of the wiring decision need the
+#: vocabulary without importing the runners); ``_RUNNERS`` is keyed on them,
+#: and a test locks the two together.
+SERVICE_NAMES: tuple[str, ...] = _SERVICE_NAMES
 
 
 def _arm_parent_death_signal() -> bool:

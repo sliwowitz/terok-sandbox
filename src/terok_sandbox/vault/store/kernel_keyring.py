@@ -37,6 +37,16 @@ passphrases):
   terminal, torn down at logout).  ``@u`` is the semantic drop-in; the
   persistent keyring would over-deliver (survive logout) and needs
   ``keyctl_get_persistent`` machinery we deliberately avoid.
+- *Search ``@u`` and then ``@s``.*  A user keyring is per user
+  *namespace*: a process inside podman's rootless namespace resolves
+  ``@u`` to its own empty keyring, not the operator's, and the cache is
+  invisible there however the permissions read.  The supervisor and its
+  service children run inside exactly that namespace, so ``@u`` alone
+  would make the tier unusable for the one reader that has to have it.
+  The session keyring is inherited across the boundary unchanged, and
+  ``store`` links ``@u`` into it — so searching ``@s`` second reaches the
+  operator's own key through that link, and the tier keeps its promise to
+  be readable from any same-uid process.
 - *Explicit ``keyctl_setperm``.*  A fresh ``user`` key defaults to
   ``possessor=all, uid=view`` — the uid can *see* the key but not read
   or search it.  systemd gets away without a setperm because its readers
@@ -177,17 +187,31 @@ def store(passphrase: str, db_path: str | os.PathLike[str]) -> bool:
         _logger.warning("kernel keyring unavailable, not caching passphrase: %s", exc)
         return False
 
-    # Ensure this process *possesses* the key it is about to create, so
+    # Link ``@u`` into the session keyring.  This carries two jobs.
+    #
+    # It makes this process *possess* the key it is about to create, so
     # the keyctl_setperm below is permitted.  A fresh key grants the
     # possessor everything but the uid only ``view`` (0x3f010000); on a
     # host without a pam_keyinit-linked session keyring — a headless
     # supervisor, cron, CI — the process does not possess ``@u`` and so
     # falls to that uid class, and setperm (which needs ``setattr``)
-    # fails EACCES.  Linking ``@u`` into the session keyring makes its
-    # keys possessed for this process; it is an idempotent no-op where a
-    # login session already did it.  Best-effort: if it fails, the
-    # setperm below simply fails as it would have anyway.
-    lib.keyctl_link(_KEY_SPEC_USER_KEYRING, _KEY_SPEC_SESSION_KEYRING)
+    # fails EACCES.
+    #
+    # It is also the bridge every cross-user-namespace reader takes: a
+    # supervisor child resolves ``@u`` to its namespace's own empty
+    # keyring, and reaches this key only by searching the inherited
+    # ``@s`` and following this link (see _find_cached_key).  So a
+    # failure here is worth a line — the cache still works for this
+    # namespace, and silently stops working for the supervisor.
+    #
+    # Idempotent where a login session already did it.
+    ctypes.set_errno(0)
+    if lib.keyctl_link(_KEY_SPEC_USER_KEYRING, _KEY_SPEC_SESSION_KEYRING) == -1:
+        _logger.warning(
+            "kernel keyring @u -> @s link failed: %s — the cache stays readable in this"
+            " user namespace, but a supervisor child in another one will not find it",
+            os.strerror(ctypes.get_errno()),
+        )
 
     ctypes.set_errno(0)
     serial = lib.add_key(
@@ -244,6 +268,30 @@ def load(db_path: str | os.PathLike[str]) -> str | None:
         ctypes.memset(buf, 0, length)
 
 
+def is_bridged(db_path: str | os.PathLike[str]) -> bool:
+    """Can a reader in *another* user namespace still find this cache?
+
+    The supervisor's children are those readers.  They resolve ``@u`` to
+    their namespace's own keyring, so the operator's key reaches them
+    only through the ``@u`` link ``store`` leaves in the session keyring
+    — and only while they share that session keyring with the process
+    that wrote the cache.  A vault unlocked from one login session and a
+    task launched from another therefore leaves the tier answering the
+    operator and no one else.
+
+    This searches the ``@s`` leg alone, which is exactly what those
+    children can reach.  ``False`` on an absent cache, an unusable
+    facility, and a failed search alike: all three are "the supervisor
+    will not find it", which is the question asked.
+    """
+    try:
+        lib = _load_library()
+    except _KeyutilsUnavailable:
+        return False
+    ctypes.set_errno(0)
+    return lib.keyctl_search(_KEY_SPEC_SESSION_KEYRING, KEY_TYPE, key_description(db_path), 0) != -1
+
+
 def forget(db_path: str | os.PathLike[str]) -> bool:
     """Clear the passphrase cached for *db_path*.
 
@@ -253,6 +301,15 @@ def forget(db_path: str | os.PathLike[str]) -> bool:
     state, so it reports failure rather than claim the passphrase is
     gone.  Any same-uid terminal may call it, not only the one that
     cached the passphrase.
+
+    The key is anchored in ``@u`` and this unlinks it from there, so
+    clearing the cache is an operator-context operation.  Called from
+    inside another user namespace — where the search now reaches the key
+    through ``@s`` but ``@u`` holds nothing to unlink — it reports
+    failure, which is the honest answer: the cache is still there.
+    Before the ``@s`` leg existed such a call found no key at all and
+    reported the cache cleared, which was the same call telling the
+    opposite story.
 
     Returns:
         True when no passphrase remains cached for this vault.
@@ -334,26 +391,43 @@ def unavailable_reason() -> str | None:
 def _find_cached_key(lib: ctypes.CDLL, description: bytes) -> int | None:
     """Serial of the key under *description*, or ``None`` when genuinely absent.
 
+    Searches ``@u`` first — where ``store`` anchors the key, and the only
+    keyring a ``forget`` can unlink it from — then ``@s``, which reaches
+    the same key through the link ``store`` leaves behind.  The second
+    leg is what a reader in another user namespace needs: ``@u`` resolves
+    per-namespace, so a supervisor child searching it alone finds its own
+    empty keyring and reads the cache as absent.  ``keyctl_search``
+    recurses into nested keyrings, so one search of ``@s`` covers both
+    the session keyring's own keys and the linked ``@u``.
+
     Only ``ENOKEY`` — no key under this description — is a miss.  Any
     other failure (a revoked or expired key, a permission fault) is a
     lookup the caller must not read as "absent": a ``forget`` that did so
-    would report the passphrase cleared while it may still be cached.
+    would report the passphrase cleared while it may still be cached.  A
+    keyring that faults does not veto the next one, though — the key is
+    present if *any* leg finds it, and the fault is raised only when none
+    did.
 
     Returns:
         The key's serial number, or None when no such key exists.
 
     Raises:
-        OSError: The keyring search failed for a reason other than a
-            missing key; ``errno`` carries which.
+        OSError: Every keyring search failed, at least one of them for a
+            reason other than a missing key; ``errno`` carries the first
+            such reason.
     """
-    ctypes.set_errno(0)
-    serial = lib.keyctl_search(_KEY_SPEC_USER_KEYRING, KEY_TYPE, description, 0)
-    if serial != -1:
-        return serial
-    err = ctypes.get_errno()
-    if err == errno.ENOKEY:
+    fault = None
+    for keyring in (_KEY_SPEC_USER_KEYRING, _KEY_SPEC_SESSION_KEYRING):
+        ctypes.set_errno(0)
+        serial = lib.keyctl_search(keyring, KEY_TYPE, description, 0)
+        if serial != -1:
+            return serial
+        err = ctypes.get_errno()
+        if err != errno.ENOKEY and fault is None:
+            fault = err
+    if fault is None:
         return None
-    raise OSError(err, os.strerror(err))
+    raise OSError(fault, os.strerror(fault))
 
 
 class _KeyutilsUnavailable(Exception):

@@ -101,11 +101,15 @@ path = "terok_sandbox.doctor"
 layer = "foundation"
 depends_on = [
     "terok_sandbox._stage",
+    "terok_sandbox._util",
     "terok_sandbox.config",
     "terok_sandbox.paths",
+    "terok_sandbox.supervisor.sidecar",
     "terok_sandbox.vault.daemon",
     "terok_sandbox.vault.store.encryption",
     "terok_sandbox.vault.store.recovery",
+    "terok_sandbox.vault.store.session_cache",
+    "terok_sandbox.vault.store.tiers",
 ]
 
 # ── Vault: store, ssh, daemon ──────────────────────────────

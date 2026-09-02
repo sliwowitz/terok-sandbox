@@ -57,6 +57,21 @@ def is_cached(db_path: str | os.PathLike[str]) -> bool:
     return _backend().is_cached(db_path)
 
 
+def is_bridged(db_path: str | os.PathLike[str]) -> bool:
+    """Can a reader in another user namespace reach the cache for *db_path*?
+
+    The supervisor's service children ask this question of every cache
+    they read.  A file backing answers it by construction — a path is a
+    path in any namespace — so only the kernel backing has anything to
+    check (see
+    [`kernel_keyring.is_bridged`][terok_sandbox.vault.store.kernel_keyring.is_bridged]).
+    ``False`` on a cache that is simply absent, which no reader finds.
+    """
+    if _backend() is _session_file:
+        return _session_file.is_cached(db_path)
+    return _kernel_keyring.is_bridged(db_path)
+
+
 def unavailable_reason() -> str | None:
     """Explain why no backing can hold the cache here, or ``None`` when one can."""
     kernel_reason = _kernel_keyring.unavailable_reason()
@@ -93,6 +108,7 @@ def _backend() -> ModuleType:
 __all__ = [
     "backing_detail",
     "forget",
+    "is_bridged",
     "is_cached",
     "load",
     "store",

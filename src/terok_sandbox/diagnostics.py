@@ -42,6 +42,7 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
+from ._util import _proc
 from .paths import state_root
 from .supervisor.install import (
     _HOOK_SCRIPT_NAME,
@@ -55,8 +56,6 @@ _SIDECAR_DIR_NAME = "sidecar"
 _HOOK_LOG_NAME = "hook.log"
 _HOOKS_DIR_NAME = "hooks"
 
-#: Where the liveness probe reads process argvs from (patchable in tests).
-_PROC_DIR = Path("/proc")
 
 #: How long to wait for the re-fired hook to spawn the wrapper and write
 #: its PID file.  The hook detaches the wrapper and returns promptly; the
@@ -135,11 +134,17 @@ class SupervisorLiveness:
     """
 
     #: ``True`` only when the recorded PID is live *and* is our wrapper.
+    #: The parent only — it outlives its children, so this says the bundle
+    #: was started, never that it is whole.  ``services`` says that.
     alive: bool
     #: The PID recorded in the file, or ``None`` when there was no PID file.
     pid: int | None
     #: One-line reason, ready for a diagnostic status line.
     detail: str
+    #: Service names of the live children, sorted.  Empty when the parent
+    #: is dead, and — the case worth naming — when it is alive and every
+    #: child of it has exited.
+    services: tuple[str, ...] = ()
 
 
 def supervisor_liveness(
@@ -154,6 +159,13 @@ def supervisor_liveness(
     recorded wrapper path and the container id must both appear in its
     argv, the double-mark that guards against a recycled PID (the same
     check the OCI hook makes before deciding whether to respawn).
+
+    Also reports which service children are running, because the parent
+    outliving them is a real state and a common one: a child that cannot
+    resolve the vault passphrase exits at once and the parent stays up,
+    so a container with no vault and no SSH agent answers ``alive=True``.
+    The two facts are separate — ``alive`` is what a respawn can fix, and
+    a bundle missing children is not that.
 
     Never raises: a missing PID file (the hook never spawned a supervisor)
     and a stale one (the wrapper died, or the PID was recycled) both come
@@ -173,7 +185,14 @@ def supervisor_liveness(
             detail="no PID file — the supervisor hook never spawned a supervisor",
         )
     if _pid_alive(pid) and _wrapper_argv_matches(pid, wrapper, container_id):
-        return SupervisorLiveness(alive=True, pid=pid, detail=f"supervisor pid {pid} alive")
+        services = _proc.service_children(container_id)
+        running = ", ".join(services) if services else "none"
+        return SupervisorLiveness(
+            alive=True,
+            pid=pid,
+            detail=f"supervisor pid {pid} alive; children running: {running}",
+            services=services,
+        )
     return SupervisorLiveness(
         alive=False, pid=pid, detail=f"stale PID file — pid {pid} is dead or recycled"
     )
@@ -205,7 +224,7 @@ def _wrapper_argv_matches(pid: int, wrapper: Path, container_id: str) -> bool:
     supervisor, so the id is what pins it to *this* container.
     """
     try:
-        raw = (_PROC_DIR / str(pid) / "cmdline").read_bytes()
+        raw = (_proc.PROC_DIR / str(pid) / "cmdline").read_bytes()
     except OSError:
         return False
     args = raw.rstrip(b"\x00").split(b"\x00")

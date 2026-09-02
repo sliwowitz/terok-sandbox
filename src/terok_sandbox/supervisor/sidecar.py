@@ -27,6 +27,19 @@ from pathlib import Path
 
 _logger = logging.getLogger("terok-supervisor")
 
+#: Every supervisor service, in launch order: verdict before clearance
+#: (the hub connects to it), gate before vault (the container clones
+#: through the gate first), vault and signer last (the secret-holders come
+#: up once their consumers are waiting).  The runner table in
+#: [`children`][terok_sandbox.supervisor.children] keys on these names and
+#: takes its launch order from them.
+#:
+#: The names live here, with the sidecar that decides which of them are
+#: wired, because every reader of that decision — the parent supervisor,
+#: the post-start check, the doctor — needs the vocabulary without
+#: needing the runners.
+SERVICE_NAMES: tuple[str, ...] = ("verdict", "clearance", "gate", "vault", "signer")
+
 
 @dataclass(frozen=True)
 class SidecarConfig:
@@ -195,6 +208,17 @@ class SupervisorPaths:
             control_socket=clearance_root / "control" / f"{short_id}.sock",
             log_path=state_anchor / "logs" / f"{container_id}.log",
         )
+
+
+def wired_services(cfg: SidecarConfig) -> tuple[str, ...]:
+    """The services *cfg* wires, in launch order — all but a gate it did not.
+
+    The one conditional service is the gate: a sidecar without a mirror
+    path and a token has no repo to serve, and the parent launches no
+    child for it.  Everything else runs for every container.
+    """
+    gate_wired = bool(cfg.gate_base_path and cfg.gate_token)
+    return tuple(name for name in SERVICE_NAMES if name != "gate" or gate_wired)
 
 
 class _BadSidecar(Exception):

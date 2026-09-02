@@ -47,6 +47,12 @@ def _restore_real_kernel_keyring(monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr(kernel_keyring, name, func)
 
 
+#: Ring specs from ``linux/keyctl.h`` the fake resolves, mirroring the
+#: module's own constants.
+_UID_RING = -4
+_SESSION_RING = -3
+
+
 class FakeKeyutils:
     """In-memory stand-in for the ``libkeyutils`` handle.
 
@@ -55,6 +61,15 @@ class FakeKeyutils:
     configures, with knobs to force each failure mode.  ``errno`` is set
     through ``ctypes`` so the module's ``os.strerror(ctypes.get_errno())``
     diagnostics render as they would against the real library.
+
+    Keyrings are modelled by *identity* rather than by spec, because the
+    two differ exactly where this tier is hard: a ring spec resolves
+    per-namespace, so ``@u`` names one keyring for the operator and
+    another for a process inside podman's rootless namespace, while
+    ``@s`` names the same keyring for both.
+    [`enter_user_namespace`][tests.unit.test_kernel_keyring.FakeKeyutils.enter_user_namespace]
+    reproduces that crossing.  Searches follow links between rings, as
+    ``keyctl_search`` does.
     """
 
     def __init__(
@@ -64,6 +79,7 @@ class FakeKeyutils:
         add_key_errno: int | None = None,
         setperm_ok: bool = True,
         search_errno: int | None = None,
+        link_ok: bool = True,
     ) -> None:
         self._keys: dict[bytes, tuple[int, bytes]] = {}
         self._by_serial: dict[int, bytes] = {}
@@ -72,14 +88,38 @@ class FakeKeyutils:
         self._add_key_errno = add_key_errno
         self._setperm_ok = setperm_ok
         self._search_errno = search_errno
+        self._link_ok = link_ok
         self.perms: dict[int, int] = {}
+        # Ring identity → the descriptions it holds, and the rings linked
+        # into it.  ``_rings`` maps the spec a caller passes to one identity.
+        self._next_ring = 1
+        self._rings = {_UID_RING: self._new_ring(), _SESSION_RING: self._new_ring()}
+        self._holds: dict[int, set[bytes]] = {r: set() for r in self._rings.values()}
+        self._nested: dict[int, set[int]] = {r: set() for r in self._rings.values()}
+
+    def enter_user_namespace(self) -> None:
+        """Re-resolve ``@u`` to a fresh empty keyring, leaving ``@s`` as it was.
+
+        What a rootless supervisor child sees: its own per-namespace user
+        keyring, and the session keyring it inherited untouched.
+        """
+        ring = self._new_ring()
+        self._rings[_UID_RING] = ring
+        self._holds[ring] = set()
+        self._nested[ring] = set()
+
+    def _new_ring(self) -> int:
+        """Return a fresh keyring identity."""
+        ring = self._next_ring
+        self._next_ring += 1
+        return ring
 
     def keyctl_get_keyring_ID(self, _ring: int, _create: int) -> int:  # noqa: N802
         if self._get_keyring_id < 0:
             ctypes.set_errno(38)  # ENOSYS
         return self._get_keyring_id
 
-    def add_key(self, _ktype: bytes, desc: bytes, payload: bytes, plen: int, _ring: int) -> int:
+    def add_key(self, _ktype: bytes, desc: bytes, payload: bytes, plen: int, ring: int) -> int:
         if self._add_key_errno is not None:
             ctypes.set_errno(self._add_key_errno)
             return -1
@@ -87,16 +127,25 @@ class FakeKeyutils:
         self._next_serial += 1
         self._keys[desc] = (serial, payload[:plen])
         self._by_serial[serial] = desc
+        self._holds[self._rings[ring]].add(desc)
         return serial
 
-    def keyctl_search(self, _ring: int, _ktype: bytes, desc: bytes, _dest: int) -> int:
+    def keyctl_search(self, ring: int, _ktype: bytes, desc: bytes, _dest: int) -> int:
         if self._search_errno is not None:
             ctypes.set_errno(self._search_errno)
             return -1
-        if desc not in self._keys:
+        if not self._reaches(self._rings[ring], desc):
             ctypes.set_errno(126)  # ENOKEY
             return -1
         return self._keys[desc][0]
+
+    def _reaches(self, ring: int, desc: bytes, seen: frozenset[int] = frozenset()) -> bool:
+        """Is *desc* in *ring* or in any keyring linked into it?"""
+        if desc in self._holds[ring]:
+            return True
+        return any(
+            self._reaches(nested, desc, seen | {ring}) for nested in self._nested[ring] - seen
+        )
 
     def keyctl_read(self, serial: int, buf: object, _buflen: int) -> int:
         desc = self._by_serial.get(serial)
@@ -114,13 +163,19 @@ class FakeKeyutils:
         self.perms[serial] = perm
         return 0
 
-    def keyctl_link(self, _key: int, _ring: int) -> int:  # noqa: N802 (mirror C name)
+    def keyctl_link(self, key: int, ring: int) -> int:  # noqa: N802 (mirror C name)
+        if not self._link_ok:
+            ctypes.set_errno(13)  # EACCES
+            return -1
+        self._nested[self._rings[ring]].add(self._rings[key])
         return 0
 
     def keyctl_unlink(self, serial: int, _ring: int) -> int:
         desc = self._by_serial.pop(serial, None)
         if desc is not None:
             self._keys.pop(desc, None)
+            for held in self._holds.values():
+                held.discard(desc)
         return 0
 
 
@@ -234,6 +289,103 @@ def test_store_returns_false_when_library_unavailable(monkeypatch: pytest.Monkey
 
     monkeypatch.setattr(kernel_keyring, "_load_library", _raise)
     assert kernel_keyring.store("pw", MOCK_DB_PATH) is False
+
+
+# ── reading across a user namespace ─────────────────────────────────
+
+
+def test_load_crosses_a_user_namespace_through_the_session_keyring(
+    fake_lib: FakeKeyutils,
+) -> None:
+    """The supervisor's children read the operator's cache, or the vault won't open.
+
+    They run inside podman's rootless user namespace, where ``@u`` is a
+    different keyring — an empty one.  The session keyring crosses that
+    boundary unchanged and holds the link ``store`` left behind, which is
+    the only route to the key from in there.
+    """
+    kernel_keyring.store("s3cret", MOCK_DB_PATH)
+
+    fake_lib.enter_user_namespace()
+
+    assert kernel_keyring.load(MOCK_DB_PATH) == "s3cret"
+    assert kernel_keyring.is_cached(MOCK_DB_PATH) is True
+
+
+def test_load_stays_blind_across_a_namespace_without_the_session_link(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Without the ``@u`` link there is no bridge, and the miss is honest.
+
+    The pair to the test above: it is the link that carries the cache
+    across, not the crossing being harmless.
+    """
+    lib = FakeKeyutils(link_ok=False)
+    monkeypatch.setattr(kernel_keyring, "_load_library", lambda: lib)
+    kernel_keyring.store("s3cret", MOCK_DB_PATH)
+
+    lib.enter_user_namespace()
+
+    assert kernel_keyring.load(MOCK_DB_PATH) is None
+
+
+def test_is_bridged_answers_for_the_reader_in_the_other_namespace(
+    fake_lib: FakeKeyutils,
+) -> None:
+    """It asks the ``@s`` leg alone, because that is the only leg those readers have."""
+    assert kernel_keyring.is_bridged(MOCK_DB_PATH) is False
+    kernel_keyring.store("s3cret", MOCK_DB_PATH)
+    assert kernel_keyring.is_bridged(MOCK_DB_PATH) is True
+
+
+def test_is_bridged_is_false_without_the_session_link(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A cache the operator can read and the supervisor cannot is the reported state."""
+    lib = FakeKeyutils(link_ok=False)
+    monkeypatch.setattr(kernel_keyring, "_load_library", lambda: lib)
+    kernel_keyring.store("s3cret", MOCK_DB_PATH)
+
+    assert kernel_keyring.load(MOCK_DB_PATH) == "s3cret"
+    assert kernel_keyring.is_bridged(MOCK_DB_PATH) is False
+
+
+def test_is_bridged_is_false_without_the_facility(monkeypatch: pytest.MonkeyPatch) -> None:
+    """No keyring at all is one more way for the supervisor not to find it."""
+
+    def _raise() -> object:
+        raise kernel_keyring._KeyutilsUnavailable("libkeyutils not loadable")
+
+    monkeypatch.setattr(kernel_keyring, "_load_library", _raise)
+    assert kernel_keyring.is_bridged(MOCK_DB_PATH) is False
+
+
+def test_store_warns_when_the_session_link_fails(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A failed link is the supervisor losing the cache — say so."""
+    monkeypatch.setattr(kernel_keyring, "_load_library", lambda: FakeKeyutils(link_ok=False))
+
+    with caplog.at_level("WARNING"):
+        kernel_keyring.store("s3cret", MOCK_DB_PATH)
+
+    assert "supervisor child" in caplog.text
+
+
+def test_a_faulting_keyring_does_not_veto_the_next_one(
+    monkeypatch: pytest.MonkeyPatch, fake_lib: FakeKeyutils
+) -> None:
+    """A hit anywhere is a hit — an earlier permission fault is not the answer."""
+    kernel_keyring.store("s3cret", MOCK_DB_PATH)
+    real_search = fake_lib.keyctl_search
+
+    def _faulting(ring: int, ktype: bytes, desc: bytes, dest: int) -> int:
+        if ring == _UID_RING:
+            ctypes.set_errno(13)  # EACCES
+            return -1
+        return real_search(ring, ktype, desc, dest)
+
+    monkeypatch.setattr(fake_lib, "keyctl_search", _faulting)
+
+    assert kernel_keyring.load(MOCK_DB_PATH) == "s3cret"
 
 
 # ── load / forget ───────────────────────────────────────────────────

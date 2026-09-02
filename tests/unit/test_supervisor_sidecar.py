@@ -17,7 +17,7 @@ from pathlib import Path
 
 import pytest
 
-from terok_sandbox.supervisor.main import SidecarConfig, load_sidecar
+from terok_sandbox.supervisor.sidecar import SidecarConfig, load_sidecar
 
 
 def _write_sidecar(tmp_path: Path, payload: dict[str, object]) -> Path:
