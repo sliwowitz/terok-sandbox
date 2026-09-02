@@ -298,6 +298,22 @@ class TestListeningPorts:
         )
         assert self._ports(monkeypatch, (table,)) == frozenset({46785, 8080})
 
+    def test_a_malformed_row_costs_only_itself(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """This reader never raises — a start must not fail on a row it cannot parse."""
+        table = self._table(
+            tmp_path,
+            "tcp",
+            [
+                ("zzzzzzzz:B6C1", "0A"),  # not hexadecimal
+                ("010000:B6C2", "0A"),  # too short to be an address
+                ("0100007F:zzzz", "0A"),  # not a port
+                ("0100007F:1F90", "0A"),  # the good row
+            ],
+        )
+        assert self._ports(monkeypatch, (table,)) == frozenset({8080})
+
     def test_no_readable_table_is_an_unknown(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:

@@ -329,6 +329,35 @@ def test_load_stays_blind_across_a_namespace_without_the_session_link(
     assert kernel_keyring.load(MOCK_DB_PATH) is None
 
 
+def test_is_bridged_answers_for_the_reader_in_the_other_namespace(
+    fake_lib: FakeKeyutils,
+) -> None:
+    """It asks the ``@s`` leg alone, because that is the only leg those readers have."""
+    assert kernel_keyring.is_bridged(MOCK_DB_PATH) is False
+    kernel_keyring.store("s3cret", MOCK_DB_PATH)
+    assert kernel_keyring.is_bridged(MOCK_DB_PATH) is True
+
+
+def test_is_bridged_is_false_without_the_session_link(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A cache the operator can read and the supervisor cannot is the reported state."""
+    lib = FakeKeyutils(link_ok=False)
+    monkeypatch.setattr(kernel_keyring, "_load_library", lambda: lib)
+    kernel_keyring.store("s3cret", MOCK_DB_PATH)
+
+    assert kernel_keyring.load(MOCK_DB_PATH) == "s3cret"
+    assert kernel_keyring.is_bridged(MOCK_DB_PATH) is False
+
+
+def test_is_bridged_is_false_without_the_facility(monkeypatch: pytest.MonkeyPatch) -> None:
+    """No keyring at all is one more way for the supervisor not to find it."""
+
+    def _raise() -> object:
+        raise kernel_keyring._KeyutilsUnavailable("libkeyutils not loadable")
+
+    monkeypatch.setattr(kernel_keyring, "_load_library", _raise)
+    assert kernel_keyring.is_bridged(MOCK_DB_PATH) is False
+
+
 def test_store_warns_when_the_session_link_fails(
     monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:

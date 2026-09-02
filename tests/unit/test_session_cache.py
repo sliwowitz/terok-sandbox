@@ -183,6 +183,25 @@ class TestSessionCacheFacade:
         assert forgotten == ["kernel"]
         assert not session_file.is_cached(_DB)
 
+    def test_a_file_backed_cache_crosses_a_namespace_by_construction(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A path is a path in any namespace, so presence is the whole question."""
+        monkeypatch.setattr(kernel_keyring, "unavailable_reason", lambda: "no libkeyutils")
+        assert not session_cache.is_bridged(_DB)
+        session_cache.store("pw", _DB)
+        assert session_cache.is_bridged(_DB)
+
+    def test_a_kernel_backed_cache_asks_the_keyring(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Only the kernel backing has a boundary to answer for."""
+        asked: list[str] = []
+        monkeypatch.setattr(kernel_keyring, "unavailable_reason", lambda: None)
+        monkeypatch.setattr(
+            kernel_keyring, "is_bridged", lambda db: bool(asked.append(str(db))) or True
+        )
+        assert session_cache.is_bridged(_DB)
+        assert asked == [str(_DB)]
+
     def test_unavailable_only_when_both_backings_are(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr(kernel_keyring, "unavailable_reason", lambda: "no libkeyutils")
         assert session_cache.unavailable_reason() is None
