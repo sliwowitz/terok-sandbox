@@ -95,6 +95,8 @@ def sandbox_doctor_checks(
     token_broker_port: int | None = None,
     ssh_signer_port: int | None = None,
     desired_shield_state: str | None = None,
+    container_id: str | None = None,
+    container_name: str | None = None,
 ) -> list[DoctorCheck]:
     """Return sandbox-level health checks for in-container diagnostics.
 
@@ -103,6 +105,11 @@ def sandbox_doctor_checks(
         ssh_signer_port: SSH signer TCP port (skip check if ``None``).
         desired_shield_state: Expected shield state from ``shield_desired_state``
             file (``"up"``, ``"down"``, ``"disengaged"``, or ``None`` to skip).
+        container_id: Container ID, for the supervisor-children check.
+            Skipped when ``None`` or when *container_name* is missing —
+            the children are found by ID and the wiring is read from the
+            sidecar, which is keyed by name.
+        container_name: Container name, for the same check.
 
     Returns:
         List of [`DoctorCheck`][terok_sandbox.doctor.DoctorCheck] instances ready for orchestration.
@@ -110,6 +117,8 @@ def sandbox_doctor_checks(
     checks: list[DoctorCheck] = [
         _make_vault_unlocked_check(),
     ]
+    if container_id and container_name:
+        checks.append(_make_supervisor_children_check(container_id, container_name))
     if token_broker_port is not None:
         checks.append(_make_token_broker_check(token_broker_port))
     if ssh_signer_port is not None:
@@ -118,33 +127,99 @@ def sandbox_doctor_checks(
     return checks
 
 
+def _make_supervisor_children_check(container_id: str, container_name: str) -> DoctorCheck:
+    """Verify every service the sidecar wires has a live supervisor child.
+
+    Host-side check, and the one that names this class of failure before
+    its symptoms do.  The parent supervisor outlives its children, so a
+    dead child surfaces only as whatever stops working — a refused
+    connection to the vault port, an SSH agent that answers nothing —
+    while the supervisor's own PID file still reads healthy.  Comparing
+    the wired services against the running ones says which child is gone,
+    and the supervisor log then says why it went.
+    """
+
+    def _eval(_rc: int, _stdout: str, _stderr: str) -> CheckVerdict:
+        """Compare the sidecar's wiring against the live children."""
+        from ._util._proc import service_children
+        from .paths import state_root
+        from .supervisor.sidecar import load_sidecar, wired_services
+
+        sidecar_path = state_root() / "sidecar" / f"{container_name}.json"
+        sidecar = load_sidecar(sidecar_path) if sidecar_path.is_file() else None
+        if sidecar is None:
+            return CheckVerdict("ok", "no sidecar — this container has no supervisor to check")
+        expected = set(wired_services(sidecar))
+        running = set(service_children(container_id))
+        missing = sorted(expected - running)
+        if not missing:
+            return CheckVerdict("ok", f"{len(expected)} supervisor service(s) running")
+        log = state_root() / "logs" / f"{container_id}.log"
+        return CheckVerdict(
+            "error",
+            f"supervisor children not running: {', '.join(missing)}."
+            f" What they serve is dead in this container — see {log} for why they exited",
+        )
+
+    return DoctorCheck(
+        category="supervisor",
+        label="Supervisor children",
+        probe_cmd=[],
+        evaluate=_eval,
+        host_side=True,
+    )
+
+
 def _make_vault_unlocked_check() -> DoctorCheck:
-    """Verify the credentials-DB passphrase resolves through some tier.
+    """Verify the passphrase resolves — and that the supervisor can resolve it too.
 
     Host-side check: walks the resolution chain (systemd-creds → OS
     keyring → kernel keyring → passphrase-command) and reports an
-    actionable error when nothing yields.  The vault daemon won't start
-    without a passphrase, so this is the first check operators should
-    see fail.
+    actionable error when nothing yields.  The vault and signer children
+    do not start without a passphrase, so this is the first check
+    operators should see fail.
+
+    Walking the chain here answers it for *this* process, which is not
+    the process that has to succeed.  The children walk the same chain
+    inside podman's rootless user namespace, and the volatile cache tier
+    is the one whose answer differs there: its key lives in a per-namespace
+    ``@u``, reachable from the children only through the session keyring
+    (see [`session_cache.is_bridged`][terok_sandbox.vault.store.session_cache.is_bridged]).
+    So a cache that answers only this process is reported as the failure
+    it is, rather than as a green line above two dead children.
     """
 
     def _eval(_rc: int, _stdout: str, _stderr: str) -> CheckVerdict:
         """Walk the resolution chain locally; report the verdict."""
         from .config import SandboxConfig
+        from .vault.store import session_cache
         from .vault.store.encryption import WrongPassphraseError
+        from .vault.store.tiers import PassphraseTier
 
+        cfg = SandboxConfig()
         try:
-            passphrase = SandboxConfig().resolve_passphrase()
+            passphrase, tier = cfg.resolve_passphrase_with_source()
         except WrongPassphraseError as exc:
             return CheckVerdict("error", f"vault tier broken — {exc}")
-        if passphrase is not None:
-            return CheckVerdict("ok", "credentials-DB passphrase available")
-        return CheckVerdict(
-            "error",
-            "vault is locked — no passphrase available."
-            " Run `terok-sandbox vault unlock` (kernel-keyring cache)"
-            " or `terok-sandbox setup` to provision.",
-        )
+        if passphrase is None:
+            return CheckVerdict(
+                "error",
+                "vault is locked — no passphrase available."
+                " Run `terok-sandbox vault unlock` (kernel-keyring cache)"
+                " or `terok-sandbox setup` to provision.",
+            )
+        if tier is PassphraseTier.KERNEL_KEYRING and not session_cache.is_bridged(cfg.db_path):
+            return CheckVerdict(
+                "error",
+                "credentials-DB passphrase available here, but not to the supervisor:"
+                " the cache is not reachable from the rootless user namespace its"
+                " children run in, so a task started now gets no vault and no SSH agent."
+                " Run `terok-sandbox vault unlock` from this session, or set"
+                " `credentials.passphrase_command` for a tier that does not depend on"
+                " which session cached it.",
+            )
+        source = f" via {tier.value}" if tier is not None else ""
+        return CheckVerdict("ok", f"credentials-DB passphrase available{source}")
 
     return DoctorCheck(
         category="vault",

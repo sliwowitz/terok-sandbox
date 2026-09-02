@@ -268,6 +268,30 @@ def load(db_path: str | os.PathLike[str]) -> str | None:
         ctypes.memset(buf, 0, length)
 
 
+def is_bridged(db_path: str | os.PathLike[str]) -> bool:
+    """Can a reader in *another* user namespace still find this cache?
+
+    The supervisor's children are those readers.  They resolve ``@u`` to
+    their namespace's own keyring, so the operator's key reaches them
+    only through the ``@u`` link ``store`` leaves in the session keyring
+    — and only while they share that session keyring with the process
+    that wrote the cache.  A vault unlocked from one login session and a
+    task launched from another therefore leaves the tier answering the
+    operator and no one else.
+
+    This searches the ``@s`` leg alone, which is exactly what those
+    children can reach.  ``False`` on an absent cache, an unusable
+    facility, and a failed search alike: all three are "the supervisor
+    will not find it", which is the question asked.
+    """
+    try:
+        lib = _load_library()
+    except _KeyutilsUnavailable:
+        return False
+    ctypes.set_errno(0)
+    return lib.keyctl_search(_KEY_SPEC_SESSION_KEYRING, KEY_TYPE, key_description(db_path), 0) != -1
+
+
 def forget(db_path: str | os.PathLike[str]) -> bool:
     """Clear the passphrase cached for *db_path*.
 

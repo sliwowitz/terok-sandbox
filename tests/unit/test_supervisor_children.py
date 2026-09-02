@@ -29,6 +29,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from terok_sandbox.supervisor.children import (
+    _RUNNERS,
     SERVICE_NAMES,
     _arm_parent_death_signal,
     _ensure_socket_dirs,
@@ -44,7 +45,7 @@ from terok_sandbox.supervisor.children import (
     _writable_paths,
     run_child,
 )
-from terok_sandbox.supervisor.main import SidecarConfig, SupervisorPaths
+from terok_sandbox.supervisor.sidecar import SidecarConfig, SupervisorPaths
 from tests.constants import LOCALHOST, SYSTEM_RUNTIME_ROOT
 
 
@@ -123,6 +124,17 @@ def _preset_stop() -> asyncio.Event:
 def test_service_names_are_the_five_children() -> None:
     """The launch-ordered set is exactly the five services, secret-holders last."""
     assert SERVICE_NAMES == ("verdict", "clearance", "gate", "vault", "signer")
+
+
+def test_every_service_name_has_a_runner() -> None:
+    """The vocabulary lives with the sidecar, the runners here — they must agree.
+
+    Readers of the wiring decision (the post-start check, the doctor) take
+    the names from the sidecar module without importing the runners, so a
+    name added on one side and not the other would have those readers
+    expecting a service nothing launches.
+    """
+    assert tuple(_RUNNERS) == SERVICE_NAMES
 
 
 class TestSelinuxSocketContext:

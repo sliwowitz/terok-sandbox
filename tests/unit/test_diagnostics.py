@@ -93,18 +93,51 @@ class TestSupervisorLiveness:
         proc = _plant_supervisor(
             tmp_path, _CID, pid=pid, cmdline=["/usr/bin/python3", wrapper, _CID, "/s.json"]
         )
-        monkeypatch.setattr(diag, "_PROC_DIR", proc)
+        monkeypatch.setattr("terok_sandbox._util._proc.PROC_DIR", proc)
         r = supervisor_liveness(_CID, state_dir=tmp_path)
         assert r.alive is True
         assert r.pid == pid
         assert f"pid {pid}" in r.detail
+
+    def test_running_children_are_named(self, tmp_path: Path, monkeypatch) -> None:
+        """A live parent says which children it still has, because it outlives them."""
+        pid = os.getpid()
+        wrapper = str(tmp_path / "supervisor_wrapper.py")
+        proc = _plant_supervisor(
+            tmp_path, _CID, pid=pid, cmdline=["/usr/bin/python3", wrapper, _CID, "/s.json"]
+        )
+        for child_pid, service in ((pid + 1, "vault"), (pid + 2, "gate")):
+            child = proc / str(child_pid)
+            child.mkdir()
+            argv = ["python", "-m", "terok_sandbox", "supervise-child", service, _CID, "/s.json"]
+            (child / "cmdline").write_bytes(b"\x00".join(a.encode() for a in argv) + b"\x00")
+        monkeypatch.setattr("terok_sandbox._util._proc.PROC_DIR", proc)
+
+        r = supervisor_liveness(_CID, state_dir=tmp_path)
+        assert r.alive is True
+        assert r.services == ("gate", "vault")
+        assert "gate, vault" in r.detail
+
+    def test_a_parent_without_children_says_so(self, tmp_path: Path, monkeypatch) -> None:
+        """The state this probe used to hide: alive, and serving nothing."""
+        pid = os.getpid()
+        wrapper = str(tmp_path / "supervisor_wrapper.py")
+        proc = _plant_supervisor(
+            tmp_path, _CID, pid=pid, cmdline=["/usr/bin/python3", wrapper, _CID, "/s.json"]
+        )
+        monkeypatch.setattr("terok_sandbox._util._proc.PROC_DIR", proc)
+
+        r = supervisor_liveness(_CID, state_dir=tmp_path)
+        assert r.alive is True
+        assert r.services == ()
+        assert "children running: none" in r.detail
 
     def test_stale_when_pid_dead(self, tmp_path: Path, monkeypatch) -> None:
         wrapper = str(tmp_path / "supervisor_wrapper.py")
         proc = _plant_supervisor(
             tmp_path, _CID, pid=4242, cmdline=["/usr/bin/python3", wrapper, _CID]
         )
-        monkeypatch.setattr(diag, "_PROC_DIR", proc)
+        monkeypatch.setattr("terok_sandbox._util._proc.PROC_DIR", proc)
         monkeypatch.setattr(diag, "_pid_alive", lambda _pid: False)
         r = supervisor_liveness(_CID, state_dir=tmp_path)
         assert r.alive is False
@@ -120,7 +153,7 @@ class TestSupervisorLiveness:
         proc = _plant_supervisor(
             tmp_path, _CID, pid=pid, cmdline=["/usr/bin/python3", wrapper, "SOME-OTHER-ID"]
         )
-        monkeypatch.setattr(diag, "_PROC_DIR", proc)
+        monkeypatch.setattr("terok_sandbox._util._proc.PROC_DIR", proc)
         r = supervisor_liveness(_CID, state_dir=tmp_path)
         assert r.alive is False
         assert r.pid == pid
@@ -214,7 +247,7 @@ class TestRespawnSupervisor:
         proc = _plant_supervisor(
             tmp_path, _CID, pid=pid, cmdline=["/usr/bin/python3", wrapper, _CID]
         )
-        monkeypatch.setattr(diag, "_PROC_DIR", proc)
+        monkeypatch.setattr("terok_sandbox._util._proc.PROC_DIR", proc)
         monkeypatch.setattr(diag.subprocess, "run", lambda *_a, **_k: None)
 
         result = respawn_supervisor(_CID, _CNAME, state_dir=tmp_path)

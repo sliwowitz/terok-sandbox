@@ -5,6 +5,9 @@
 
 from __future__ import annotations
 
+import json
+from pathlib import Path
+
 import pytest
 
 import terok_sandbox.doctor as _doctor
@@ -14,6 +17,7 @@ from terok_sandbox.doctor import (
     _kernel_keyring_quota,
     _make_shield_check,
     _make_ssh_signer_check,
+    _make_supervisor_children_check,
     _make_token_broker_check,
     _make_vault_unlocked_check,
     make_kernel_keyring_quota_check,
@@ -222,28 +226,139 @@ class TestShieldCheck:
 
 
 class TestVaultUnlockedCheck:
-    """Host-side check: passphrase resolves through *some* tier or vault stays locked."""
+    """Host-side check: passphrase resolves through *some* tier, for *some* reader."""
 
-    def test_ok_when_resolution_chain_yields(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """Any tier returning a passphrase → ok verdict."""
+    @staticmethod
+    def _chain(
+        monkeypatch: pytest.MonkeyPatch, passphrase: str | None, tier: object | None
+    ) -> None:
+        """Pin what the resolution chain answers for this process."""
         from terok_sandbox.vault.store import encryption as enc
 
-        monkeypatch.setattr(enc, "resolve_passphrase", lambda **_kw: "found-it")
-        check = _make_vault_unlocked_check()
-        verdict = check.evaluate(0, "", "")
+        monkeypatch.setattr(enc, "resolve_passphrase_with_source", lambda **_kw: (passphrase, tier))
+
+    def test_ok_when_resolution_chain_yields(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Any tier returning a passphrase → ok verdict, naming the tier."""
+        from terok_sandbox.vault.store.tiers import PassphraseTier
+
+        self._chain(monkeypatch, "found-it", PassphraseTier.SYSTEMD_CREDS)
+        verdict = _make_vault_unlocked_check().evaluate(0, "", "")
         assert verdict.severity == "ok"
         assert "available" in verdict.detail
+        assert PassphraseTier.SYSTEMD_CREDS.value in verdict.detail
 
     def test_error_when_chain_empty(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Every tier empty → actionable error verdict with the unlock hint."""
-        from terok_sandbox.vault.store import encryption as enc
-
-        monkeypatch.setattr(enc, "resolve_passphrase", lambda **_kw: None)
-        check = _make_vault_unlocked_check()
-        verdict = check.evaluate(0, "", "")
+        self._chain(monkeypatch, None, None)
+        verdict = _make_vault_unlocked_check().evaluate(0, "", "")
         assert verdict.severity == "error"
         assert "vault is locked" in verdict.detail
         assert "vault unlock" in verdict.detail
+
+    def test_error_when_the_cache_answers_only_this_process(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A cache the supervisor cannot reach is a failure, however green it looks here.
+
+        Resolving the chain in the CLI's own context answers for the one
+        process that is not required to succeed.  The children walk it in
+        another user namespace, and the volatile cache is the tier whose
+        answer differs there.
+        """
+        from terok_sandbox.vault.store import session_cache
+        from terok_sandbox.vault.store.tiers import PassphraseTier
+
+        self._chain(monkeypatch, "found-it", PassphraseTier.KERNEL_KEYRING)
+        monkeypatch.setattr(session_cache, "is_bridged", lambda _db: False)
+
+        verdict = _make_vault_unlocked_check().evaluate(0, "", "")
+        assert verdict.severity == "error"
+        assert "not to the supervisor" in verdict.detail
+        assert "passphrase_command" in verdict.detail
+
+    def test_ok_when_the_cache_reaches_the_supervisor(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The same tier, reachable across the boundary, is simply healthy."""
+        from terok_sandbox.vault.store import session_cache
+        from terok_sandbox.vault.store.tiers import PassphraseTier
+
+        self._chain(monkeypatch, "found-it", PassphraseTier.KERNEL_KEYRING)
+        monkeypatch.setattr(session_cache, "is_bridged", lambda _db: True)
+
+        assert _make_vault_unlocked_check().evaluate(0, "", "").severity == "ok"
+
+
+class TestSupervisorChildrenCheck:
+    """Host-side check: every service the sidecar wires has a live child."""
+
+    @staticmethod
+    def _sidecar(state: Path, *, gate: bool = False) -> None:
+        """Drop a sidecar for ``demo`` under ``<state>/sidecar/``."""
+        sidecar_dir = state / "sidecar"
+        sidecar_dir.mkdir(parents=True, exist_ok=True)
+        payload: dict[str, object] = {
+            "container_name": "demo",
+            "ipc_mode": "tcp",
+            "db_path": str(state / "v.db"),
+            "runtime_dir": str(state / "rt"),
+        }
+        if gate:
+            payload["gate_base_path"] = str(state / "gate")
+            payload["gate_token"] = "tok123"
+        (sidecar_dir / "demo.json").write_text(json.dumps(payload))
+
+    def _verdict(
+        self, monkeypatch: pytest.MonkeyPatch, state: Path, running: tuple[str, ...]
+    ) -> CheckVerdict:
+        """Evaluate the check with *running* children reported for ``demo``."""
+        from terok_sandbox import doctor
+
+        monkeypatch.setattr(doctor, "state_root", lambda: state, raising=False)
+        monkeypatch.setattr("terok_sandbox.paths.state_root", lambda: state)
+        monkeypatch.setattr("terok_sandbox._util._proc.service_children", lambda _cid: running)
+        return _make_supervisor_children_check("cid123", "demo").evaluate(0, "", "")
+
+    def test_ok_when_every_wired_service_runs(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        self._sidecar(tmp_path)
+        verdict = self._verdict(monkeypatch, tmp_path, ("clearance", "signer", "vault", "verdict"))
+        assert verdict.severity == "ok"
+
+    def test_error_names_the_children_that_are_gone(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The failure the PID file hides: a live parent over two dead children."""
+        self._sidecar(tmp_path)
+        verdict = self._verdict(monkeypatch, tmp_path, ("clearance", "verdict"))
+        assert verdict.severity == "error"
+        assert "signer, vault" in verdict.detail
+        assert "cid123.log" in verdict.detail
+
+    def test_an_unwired_gate_is_not_missing(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A sidecar with no repo to serve launches no gate, and misses none."""
+        self._sidecar(tmp_path, gate=False)
+        verdict = self._verdict(monkeypatch, tmp_path, ("clearance", "signer", "vault", "verdict"))
+        assert verdict.severity == "ok"
+
+    def test_a_wired_gate_that_is_gone_is_missing(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        self._sidecar(tmp_path, gate=True)
+        verdict = self._verdict(monkeypatch, tmp_path, ("clearance", "signer", "vault", "verdict"))
+        assert verdict.severity == "error"
+        assert "gate" in verdict.detail
+
+    def test_no_sidecar_is_not_a_failure(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A container with no supervisor to check has no children to miss."""
+        verdict = self._verdict(monkeypatch, tmp_path, ())
+        assert verdict.severity == "ok"
+        assert "no sidecar" in verdict.detail
 
 
 class TestSandboxDoctorChecks:
@@ -261,6 +376,17 @@ class TestSandboxDoctorChecks:
         assert "SSH signer (TCP)" in labels
         assert "Shield state" in labels
         assert len(checks) == 4
+
+    def test_children_check_added_when_the_container_is_named(self) -> None:
+        """The check needs both halves: children key on the ID, the sidecar on the name."""
+        labels = {
+            c.label for c in sandbox_doctor_checks(container_id="cid123", container_name="demo")
+        }
+        assert "Supervisor children" in labels
+        assert "Supervisor children" not in {c.label for c in sandbox_doctor_checks()}
+        assert "Supervisor children" not in {
+            c.label for c in sandbox_doctor_checks(container_id="cid123")
+        }
 
     def test_recovery_acknowledged_not_in_per_task_bundle(self) -> None:
         """The recovery check is host-only — terok's sickbay loops over tasks

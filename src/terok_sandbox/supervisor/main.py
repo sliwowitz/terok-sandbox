@@ -41,9 +41,9 @@ import shutil
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from .children import SERVICE_NAMES, _install_signal_handlers
+from .children import _install_signal_handlers
 from .launcher import launch_child
-from .sidecar import SidecarConfig, SupervisorPaths, load_sidecar
+from .sidecar import SupervisorPaths, load_sidecar, wired_services
 
 if TYPE_CHECKING:
     from .launcher import ChildHandle
@@ -123,7 +123,7 @@ async def run_supervisor(
     paths = SupervisorPaths.for_container(
         container_id, cfg.container_name, sidecar_path, cfg.runtime_dir
     )
-    services = _select_services(cfg, SERVICE_NAMES)
+    services = wired_services(cfg)
     stop_event = asyncio.Event()
     _install_signal_handlers(stop_event)
 
@@ -144,12 +144,6 @@ async def run_supervisor(
         # failure included — so a half-bound socket directory can't
         # outlive the supervisor and confuse the next launch.
         shutil.rmtree(paths.container_runtime_dir, ignore_errors=True)
-
-
-def _select_services(cfg: SidecarConfig, service_names: tuple[str, ...]) -> tuple[str, ...]:
-    """The services to launch — every one except a gate the sidecar didn't wire."""
-    gate_wired = bool(cfg.gate_base_path and cfg.gate_token)
-    return tuple(name for name in service_names if name != "gate" or gate_wired)
 
 
 async def _launch_children(

@@ -25,11 +25,11 @@ import pytest
 
 from terok_sandbox.supervisor.launcher import ChildHandle
 from terok_sandbox.supervisor.main import (
-    _select_services,
     _terminate_children,
     _wait_for_container,
     run_supervisor,
 )
+from terok_sandbox.supervisor.sidecar import SidecarConfig, wired_services
 
 
 @pytest.fixture
@@ -98,24 +98,19 @@ async def test_missing_sidecar_bails_with_rc_2(tmp_path: Path) -> None:
     assert await run_supervisor("abc123", tmp_path / "missing.json") == 2
 
 
-class TestSelectServices:
-    """``_select_services`` launches the gate only when the sidecar wired it."""
+class TestWiredServices:
+    """``wired_services`` launches the gate only when the sidecar wired it."""
 
     def test_gate_dropped_when_unwired(self) -> None:
-        from terok_sandbox.supervisor.main import SidecarConfig
-
         cfg = SidecarConfig(
             container_name="demo",
             ipc_mode="socket",
             db_path=Path("/x/vault.db"),
             runtime_dir=Path("/run"),
         )
-        selected = _select_services(cfg, ("verdict", "clearance", "gate", "vault", "signer"))
-        assert selected == ("verdict", "clearance", "vault", "signer")
+        assert wired_services(cfg) == ("verdict", "clearance", "vault", "signer")
 
     def test_gate_kept_when_wired(self) -> None:
-        from terok_sandbox.supervisor.main import SidecarConfig
-
         cfg = SidecarConfig(
             container_name="demo",
             ipc_mode="socket",
@@ -124,8 +119,7 @@ class TestSelectServices:
             gate_base_path=Path("/mirrors"),
             gate_token="terok-g-abc",
         )
-        selected = _select_services(cfg, ("verdict", "clearance", "gate", "vault", "signer"))
-        assert "gate" in selected
+        assert "gate" in wired_services(cfg)
 
 
 @pytest.mark.asyncio

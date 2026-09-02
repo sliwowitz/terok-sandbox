@@ -31,7 +31,6 @@ no stamp files, no parallel root resolution.
 
 from __future__ import annotations
 
-import contextlib
 import json
 import os
 import shutil
@@ -41,8 +40,9 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from collections.abc import Iterator
+    pass
 
+from .._util import _proc
 from ..integrations.shield import ensure_user_hooks_dir_configured
 from ..paths import state_root
 
@@ -61,15 +61,6 @@ def _descriptor_name(stage: str) -> str:
 #: pattern is ``supervisor-<container_id>.pid``.
 _PIDS_DIR_NAME = "pids"
 _PID_GLOB = "supervisor-*.pid"
-
-#: argv fingerprints of a process-per-service child — the launcher spawns
-#: every service as ``<python> -P -m terok_sandbox supervise-child
-#: <service> <container_id> <sidecar_path>``.
-_CHILD_MODULE_MARK = b"terok_sandbox"
-_CHILD_VERB_MARK = b"supervise-child"
-
-#: Where the child sweep reads process argvs from (patchable in tests).
-_PROC_DIR = Path("/proc")
 
 #: Placeholder in the wrapper template ``install`` rewrites with the
 #: resolved ``terok-sandbox`` argv (JSON-encoded list).
@@ -196,9 +187,7 @@ def _kill_all_service_children() -> list[tuple[str, str | None]]:
     row per child, keyed by its container-ID argv element.
     """
     results: list[tuple[str, str | None]] = []
-    for pid, args in _iter_process_argvs():
-        if _CHILD_MODULE_MARK not in args or _CHILD_VERB_MARK not in args:
-            continue
+    for pid, _service, container_id in _proc.iter_service_children():
         error: str | None = None
         try:
             os.kill(pid, signal.SIGKILL)
@@ -206,29 +195,8 @@ def _kill_all_service_children() -> list[tuple[str, str | None]]:
             pass
         except OSError as exc:
             error = f"SIGKILL failed: {exc}"
-        results.append((_child_container_id(args), error))
+        results.append((container_id, error))
     return results
-
-
-def _iter_process_argvs() -> Iterator[tuple[int, list[bytes]]]:
-    """Yield ``(pid, argv_elements)`` for every process whose cmdline is readable.
-
-    Bytes, not text — ``/proc/*/cmdline`` may contain arbitrary byte
-    sequences for foreign processes, and a decode error would abort
-    the sweep mid-flight.
-    """
-    for proc_dir in _PROC_DIR.glob("[0-9]*"):
-        with contextlib.suppress(OSError):
-            raw = (proc_dir / "cmdline").read_bytes()
-            yield int(proc_dir.name), raw.rstrip(b"\x00").split(b"\x00")
-
-
-def _child_container_id(args: list[bytes]) -> str:
-    """The container-ID argv element (``… supervise-child <service> <id> <sidecar>``)."""
-    idx = args.index(_CHILD_VERB_MARK)
-    if idx + 2 < len(args):
-        return args[idx + 2].decode(errors="replace")
-    return "?"
 
 
 def _kill_one_supervisor(pid_file: Path, wrapper_path: str, container_id: str) -> str | None:
@@ -268,7 +236,7 @@ def _is_group_ours(pgid: int, wrapper_path: str, container_id: str) -> bool:
     ``kill_all_supervisors`` mid-sweep.
     """
     try:
-        cmdline = (_PROC_DIR / str(pgid) / "cmdline").read_bytes()
+        cmdline = (_proc.PROC_DIR / str(pgid) / "cmdline").read_bytes()
     except OSError:
         return True
     if not cmdline:
