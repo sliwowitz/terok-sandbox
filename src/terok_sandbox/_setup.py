@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import contextlib
 import shutil
+import subprocess  # nosec B404 — asking git where its subcommands live
 from collections.abc import Callable, Iterable
 from pathlib import Path
 
@@ -64,6 +65,7 @@ def run_prereq_report(cfg: SandboxConfig) -> tuple[SelinuxCheckResult, AppArmorC
     """
     print("Prerequisites:")
     _report_host_binaries()
+    _report_git_http_backend()
     _report_init_binary()
     _report_firewall_binaries()
     if cfg.experimental:
@@ -80,6 +82,24 @@ def _report_host_binaries() -> None:
                 s.ok(path)
             else:
                 s.missing("not on PATH")
+
+
+def _report_git_http_backend() -> None:
+    """Stage line for the CGI the gate spawns — Alpine packages it apart from git.
+
+    A missing ``git-http-backend`` does not fail the spawn: git itself
+    starts and reports an unknown subcommand, so the first push is
+    where the operator would otherwise learn about it.
+    """
+    with _stage_line("git http-backend") as s:
+        exec_path = subprocess.run(  # nosec B603 B607 — fixed argv, PATH lookup is the cross-distro contract
+            ["git", "--exec-path"], capture_output=True, text=True, check=False
+        ).stdout.strip()
+        backend = Path(exec_path) / "git-http-backend"
+        if exec_path and backend.is_file():
+            s.ok(str(backend))
+        else:
+            s.missing("not in git's exec path (Alpine: apk add git-daemon)")
 
 
 def _report_init_binary() -> None:
