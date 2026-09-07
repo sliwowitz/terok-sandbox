@@ -67,6 +67,7 @@ def make_mock_shield(
             {
                 "shield_profiles": ("custom-a", "custom-b"),
                 "shield_audit": False,
+                "shield_dnsmasq_path": MOCK_TASK_DIR / "dnsmasq-nftset",
                 "gate_port": CUSTOM_GATE_PORT,
                 "token_broker_port": 18741,
                 "ssh_signer_port": 18742,
@@ -110,6 +111,7 @@ def test_shield_property_maps_config_to_shield_config(
     assert config.default_profiles == expected_profiles
     assert config.loopback_ports == (expected_port, cfg.token_broker_port, cfg.ssh_signer_port)
     assert config.audit_enabled is audit_enabled
+    assert config.dnsmasq_path == cfg.shield_dnsmasq_path
     assert config.state_dir == MOCK_TASK_DIR / "shield"
     assert config.profiles_dir == MOCK_CONFIG_ROOT / "shield" / "profiles"
 
@@ -233,13 +235,6 @@ def test_manager_dns_tier_reads_recorded_value(tmp_path: Path) -> None:
     # named, so it restarts instead of being recreated.
     tier_file.write_text("dnsmasq\n")
     assert manager.dns_tier is DnsTier.DNSMASQ_LIVE
-
-
-def test_manager_passes_the_configured_dnsmasq_to_shield(tmp_path: Path) -> None:
-    """The dnsmasq binary configured for the sandbox is the one shield runs."""
-    binary = tmp_path / "dnsmasq-nftset"
-    cfg = SandboxConfig(shield_dnsmasq_path=binary)
-    assert ShieldManager(MOCK_TASK_DIR, cfg).shield.config.dnsmasq_path == binary
 
 
 def test_manager_down_passes_disengaged() -> None:

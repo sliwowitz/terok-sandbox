@@ -2504,8 +2504,8 @@ test = [
 
 [[package]]
 name = "terok-shield"
-version = "0.8.0a15.dev371+g63e14edcb"
-source = { git = "https://github.com/sliwowitz/terok-shield?rev=fix%2Fstatic-tiers-and-dnsmasq-path#63e14edcb4324dae15e8ef349b527e03307cf36f" }
+version = "0.8.0a15.dev372+g532d79a15"
+source = { git = "https://github.com/sliwowitz/terok-shield?rev=fix%2Fstatic-tiers-and-dnsmasq-path#532d79a15152afa311d1642f4959d8db75538758" }
 dependencies = [
     { name = "pydantic" },
     { name = "pyyaml" },
