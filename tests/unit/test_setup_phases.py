@@ -80,21 +80,27 @@ class TestPrereqReport:
         assert "git" in out
         assert "ssh-keygen" in out
 
-    @pytest.mark.parametrize("shipped", [True, False])
+    @pytest.mark.parametrize(
+        ("backend_mode", "git_on_path", "shipped"),
+        [(0o755, True, True), (0o644, True, False), (0o755, False, False)],
+        ids=["executable", "not executable", "no git"],
+    )
     def test_reports_git_http_backend_from_the_exec_path(
         self,
         bare_cfg: SandboxConfig,
         capsys: pytest.CaptureFixture[str],
         monkeypatch: pytest.MonkeyPatch,
         tmp_path: Path,
+        backend_mode: int,
+        git_on_path: bool,
         shipped: bool,
     ) -> None:
-        """The probe asks git for its exec path; the file there decides the marker."""
+        """The probe asks git for its exec path; an executable there is the ok marker."""
         backend = tmp_path / "git-http-backend"
-        if shipped:
-            backend.touch()
+        backend.touch(mode=backend_mode)
         monkeypatch.setenv("GIT_EXEC_PATH", str(tmp_path))
-        monkeypatch.setattr("terok_sandbox._setup.shutil.which", lambda _n: None)
+        if not git_on_path:
+            monkeypatch.setenv("PATH", str(tmp_path))
         with (
             patch("terok_sandbox.integrations.shield.check_firewall_binaries", return_value=()),
             patch(

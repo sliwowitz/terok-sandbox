@@ -26,6 +26,7 @@ every public entry point goes through `commands._handle_sandbox_setup`.
 from __future__ import annotations
 
 import contextlib
+import os
 import shutil
 import subprocess  # nosec B404 — asking git where its subcommands live
 from collections.abc import Callable, Iterable
@@ -92,14 +93,22 @@ def _report_git_http_backend() -> None:
     where the operator would otherwise learn about it.
     """
     with _stage_line("git http-backend") as s:
-        exec_path = subprocess.run(  # nosec B603 B607 — fixed argv, PATH lookup is the cross-distro contract
-            ["git", "--exec-path"], capture_output=True, text=True, check=False
-        ).stdout.strip()
-        backend = Path(exec_path) / "git-http-backend"
-        if exec_path and backend.is_file():
+        if backend := _git_http_backend():
             s.ok(str(backend))
         else:
             s.missing("not in git's exec path (Alpine: apk add git-daemon)")
+
+
+def _git_http_backend() -> Path | None:
+    """The executable CGI in git's exec path, or ``None`` without git or without it."""
+    try:
+        exec_path = subprocess.run(  # nosec B603 B607 — fixed argv, PATH lookup is the cross-distro contract
+            ["git", "--exec-path"], capture_output=True, text=True, check=False
+        ).stdout.strip()
+    except OSError:
+        return None
+    backend = Path(exec_path) / "git-http-backend"
+    return backend if os.access(backend, os.X_OK) else None
 
 
 def _report_init_binary() -> None:
