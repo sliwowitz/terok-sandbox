@@ -130,6 +130,7 @@ _LAZY: dict[str, str] = {
     "GateServer": "gate.server:GateServer",
     "mint_gate_token": "gate.tokens:mint_gate_token",
     # Shield (sandbox-side policy classes)
+    "DnsTier": "integrations.shield:DnsTier",
     "EnvironmentCheck": "integrations.shield:EnvironmentCheck",
     "ShieldHooks": "integrations.shield:ShieldHooks",
     "BUNDLE_VERSION": "integrations.shield:BUNDLE_VERSION",
@@ -321,6 +322,7 @@ if TYPE_CHECKING:
     from .gate.tokens import mint_gate_token
     from .integrations.shield import (
         BUNDLE_VERSION,
+        DnsTier,
         EnvironmentCheck,
         ShieldAnnotations,
         ShieldHooks,
@@ -472,6 +474,7 @@ __all__ = [
     "normalize_gpus",
     "podman_port_resolver",
     # Shield (sandbox-side policy classes; the egress-firewall layer lives in terok-shield)
+    "DnsTier",
     "EnvironmentCheck",
     "ShieldHooks",
     "BUNDLE_VERSION",

@@ -21,6 +21,7 @@ from terok_shield import (
 from terok_sandbox.config import SandboxConfig
 from terok_sandbox.integrations.shield import (
     _DISABLED_WARNING,
+    DnsTier,
     ShieldHooks,
     ShieldManager,
     check_environment,
@@ -225,15 +226,20 @@ def test_manager_dns_tier_reads_recorded_value(tmp_path: Path) -> None:
 
     tier_file = StateBundle(manager.state_dir).dns_tier
     tier_file.parent.mkdir(parents=True)
-    tier_file.write_text("lookup\n")
-    assert manager.dns_tier == "lookup"
+    tier_file.write_text(f"{DnsTier.LOOKUP.value}\n")
+    assert manager.dns_tier is DnsTier.LOOKUP
 
-    # A container launched before terok-shield renamed the tier recorded "dig".
-    # That rename was nominal — the same tier, under a name that stopped
-    # privileging one of two interchangeable tools — so shield carries it
-    # forward, and such a container restarts instead of being recreated.
-    tier_file.write_text("dig\n")
-    assert manager.dns_tier == "lookup"
+    # A container launched before a tier rename still reads as the tier it
+    # named, so it restarts instead of being recreated.
+    tier_file.write_text("dnsmasq\n")
+    assert manager.dns_tier is DnsTier.DNSMASQ_LIVE
+
+
+def test_manager_passes_the_configured_dnsmasq_to_shield(tmp_path: Path) -> None:
+    """The dnsmasq binary configured for the sandbox is the one shield runs."""
+    binary = tmp_path / "dnsmasq-nftset"
+    cfg = SandboxConfig(shield_dnsmasq_path=binary)
+    assert ShieldManager(MOCK_TASK_DIR, cfg).shield.config.dnsmasq_path == binary
 
 
 def test_manager_down_passes_disengaged() -> None:
