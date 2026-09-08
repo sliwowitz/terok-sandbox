@@ -128,6 +128,8 @@ _LAZY: dict[str, str] = {
     "RestoreBackupResult": "gate.mirror:RestoreBackupResult",
     "is_ssh_url": "gate.mirror:is_ssh_url",
     "GateServer": "gate.server:GateServer",
+    "GIT_HTTP_BACKEND_HINT": "gate.server:GIT_HTTP_BACKEND_HINT",
+    "git_http_backend": "gate.server:git_http_backend",
     "mint_gate_token": "gate.tokens:mint_gate_token",
     # Shield (sandbox-side policy classes)
     "DnsTier": "integrations.shield:DnsTier",
@@ -492,6 +494,8 @@ __all__ = [
     "GateStalenessInfo",
     "GateSyncResult",
     "GitGate",
+    "GIT_HTTP_BACKEND_HINT",
+    "git_http_backend",
     "PUSH_MARKER_FILENAME",
     "PendingOp",
     "RestoreBackupResult",

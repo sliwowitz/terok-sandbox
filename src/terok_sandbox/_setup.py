@@ -26,9 +26,7 @@ every public entry point goes through `commands._handle_sandbox_setup`.
 from __future__ import annotations
 
 import contextlib
-import os
 import shutil
-import subprocess  # nosec B404 — asking git where its subcommands live
 from collections.abc import Callable, Iterable
 from pathlib import Path
 
@@ -45,6 +43,7 @@ from ._util._selinux import (
     check_status as check_selinux_status,
 )
 from .config import SandboxConfig
+from .gate.server import GIT_HTTP_BACKEND_HINT, git_http_backend
 from .integrations.shield import BinaryCheck
 from .operator_cli import setup_invocation
 
@@ -86,29 +85,12 @@ def _report_host_binaries() -> None:
 
 
 def _report_git_http_backend() -> None:
-    """Stage line for the CGI the gate spawns — Alpine packages it apart from git.
-
-    A missing ``git-http-backend`` does not fail the spawn: git itself
-    starts and reports an unknown subcommand, so the first push is
-    where the operator would otherwise learn about it.
-    """
+    """Stage line for the CGI the gate spawns — Alpine packages it apart from git."""
     with _stage_line("git http-backend") as s:
-        if backend := _git_http_backend():
+        if backend := git_http_backend():
             s.ok(str(backend))
         else:
-            s.missing("not in git's exec path (Alpine: apk add git-daemon)")
-
-
-def _git_http_backend() -> Path | None:
-    """The executable CGI in git's exec path, or ``None`` without git or without it."""
-    try:
-        exec_path = subprocess.run(  # nosec B603 B607 — fixed argv, PATH lookup is the cross-distro contract
-            ["git", "--exec-path"], capture_output=True, text=True, check=False
-        ).stdout.strip()
-    except OSError:
-        return None
-    backend = Path(exec_path) / "git-http-backend"
-    return backend if os.access(backend, os.X_OK) else None
+            s.missing(f"not in git's exec path ({GIT_HTTP_BACKEND_HINT})")
 
 
 def _report_init_binary() -> None:

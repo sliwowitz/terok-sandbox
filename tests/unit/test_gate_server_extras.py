@@ -13,6 +13,7 @@ from unittest.mock import MagicMock, patch
 
 from terok_sandbox.gate.hooks import HOOKS_DIRNAME
 from terok_sandbox.gate.server import (
+    GIT_HTTP_BACKEND_HINT,
     _build_cgi_env,  # noqa: PLC2701
     _extract_basic_auth_token,  # noqa: PLC2701
     _parse_cgi_headers,  # noqa: PLC2701
@@ -328,6 +329,16 @@ class TestRunCgiErrors:
         with patch("subprocess.Popen", side_effect=OSError("ENOMEM")):
             handler._run_cgi("/myrepo.git/info/refs", "")
         handler.send_error.assert_called_once_with(500, "git http-backend unavailable")
+
+    def test_a_silent_cgi_emits_500_with_the_package_hint(self, tmp_path: Path) -> None:
+        """No CGI headers at all means git never found http-backend."""
+        silent = MagicMock(stdin=io.BytesIO(), stdout=io.BytesIO(b""), stderr=io.BytesIO(b""))
+        handler = self._build_handler(tmp_path)
+        with patch("subprocess.Popen", return_value=silent):
+            handler._run_cgi("/myrepo.git/info/refs", "")
+        handler.send_error.assert_called_once_with(
+            500, f"git http-backend gave no response ({GIT_HTTP_BACKEND_HINT})"
+        )
 
     def test_invalid_content_length_emits_400(self, tmp_path: Path) -> None:
         handler = self._build_handler(tmp_path)

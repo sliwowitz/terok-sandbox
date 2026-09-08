@@ -49,6 +49,9 @@ _ROUTE = re.compile(
 
 _CGI_WAIT_TIMEOUT = 30
 
+#: Where the CGI lives when git's own package leaves it out.
+GIT_HTTP_BACKEND_HINT = "Alpine: apk add git-daemon"
+
 
 _ADMIN_WILDCARD = "*"
 """Sentinel a token store may return to grant access to **all** repos.
@@ -194,17 +197,35 @@ def _stream_request_body(rfile: Any, stdin: IO[bytes], remaining: int) -> None:
         pass  # CGI process closed stdin early
 
 
-def _parse_cgi_headers(stdout: IO[bytes]) -> tuple[int, list[tuple[str, str]]]:
+def git_http_backend() -> Path | None:
+    """The executable CGI in git's exec path, or ``None`` without git or without it.
+
+    Spawning ``git http-backend`` cannot tell: git starts either way and
+    reports an unknown subcommand when the CGI is absent.
+    """
+    try:
+        exec_path = subprocess.run(  # nosec B603 B607 — fixed argv, PATH lookup is the cross-distro contract
+            ["git", "--exec-path"], capture_output=True, text=True, check=False
+        ).stdout.strip()
+    except OSError:
+        return None
+    backend = Path(exec_path) / "git-http-backend"
+    return backend if os.access(backend, os.X_OK) else None
+
+
+def _parse_cgi_headers(stdout: IO[bytes]) -> tuple[int | None, list[tuple[str, str]]]:
     """Read CGI response headers from *stdout*.
 
-    Returns ``(status_code, [(header_name, header_value), ...])``.
+    Returns ``(status_code, [(header_name, header_value), ...])``; the
+    status is ``None`` when the CGI wrote no header block at all.
     """
-    status_code = 200
+    status_code: int | None = None
     headers: list[tuple[str, str]] = []
     while True:
         line = stdout.readline()
         if not line or line in (b"\r\n", b"\n"):
             break
+        status_code = status_code or 200
         header_line = line.decode("utf-8", errors="replace").rstrip("\r\n")
         if header_line.startswith("Status:"):
             try:
@@ -347,13 +368,17 @@ def _make_handler_class(
             _stream_request_body(self.rfile, stdin, content_length)
             stdin.close()
 
+            # A silent CGI is git without the subcommand: it says so on
+            # stderr (logged below) and writes nothing to stdout.
             status_code, headers = _parse_cgi_headers(stdout)
-            self.send_response(status_code)
-            for key, val in headers:
-                self.send_header(key, val)
-            self.end_headers()
-
-            _stream_response_body(stdout, self.wfile)
+            if status_code is None:
+                self.send_error(500, f"git http-backend gave no response ({GIT_HTTP_BACKEND_HINT})")
+            else:
+                self.send_response(status_code)
+                for key, val in headers:
+                    self.send_header(key, val)
+                self.end_headers()
+                _stream_response_body(stdout, self.wfile)
 
             stderr_output = stderr.read()
             try:

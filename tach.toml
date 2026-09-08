@@ -531,6 +531,7 @@ layer = "surface"
 depends_on = [
     "terok_sandbox.integrations.shield",
     "terok_sandbox.integrations.clearance",
+    "terok_sandbox.gate.server",
 ]
 
 # Interactive per-component hardening setup — the ``setup selinux`` /
