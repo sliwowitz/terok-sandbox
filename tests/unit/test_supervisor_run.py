@@ -297,8 +297,9 @@ class TestPodmanWaitArm:
         spawn = self._failing_exec()
         monkeypatch.setattr(main.asyncio, "create_subprocess_exec", spawn)
         monkeypatch.setattr(main, "_PODMAN_WAIT_RETRY_S", 0.01)
+        arm = asyncio.wait_for(main._wait_for_container("cid", retry=True), timeout=0.2)
         with pytest.raises(TimeoutError):
-            await asyncio.wait_for(main._wait_for_container("cid", retry=True), timeout=0.2)
+            await arm
         assert spawn.await_count > 1
 
     @pytest.mark.asyncio
@@ -311,8 +312,9 @@ class TestPodmanWaitArm:
         spawn = self._failing_exec()
         monkeypatch.setattr(main.asyncio, "create_subprocess_exec", spawn)
         monkeypatch.setattr(main, "_PODMAN_WAIT_RETRY_S", 0.01)
+        arm = asyncio.wait_for(main._wait_for_container("cid", retry=False), timeout=0.2)
         with caplog.at_level("ERROR"), pytest.raises(TimeoutError):
-            await asyncio.wait_for(main._wait_for_container("cid", retry=False), timeout=0.2)
+            await arm
         assert spawn.await_count == 1
         assert "the container PID watch owns teardown" in caplog.text
 

@@ -278,19 +278,7 @@ async def _wait_for_container(container_id: str, *, retry: bool = True) -> int:
         try:
             stdout, stderr = await proc.communicate()
         except asyncio.CancelledError:
-            # Stop-signal path: terminate the lingering ``podman wait``
-            # before propagating cancellation, so the subprocess doesn't
-            # outlive the supervisor and pin the container ID.  Bound the
-            # post-SIGTERM wait so a hung podman can't stall shutdown.
-            with contextlib.suppress(ProcessLookupError):
-                proc.terminate()
-            try:
-                await asyncio.wait_for(proc.wait(), timeout=_PODMAN_WAIT_CANCEL_GRACE_S)
-            except (TimeoutError, asyncio.CancelledError):
-                with contextlib.suppress(ProcessLookupError):
-                    proc.kill()
-                with contextlib.suppress(asyncio.CancelledError, Exception):
-                    await proc.wait()
+            await _reap_wait(proc)
             raise
         if proc.returncode == 0:
             try:
@@ -312,6 +300,24 @@ async def _wait_for_container(container_id: str, *, retry: bool = True) -> int:
         if not retry:
             await asyncio.Event().wait()
         await asyncio.sleep(_PODMAN_WAIT_RETRY_S)
+
+
+async def _reap_wait(proc: asyncio.subprocess.Process) -> None:
+    """Take a lingering ``podman wait`` down with the cancelled arm.
+
+    The stop-signal path: the subprocess must not outlive the supervisor
+    and pin the container ID.  SIGTERM, a bounded wait so a hung podman
+    cannot stall shutdown, then SIGKILL.
+    """
+    with contextlib.suppress(ProcessLookupError):
+        proc.terminate()
+    try:
+        await asyncio.wait_for(proc.wait(), timeout=_PODMAN_WAIT_CANCEL_GRACE_S)
+    except (TimeoutError, asyncio.CancelledError):
+        with contextlib.suppress(ProcessLookupError):
+            proc.kill()
+        with contextlib.suppress(asyncio.CancelledError, Exception):
+            await proc.wait()
 
 
 async def _wait_for_container_pid(pid: int) -> None:
