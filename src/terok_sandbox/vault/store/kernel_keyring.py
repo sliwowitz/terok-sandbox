@@ -53,8 +53,12 @@ passphrases):
   so a long-lived process — a TUI still running after the login that
   started it closed — searches a revoked ``@s``.  That is a miss, and a
   silent one (see ``_MISS_ERRNOS``); the chain moves to the next tier.
-  A deployment that needs the cache to outlive a login wants a durable
-  tier (systemd-creds, ``passphrase_command``) rather than this one.
+  A *later* login has a fresh session keyring without the link, and the
+  operator's ``@u`` still holds the key — so ``load`` lays the link
+  again on every hit through ``@u``, and a launch from that login
+  bridges its own session for the supervisor it starts.  A deployment
+  that needs the cache to outlive a login wants a durable tier
+  (systemd-creds, ``passphrase_command``) rather than this one.
 - *Explicit ``keyctl_setperm``.*  A fresh ``user`` key defaults to
   ``possessor=all, uid=view`` — the uid can *see* the key but not read
   or search it.  systemd gets away without a setperm because its readers
@@ -195,31 +199,12 @@ def store(passphrase: str, db_path: str | os.PathLike[str]) -> bool:
         _logger.warning("kernel keyring unavailable, not caching passphrase: %s", exc)
         return False
 
-    # Link ``@u`` into the session keyring.  This carries two jobs.
-    #
-    # It makes this process *possess* the key it is about to create, so
-    # the keyctl_setperm below is permitted.  A fresh key grants the
-    # possessor everything but the uid only ``view`` (0x3f010000); on a
-    # host without a pam_keyinit-linked session keyring — a headless
-    # supervisor, cron, CI — the process does not possess ``@u`` and so
-    # falls to that uid class, and setperm (which needs ``setattr``)
-    # fails EACCES.
-    #
-    # It is also the bridge every cross-user-namespace reader takes: a
-    # supervisor child resolves ``@u`` to its namespace's own empty
-    # keyring, and reaches this key only by searching the inherited
-    # ``@s`` and following this link (see _find_cached_key).  So a
-    # failure here is worth a line — the cache still works for this
-    # namespace, and silently stops working for the supervisor.
-    #
-    # Idempotent where a login session already did it.
-    ctypes.set_errno(0)
-    if lib.keyctl_link(_KEY_SPEC_USER_KEYRING, _KEY_SPEC_SESSION_KEYRING) == -1:
-        _logger.warning(
-            "kernel keyring @u -> @s link failed: %s — the cache stays readable in this"
-            " user namespace, but a supervisor child in another one will not find it",
-            os.strerror(ctypes.get_errno()),
-        )
+    # Possession first: a fresh key grants the possessor everything but
+    # the uid only ``view`` (0x3f010000), and on a host without a
+    # pam_keyinit-linked session keyring — a headless supervisor, cron,
+    # CI — this process does not possess ``@u``, so the keyctl_setperm
+    # below (which needs ``setattr``) would fail EACCES.
+    _bridge_session(lib)
 
     ctypes.set_errno(0)
     serial = lib.add_key(
@@ -255,12 +240,19 @@ def load(db_path: str | os.PathLike[str]) -> str | None:
         return None
 
     try:
-        serial = _find_cached_key(lib, key_description(db_path))
+        found = _find_cached_key(lib, key_description(db_path))
     except OSError as exc:
         _logger.warning("kernel keyring search failed: %s", exc)
         return None
-    if serial is None:
+    if found is None:
         return None
+    serial, keyring = found
+    # A hit through ``@u`` is the operator's own namespace — the process
+    # that has both keyrings.  Its session keyring may be a later login's
+    # than the one ``store`` bridged, so bridge this one now: a supervisor
+    # child of this launch reaches the key only through ``@s``.
+    if keyring == _KEY_SPEC_USER_KEYRING:
+        _bridge_session(lib)
     # Sized by a first pass so the buffer is never a guess.
     length = lib.keyctl_read(serial, None, 0)
     if length <= 0:
@@ -286,6 +278,10 @@ def is_bridged(db_path: str | os.PathLike[str]) -> bool:
     that wrote the cache.  A vault unlocked from one login session and a
     task launched from another therefore leaves the tier answering the
     operator and no one else.
+
+    ``load`` bridges the caller's session on every hit through ``@u``,
+    so a launch from a later login carries the cache across by itself;
+    this is the check for the state in between.
 
     This searches the ``@s`` leg alone, which is exactly what those
     children can reach.  ``False`` on an absent cache, an unusable
@@ -328,12 +324,13 @@ def forget(db_path: str | os.PathLike[str]) -> bool:
         return True
 
     try:
-        serial = _find_cached_key(lib, key_description(db_path))
+        found = _find_cached_key(lib, key_description(db_path))
     except OSError as exc:
         _logger.warning("kernel keyring search failed, cannot confirm removal: %s", exc)
         return False
-    if serial is None:
+    if found is None:
         return True
+    serial, _keyring = found
     if lib.keyctl_unlink(serial, _KEY_SPEC_USER_KEYRING) == -1:
         _logger.warning("kernel keyring keyctl_unlink failed: %s", os.strerror(ctypes.get_errno()))
         return False
@@ -408,8 +405,29 @@ def unavailable_reason() -> str | None:
 _MISS_ERRNOS: Final = frozenset({errno.ENOKEY, errno.EKEYEXPIRED, errno.EKEYREVOKED})
 
 
-def _find_cached_key(lib: ctypes.CDLL, description: bytes) -> int | None:
-    """Serial of the key under *description*, or ``None`` when genuinely absent.
+def _bridge_session(lib: ctypes.CDLL) -> None:
+    """Link ``@u`` into the caller's session keyring; idempotent, soft on failure.
+
+    The bridge every cross-user-namespace reader takes: a supervisor
+    child resolves ``@u`` to its namespace's own empty keyring and reaches
+    the operator's key only by searching the inherited ``@s`` and
+    following this link (see ``_find_cached_key``).  ``store`` lays it for
+    the login that cached the passphrase; ``load`` lays it again for the
+    login that launches.  A failure is worth a line — the cache still
+    works for this namespace, and silently stops working for the
+    supervisor.
+    """
+    ctypes.set_errno(0)
+    if lib.keyctl_link(_KEY_SPEC_USER_KEYRING, _KEY_SPEC_SESSION_KEYRING) == -1:
+        _logger.warning(
+            "kernel keyring @u -> @s link failed: %s — the cache stays readable in this"
+            " user namespace, but a supervisor child in another one will not find it",
+            os.strerror(ctypes.get_errno()),
+        )
+
+
+def _find_cached_key(lib: ctypes.CDLL, description: bytes) -> tuple[int, int] | None:
+    """The key under *description* as ``(serial, keyring spec)``, or ``None`` when absent.
 
     Searches ``@u`` first — where ``store`` anchors the key, and the only
     keyring a ``forget`` can unlink it from — then ``@s``, which reaches
@@ -430,7 +448,8 @@ def _find_cached_key(lib: ctypes.CDLL, description: bytes) -> int | None:
     fault is raised only when none did.
 
     Returns:
-        The key's serial number, or None when no usable key exists.
+        The key's serial number and the keyring spec that found it, or
+        None when no usable key exists.
 
     Raises:
         OSError: Every keyring search failed, at least one of them for a
@@ -442,7 +461,7 @@ def _find_cached_key(lib: ctypes.CDLL, description: bytes) -> int | None:
         ctypes.set_errno(0)
         serial = lib.keyctl_search(keyring, KEY_TYPE, description, 0)
         if serial != -1:
-            return serial
+            return serial, keyring
         err = ctypes.get_errno()
         if err not in _MISS_ERRNOS and fault is None:
             fault = err

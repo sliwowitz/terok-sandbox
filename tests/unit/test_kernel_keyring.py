@@ -109,6 +109,21 @@ class FakeKeyutils:
         self._holds[ring] = set()
         self._nested[ring] = set()
 
+    def new_login_session(self) -> None:
+        """Re-resolve ``@s`` to a fresh empty keyring, leaving ``@u`` as it was.
+
+        What a later login sees: pam_keyinit gave it its own session
+        keyring, without the link an earlier login's ``store`` laid.
+        """
+        ring = self._new_ring()
+        self._rings[_SESSION_RING] = ring
+        self._holds[ring] = set()
+        self._nested[ring] = set()
+
+    def session_links(self) -> int:
+        """How many keyrings are linked into the current ``@s``."""
+        return len(self._nested[self._rings[_SESSION_RING]])
+
     def _new_ring(self) -> int:
         """Return a fresh keyring identity."""
         ring = self._next_ring
@@ -311,6 +326,27 @@ def test_load_crosses_a_user_namespace_through_the_session_keyring(
 
     assert kernel_keyring.load(MOCK_DB_PATH) == "s3cret"
     assert kernel_keyring.is_cached(MOCK_DB_PATH) is True
+
+
+def test_load_from_a_later_login_bridges_that_session(fake_lib: FakeKeyutils) -> None:
+    """A cache made in one login serves a launch from another.
+
+    The later login's session keyring has no link; the operator's CLI
+    finds the key through ``@u`` and lays the link for its own session,
+    so the supervisor child it starts reaches the key through ``@s``.
+    A reader already inside the namespace lays nothing: its ``@u`` is
+    empty, and one link per container would only pile up in ``@s``.
+    """
+    kernel_keyring.store("s3cret", MOCK_DB_PATH)
+    fake_lib.new_login_session()
+    assert kernel_keyring.is_bridged(MOCK_DB_PATH) is False
+
+    assert kernel_keyring.load(MOCK_DB_PATH) == "s3cret"
+
+    assert kernel_keyring.is_bridged(MOCK_DB_PATH) is True
+    fake_lib.enter_user_namespace()
+    assert kernel_keyring.load(MOCK_DB_PATH) == "s3cret"
+    assert fake_lib.session_links() == 1
 
 
 def test_load_stays_blind_across_a_namespace_without_the_session_link(
