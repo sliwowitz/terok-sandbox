@@ -411,10 +411,12 @@ def _bridge_session(lib: ctypes.CDLL) -> None:
     The bridge every cross-user-namespace reader takes: a supervisor
     child resolves ``@u`` to its namespace's own empty keyring and reaches
     the operator's key only by searching the inherited ``@s`` and
-    following this link (see ``_find_cached_key``).  ``store`` lays it for
-    the login that cached the passphrase; ``load`` lays it again for the
-    login that launches.  A failure is worth a line — the cache still
-    works for this namespace, and silently stops working for the
+    following this link (the second leg of ``_find_cached_key``).
+    [`store`][terok_sandbox.vault.store.kernel_keyring.store] lays it for
+    the login that cached the passphrase;
+    [`load`][terok_sandbox.vault.store.kernel_keyring.load] lays it again
+    for the login that launches.  A failure is worth a line — the cache
+    still works for this namespace, and silently stops working for the
     supervisor.
     """
     ctypes.set_errno(0)
