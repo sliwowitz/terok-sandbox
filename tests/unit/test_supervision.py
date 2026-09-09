@@ -359,6 +359,7 @@ class TestSupervisionStatus:
         )
         assert _diary_mentions(diary, "abc123def456789") is True
         assert _diary_mentions(diary, "fff123def456789") is False
+        assert _diary_mentions(tmp_path, "abc123def456789") is False  # a directory: unreadable
 
     def test_warn_unsupervised_is_silent_when_healthy(
         self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
