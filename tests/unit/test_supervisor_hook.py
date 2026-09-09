@@ -32,16 +32,15 @@ def _load_hook_module() -> object:
     hooks_dir = (
         Path(__file__).resolve().parents[2] / "src" / "terok_sandbox" / "resources" / "hooks"
     )
-    for name in ("supervisor_hook", "_supervisor_state"):
+    module_name = "terok_sandbox.resources.hooks.supervisor_hook"
+    for name in (module_name, "_supervisor_state"):
         sys.modules.pop(name, None)
     sys.path.insert(0, str(hooks_dir))
     try:
-        spec = importlib.util.spec_from_file_location(
-            "supervisor_hook", hooks_dir / "supervisor_hook.py"
-        )
+        spec = importlib.util.spec_from_file_location(module_name, hooks_dir / "supervisor_hook.py")
         assert spec is not None and spec.loader is not None
         mod = importlib.util.module_from_spec(spec)
-        sys.modules["supervisor_hook"] = mod
+        sys.modules[module_name] = mod
         spec.loader.exec_module(mod)
         # The test host's own user manager must never place a test's
         # supervisor: the daemon path is the default, and the unit-path

@@ -155,6 +155,16 @@ class _RouteTable:
                     raise ValueError(
                         f"Route '{name}' oauth_extra_headers value for {header!r} is invalid"
                     )
+            oauth_credential_headers = cfg.get("oauth_credential_headers", {})
+            if not isinstance(oauth_credential_headers, dict):
+                raise ValueError(f"Route '{name}' has invalid 'oauth_credential_headers' field")
+            for header, field in oauth_credential_headers.items():
+                if not isinstance(header, str) or not header:
+                    raise ValueError(f"Route '{name}' oauth_credential_headers key is invalid")
+                if not isinstance(field, str) or not field:
+                    raise ValueError(
+                        f"Route '{name}' oauth_credential_headers value for {header!r} is invalid"
+                    )
 
     def get(self, provider: str) -> dict | None:
         """Return the route config for *provider*, or ``None``."""
@@ -760,6 +770,9 @@ async def _handle_request(request: web.Request) -> web.StreamResponse:
             ]
             if value not in existing_values:
                 headers[header] = ",".join([*existing_values, value])
+        for header, field in (route.get("oauth_credential_headers") or {}).items():
+            if value := cred.get(field):
+                headers[header] = str(value)
 
     session: ClientSession = request.app[_KEY_PROXY_CLIENT]
     if request.headers.get("Upgrade", "").lower() == "websocket":
