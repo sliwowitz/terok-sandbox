@@ -135,6 +135,16 @@ def _default_shield_audit() -> bool:
     return shield_audit()
 
 
+def shield_dnsmasq_path() -> Path | None:
+    """Resolve the ``shield.dnsmasq_path`` setting through the schema."""
+    return _shield_section().dnsmasq_path
+
+
+def _default_shield_dnsmasq_path() -> Path | None:
+    """Default-factory indirection so tests can patch ``shield_dnsmasq_path``."""
+    return shield_dnsmasq_path()
+
+
 def experimental_enabled() -> bool:
     """Resolve the top-level ``experimental:`` opt-in from the layered config.
 
@@ -267,6 +277,13 @@ class SandboxConfig:
     via the [`RawShieldSection`][terok_sandbox.config_schema.RawShieldSection]
     schema; missing/typo'd keys fall back to the schema's ``True``
     default.  Direct ``SandboxConfig(shield_audit=…)`` always wins.
+    """
+
+    shield_dnsmasq_path: Path | None = field(default_factory=_default_shield_dnsmasq_path)
+    """The dnsmasq binary shield runs; ``None`` lets shield find one on PATH.
+
+    Default-factory reads ``shield.dnsmasq_path`` from the layered
+    config.yml.  Set for a dnsmasq built outside the distro package.
     """
 
     shield_disabled: bool = False

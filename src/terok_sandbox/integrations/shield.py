@@ -31,6 +31,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from terok_shield import (
+    DnsTier,  # noqa: F401 — re-exported
     EnvironmentCheck,  # noqa: F401 — re-exported
     HooksInstaller,
     Shield,
@@ -179,6 +180,7 @@ class ShieldManager:
             audit_enabled=resolved.shield_audit,
             profiles_dir=resolved.shield_profiles_dir,
             runtime=self._runtime,
+            dnsmasq_path=resolved.shield_dnsmasq_path,
         )
         return Shield(config)
 
@@ -301,18 +303,13 @@ class ShieldManager:
     # ── Configuration probes ────────────────────────────
 
     @property
-    def dns_tier(self) -> str | None:
-        """DNS tier this task launched with (``dnsmasq``/``lookup``/``getent``).
+    def dns_tier(self) -> DnsTier | None:
+        """The DNS tier this task launched with; ``None`` when none was recorded.
 
         Reads only the recorded tier file — like
         [`status`][terok_sandbox.integrations.shield.ShieldManager.status], it
-        pays no Shield wire-up cost.  ``None`` when the task recorded no tier:
-        never shielded, or predating tier recording.  A container that recorded
-        the retired name ``dig`` reads as ``lookup`` — shield carries that name
-        forward, because the rename was nominal and the record still describes
-        the tier.  A degraded tier (``lookup``/``getent``) tells the operator
-        this task's egress allowlist resolves statically, without IP-rotation
-        handling.
+        pays no Shield wire-up cost.  The tier says what it provides: whether
+        its allow sets are ``live``, and a ``hint`` for the operator when not.
         """
         return recorded_dns_tier(self.state_dir)
 

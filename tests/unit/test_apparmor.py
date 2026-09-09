@@ -173,6 +173,11 @@ def test_installers_reject_a_writable_ancestor(tmp_path: Path) -> None:
     nested.mkdir(parents=True)
     target = nested / "install.sh"
     target.write_text("#!/usr/bin/env bash\n")
+    # Owner-writable only, whatever umask the host gives the test user: the
+    # verdict under test is the ancestor walk, not the file's own mode.
+    for path in (tmp_path / "parent", nested):
+        path.chmod(0o755)
+    target.chmod(0o644)
     assert "ACCEPTED" in _verdict(target)
 
     (tmp_path / "parent").chmod(0o777)

@@ -172,14 +172,14 @@ class TestParseCgiHeaders:
                 [("Content-Type", "text/plain")],
             ),
             (b"Content-Type: text/html\r\n\r\n", 200, [("Content-Type", "text/html")]),
-            (b"\r\n", 200, []),
+            (b"\r\n", None, []),
         ],
         ids=["status-and-header", "default-200", "empty"],
     )
     def test_parse_cgi_headers(
         self,
         stdout: bytes,
-        expected_status: int,
+        expected_status: int | None,
         expected_headers: list[tuple[str, str]],
     ) -> None:
         status, headers = _parse_cgi_headers(io.BytesIO(stdout))

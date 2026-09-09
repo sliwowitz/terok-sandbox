@@ -43,6 +43,7 @@ from ._util._selinux import (
     check_status as check_selinux_status,
 )
 from .config import SandboxConfig
+from .gate.server import GIT_HTTP_BACKEND_HINT, git_http_backend
 from .integrations.shield import BinaryCheck
 from .operator_cli import setup_invocation
 
@@ -64,6 +65,7 @@ def run_prereq_report(cfg: SandboxConfig) -> tuple[SelinuxCheckResult, AppArmorC
     """
     print("Prerequisites:")
     _report_host_binaries()
+    _report_git_http_backend()
     _report_init_binary()
     _report_firewall_binaries()
     if cfg.experimental:
@@ -80,6 +82,15 @@ def _report_host_binaries() -> None:
                 s.ok(path)
             else:
                 s.missing("not on PATH")
+
+
+def _report_git_http_backend() -> None:
+    """Stage line for the CGI the gate spawns — Alpine packages it apart from git."""
+    with _stage_line("git http-backend") as s:
+        if backend := git_http_backend():
+            s.ok(str(backend))
+        else:
+            s.missing(f"not in git's exec path ({GIT_HTTP_BACKEND_HINT})")
 
 
 def _report_init_binary() -> None:

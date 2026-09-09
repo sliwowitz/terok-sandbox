@@ -11,6 +11,7 @@ cleanup sweep.  The aggregator orchestration itself is tested in
 
 from __future__ import annotations
 
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -78,6 +79,39 @@ class TestPrereqReport:
         assert "podman" in out
         assert "git" in out
         assert "ssh-keygen" in out
+
+    @pytest.mark.parametrize(
+        ("backend_mode", "git_on_path", "shipped"),
+        [(0o755, True, True), (0o644, True, False), (0o755, False, False)],
+        ids=["executable", "not executable", "no git"],
+    )
+    def test_reports_git_http_backend_from_the_exec_path(
+        self,
+        bare_cfg: SandboxConfig,
+        capsys: pytest.CaptureFixture[str],
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+        backend_mode: int,
+        git_on_path: bool,
+        shipped: bool,
+    ) -> None:
+        """The probe asks git for its exec path; an executable there is the ok marker."""
+        backend = tmp_path / "git-http-backend"
+        backend.touch(mode=backend_mode)
+        monkeypatch.setenv("GIT_EXEC_PATH", str(tmp_path))
+        if not git_on_path:
+            monkeypatch.setenv("PATH", str(tmp_path))
+        with (
+            patch("terok_sandbox.integrations.shield.check_firewall_binaries", return_value=()),
+            patch(
+                "terok_sandbox._setup.check_selinux_status",
+                return_value=MagicMock(status=SelinuxStatus.NOT_APPLICABLE_TCP_MODE),
+            ),
+        ):
+            run_prereq_report(bare_cfg)
+        out = capsys.readouterr().out
+        assert (str(backend) in out) is shipped
+        assert ("apk add git-daemon" in out) is not shipped
 
     def test_reports_catatonit_path_when_found(
         self,

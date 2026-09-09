@@ -128,8 +128,11 @@ _LAZY: dict[str, str] = {
     "RestoreBackupResult": "gate.mirror:RestoreBackupResult",
     "is_ssh_url": "gate.mirror:is_ssh_url",
     "GateServer": "gate.server:GateServer",
+    "GIT_HTTP_BACKEND_HINT": "gate.server:GIT_HTTP_BACKEND_HINT",
+    "git_http_backend": "gate.server:git_http_backend",
     "mint_gate_token": "gate.tokens:mint_gate_token",
     # Shield (sandbox-side policy classes)
+    "DnsTier": "integrations.shield:DnsTier",
     "EnvironmentCheck": "integrations.shield:EnvironmentCheck",
     "ShieldHooks": "integrations.shield:ShieldHooks",
     "BUNDLE_VERSION": "integrations.shield:BUNDLE_VERSION",
@@ -321,6 +324,7 @@ if TYPE_CHECKING:
     from .gate.tokens import mint_gate_token
     from .integrations.shield import (
         BUNDLE_VERSION,
+        DnsTier,
         EnvironmentCheck,
         ShieldAnnotations,
         ShieldHooks,
@@ -472,6 +476,7 @@ __all__ = [
     "normalize_gpus",
     "podman_port_resolver",
     # Shield (sandbox-side policy classes; the egress-firewall layer lives in terok-shield)
+    "DnsTier",
     "EnvironmentCheck",
     "ShieldHooks",
     "BUNDLE_VERSION",
@@ -489,6 +494,8 @@ __all__ = [
     "GateStalenessInfo",
     "GateSyncResult",
     "GitGate",
+    "GIT_HTTP_BACKEND_HINT",
+    "git_http_backend",
     "PUSH_MARKER_FILENAME",
     "PendingOp",
     "RestoreBackupResult",

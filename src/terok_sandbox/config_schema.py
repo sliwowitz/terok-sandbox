@@ -36,6 +36,7 @@ from __future__ import annotations
 
 import re
 from collections.abc import Sequence
+from pathlib import Path
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
@@ -247,6 +248,10 @@ class RawShieldSection(BaseModel):
         default=None, description="Named shield profiles for per-project firewall rules"
     )
     audit: bool = Field(default=True, description="Enable shield audit logging")
+    dnsmasq_path: Path | None = Field(
+        default=None,
+        description="dnsmasq binary to run; found on PATH and in the sbin directories when unset",
+    )
     down_on_task_run: bool = True
     on_task_restart: Literal["retain", "up"] = "retain"
 
