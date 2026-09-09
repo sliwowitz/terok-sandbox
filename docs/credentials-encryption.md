@@ -45,7 +45,7 @@ top-to-bottom and stops at the first hit:
 One host fact places the per-container supervisor, and the OCI hook reads it
 the same way the launcher does: a per-user systemd manager that answers.
 With one, the supervisor is a transient unit of that manager
-(`terok-supervisor-<container id>.service`), in the operator's own namespaces.
+(`terok-supervisor-<12-character container id>.service`), in the operator's own namespaces.
 Without one, it is a daemon inside the container runtime's user namespace.
 The volatile cache tier follows the placement.
 A user-unit supervisor reads the operator's kernel keyring, so that is the

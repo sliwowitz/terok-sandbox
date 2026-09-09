@@ -215,17 +215,20 @@ def verify_supervision(
     )
 
 
-def _diary_mentions(hook_log: Path, container_id: str) -> bool:
+def _diary_mentions(hook_log: Path, container_id: str) -> bool | None:
     """Whether the hook diary carries a line tagged with this container.
 
     The hook tags every line with the container's short id (see
     ``_supervisor_state.set_log_context``), so the tag is the evidence
-    that it fired at all.  An unreadable diary counts as silent.
+    that it fired at all.  An absent diary is a diary that never fired;
+    one that cannot be read is an unknown, and says so.
     """
+    if not hook_log.exists():
+        return False
     try:
         return f"[{container_id[:12]}]" in hook_log.read_text(encoding="utf-8")
     except OSError:
-        return False
+        return None
 
 
 def _expected_endpoints(

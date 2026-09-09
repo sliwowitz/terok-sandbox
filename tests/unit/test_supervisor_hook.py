@@ -299,7 +299,8 @@ class TestHookSpawn:
             mod.main()
 
         popen.assert_not_called()
-        systemd_run, show = calls
+        stale_stop, systemd_run, show = calls
+        assert stale_stop[3:] == ["stop", mod._supervisor_state.unit_name(container_id)]
         assert systemd_run[:3] == ["systemd-run", "--user", "--quiet"]
         assert f"--unit={mod._supervisor_state.unit_name(container_id)}" in systemd_run
         assert systemd_run[-3:] == [str(wrapper), container_id, str(sidecar_path)]
@@ -313,6 +314,44 @@ class TestHookSpawn:
         assert pid_file.read_text().strip() == "4242"
         diary = (hook_root / "logs" / "hook.log").read_text()
         assert "as user unit terok-supervisor-abc123def456" in diary
+
+    def test_a_unit_whose_wrapper_is_already_gone_records_nothing(
+        self, hook_root: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """MainPID 0 is a dead wrapper, not a PID: no pid file, no daemon fallback."""
+        mod = _load_hook_module()
+        container_id = "abc123def456789"
+        sidecar_path = _write_sidecar(
+            hook_root,
+            "demo",
+            {"container_name": "demo", "db_path": str(hook_root / "v.db"), "ipc_mode": "socket"},
+        )
+        fake_hooks_dir = hook_root / "hooks"
+        fake_hooks_dir.mkdir()
+        fake_hook_file = fake_hooks_dir / "supervisor_hook.py"
+        fake_hook_file.write_text("# fake")
+        _install_wrapper_alongside_hook(mod, hook_root / "supervisor_wrapper.py")
+        monkeypatch.setattr(mod, "__file__", str(fake_hook_file))
+        _feed_stdin(
+            monkeypatch,
+            {"id": container_id, "annotations": {"terok.sandbox.sidecar": str(sidecar_path)}},
+        )
+        monkeypatch.setattr(mod.sys, "argv", ["supervisor_hook", "createRuntime"])
+        monkeypatch.setattr(mod._supervisor_state, "outer_host_uid", lambda: os.getuid())
+        monkeypatch.setattr(mod._supervisor_state, "user_manager_reachable", lambda _dir: True)
+
+        def fake_run(argv: list[str], **_kw: object) -> MagicMock:
+            return MagicMock(returncode=0, stdout="0\n", stderr="")
+
+        with (
+            patch.object(mod.subprocess, "run", side_effect=fake_run),
+            patch.object(mod.subprocess, "Popen") as popen,
+        ):
+            mod.main()
+
+        popen.assert_not_called()
+        assert not (hook_root / "pids" / f"supervisor-{container_id}.pid").exists()
+        assert "already gone" in (hook_root / "logs" / "hook.log").read_text()
 
     def test_a_refused_unit_falls_back_to_a_daemon(
         self, hook_root: Path, monkeypatch: pytest.MonkeyPatch
@@ -510,12 +549,41 @@ class TestHookSpawn:
         monkeypatch.setattr(mod.sys, "argv", ["supervisor_hook", "poststop"])
         monkeypatch.setattr(mod._supervisor_state, "outer_host_uid", lambda: os.getuid())
         monkeypatch.setattr(mod._supervisor_state, "user_manager_reachable", lambda _dir: True)
+        _fake_proc(mod, hook_root)
         stopped: list[str] = []
         monkeypatch.setattr(mod._supervisor_state, "stop_unit", stopped.append)
 
         mod.main()
 
         assert stopped == [mod._supervisor_state.unit_name(container_id)]
+
+    def test_poststop_never_signals_a_non_positive_group(
+        self, hook_root: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A pid file reading 0 names the hook's own group; it is corrupt, not a target."""
+        mod = _load_hook_module()
+        container_id = "abc123def456789"
+        sidecar_path = _write_sidecar(
+            hook_root,
+            "demo",
+            {"container_name": "demo", "db_path": str(hook_root / "v.db"), "ipc_mode": "socket"},
+        )
+        pid_file = hook_root / "pids" / f"supervisor-{container_id}.pid"
+        pid_file.parent.mkdir()
+        pid_file.write_text("0\n")
+        _feed_stdin(
+            monkeypatch,
+            {"id": container_id, "annotations": {"terok.sandbox.sidecar": str(sidecar_path)}},
+        )
+        monkeypatch.setattr(mod.sys, "argv", ["supervisor_hook", "poststop"])
+        monkeypatch.setattr(mod._supervisor_state, "outer_host_uid", lambda: os.getuid())
+        _fake_proc(mod, hook_root)
+
+        with patch.object(mod.os, "killpg") as killpg:
+            mod.main()
+
+        killpg.assert_not_called()
+        assert not pid_file.exists()
 
     def test_poststop_without_pid_file_preserves_sidecar(
         self, hook_root: Path, monkeypatch: pytest.MonkeyPatch

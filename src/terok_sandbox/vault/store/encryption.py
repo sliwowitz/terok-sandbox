@@ -394,10 +394,15 @@ _keyring_worker_wedged = False
 
 
 def _keyring_worker() -> ThreadPoolExecutor:
-    """The shared keyring worker, started on first use."""
-    global _keyring_executor
+    """The shared keyring worker, started on first use.
+
+    A fresh worker holds no wedged call: the wedge belongs to the executor
+    that was retired around it, so the flag clears with the new one.
+    """
+    global _keyring_executor, _keyring_worker_wedged
     if _keyring_executor is None:
         _keyring_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="os-keyring")
+        _keyring_worker_wedged = False
     return _keyring_executor
 
 

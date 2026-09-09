@@ -268,6 +268,10 @@ class TestKeyringWorkerRetirement:
         encryption.retire_keyring_worker()  # returns at once
         assert any(thread.is_alive() for thread in spawned)
         release.set()
+        # The wedge belonged to that worker: the next one is joined again.
+        assert encryption._call_with_timeout(lambda: "fresh", 1.0) == "fresh"
+        assert encryption._keyring_worker_wedged is False
+        encryption.retire_keyring_worker()
 
 
 class TestLockedCollectionPromptPolicy:

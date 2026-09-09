@@ -270,8 +270,18 @@ def _spawn_supervisor(
     pid: int | None = None
     if _supervisor_state.user_manager_reachable(_supervisor_state.user_runtime_dir(host_uid)):
         unit = _supervisor_state.unit_name(container_id)
+        # No live wrapper answered above, so a unit still wearing this name
+        # is a leftover; clearing it is what keeps the refusal below rare.
+        _supervisor_state.stop_unit(unit)
         pid = _spawn_unit(unit, wrapper_argv, env, log_file)
+        if pid == 0:
+            return
     if pid is None:
+        if unit is not None:
+            _supervisor_state.log(
+                "terok-sandbox supervisor hook: falling back to a namespace daemon — its vault"
+                " and signer will not read the kernel-keyring cache this host's launcher uses"
+            )
         unit = None
         pid = _spawn_daemon(wrapper_argv, env, log_file)
     if pid is None:
@@ -308,10 +318,10 @@ def _spawn_unit(
     per-container log the daemon placement writes, is hardened by
     ``_UNIT_PROPERTIES``, and carries only the pinned trio of
     ``_UNIT_ENV`` — the manager's own environment is the rest, never the
-    runtime's hook env.  Returns the unit's main PID, or
-    ``None`` when the manager refused, so the caller falls back to a
-    daemon.  A unit that already exists for this container is one such
-    refusal, which is the idempotent respawn.
+    runtime's hook env.  Returns the unit's main PID; ``None`` when the
+    manager refused, so the caller falls back to a daemon; ``0`` when the
+    unit started but its process is already gone — nothing to record and
+    nothing to fall back to, the wrapper's own exit is in the log.
     """
     argv = [
         "systemd-run",
@@ -332,7 +342,7 @@ def _spawn_unit(
         if run.returncode != 0:
             _supervisor_state.log(
                 f"terok-sandbox supervisor hook: systemd-run refused {unit}"
-                f" ({run.stderr.strip() or run.returncode}) — falling back to a namespace daemon"
+                f" ({run.stderr.strip() or run.returncode})"
             )
             return None
         shown = subprocess.run(  # noqa: S603  # nosec B603 B607
@@ -345,9 +355,14 @@ def _spawn_unit(
         _supervisor_state.log(f"terok-sandbox supervisor hook: user manager unreachable: {exc}")
         return None
     try:
-        return int(shown.stdout.strip())
+        pid = int(shown.stdout.strip())
     except ValueError:
-        return 0
+        pid = 0
+    if pid <= 0:
+        _supervisor_state.log(
+            f"terok-sandbox supervisor hook: {unit} started but its wrapper is already gone"
+        )
+    return max(pid, 0)
 
 
 def _spawn_daemon(wrapper_argv: list[str], env: dict[str, str], log_file: Path) -> int | None:
@@ -477,7 +492,9 @@ def _reap_group(pid_file: Path, wrapper_path: Path, container_id: str) -> None:
     except (OSError, ValueError):
         pid_file.unlink(missing_ok=True)
         return
-    if not _is_group_ours(pgid, str(wrapper_path), container_id):
+    # ``killpg(0)`` would be this hook's own group, ``killpg(-1)`` every
+    # process it may signal: a file that says so is corrupt, not a target.
+    if pgid <= 0 or not _is_group_ours(pgid, str(wrapper_path), container_id):
         pid_file.unlink(missing_ok=True)
         return
     try:
