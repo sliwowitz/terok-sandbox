@@ -55,6 +55,12 @@ file under `$XDG_RUNTIME_DIR`, a path being a path in any namespace.
 Without a runtime directory the cache tier refuses, and the supervisor's
 children need `credentials.passphrase_command` instead.
 `vault status` names the backing and the reason; `sickbay` names the placement.
+The user unit carries the hardening a user service can take without a user
+namespace: no new privileges, no realtime, no personality change, native
+system calls, a private umask.
+Filesystem sandboxing is deliberately absent: a user service gets it only
+through `PrivateUsers`, a fresh user namespace where the keyring is empty
+again.
 Units of a user manager stop at the last logout unless `loginctl
 enable-linger` is set, the rule rootless podman documents for the containers
 themselves.

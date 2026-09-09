@@ -78,6 +78,26 @@ _PROC_DIR = Path("/proc")
 #: the unit's environment is the user manager's own, never the hook's.
 _UNIT_ENV = ("XDG_RUNTIME_DIR", "HOME", "DBUS_SESSION_BUS_ADDRESS")
 
+#: How the user manager hardens the unit.  ``KeyringMode=inherit`` is the
+#: whole point of the placement: the unit reads the operator's user
+#: keyring, and any private keyring would hide it.  Every filesystem
+#: sandbox (``ProtectSystem``, ``PrivateTmp``, …) is out for the same
+#: reason — a user service gets one only through ``PrivateUsers``, a
+#: fresh user namespace where that keyring is empty again — and
+#: ``RestrictNamespaces`` is out because the verdict child enters the
+#: container's namespaces through podman.  What is left matches what
+#: the children already set on themselves, now for the parent too.
+_UNIT_PROPERTIES = (
+    "KeyringMode=inherit",
+    "NoNewPrivileges=yes",
+    "RestrictSUIDSGID=yes",
+    "RestrictRealtime=yes",
+    "LockPersonality=yes",
+    "SystemCallArchitectures=native",
+    "UMask=0077",
+    "TimeoutStopSec=15",
+)
+
 
 def main() -> None:
     """OCI hook entry point — soft-fail on every error path."""
@@ -285,9 +305,10 @@ def _spawn_unit(
     """Ask the user manager to run the wrapper as transient unit *unit*.
 
     The unit collects itself when it ends, appends its output to the same
-    per-container log the daemon placement writes, and carries only the
-    pinned trio of ``_UNIT_ENV`` — the manager's own environment is the
-    rest, never the runtime's hook env.  Returns the unit's main PID, or
+    per-container log the daemon placement writes, is hardened by
+    ``_UNIT_PROPERTIES``, and carries only the pinned trio of
+    ``_UNIT_ENV`` — the manager's own environment is the rest, never the
+    runtime's hook env.  Returns the unit's main PID, or
     ``None`` when the manager refused, so the caller falls back to a
     daemon.  A unit that already exists for this container is one such
     refusal, which is the idempotent respawn.
@@ -300,6 +321,7 @@ def _spawn_unit(
         f"--unit={unit}",
         f"--property=StandardOutput=append:{log_file}",
         f"--property=StandardError=append:{log_file}",
+        *(f"--property={prop}" for prop in _UNIT_PROPERTIES),
         *(f"--setenv={key}={env[key]}" for key in _UNIT_ENV if key in env),
         *wrapper_argv,
     ]

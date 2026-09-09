@@ -403,15 +403,21 @@ def _resolve_service_passphrase(service: str, cfg: SidecarConfig) -> str | None:
         NoPassphraseError,
         probe_passphrase_chain,
         resolve_passphrase_with_source,
+        retire_keyring_worker,
     )
 
     creds_file = _systemd_creds_path(cfg)
-    passphrase, source = resolve_passphrase_with_source(
-        credentials_db=cfg.db_path,
-        systemd_creds_file=creds_file,
-        use_keyring=cfg.credentials_use_keyring,
-        passphrase_command=cfg.credentials_passphrase_command,
-    )
+    try:
+        passphrase, source = resolve_passphrase_with_source(
+            credentials_db=cfg.db_path,
+            systemd_creds_file=creds_file,
+            use_keyring=cfg.credentials_use_keyring,
+            passphrase_command=cfg.credentials_passphrase_command,
+        )
+    finally:
+        # The OS-keyring tier reads on a worker thread; the Landlock
+        # confinement that follows needs this process single-threaded.
+        retire_keyring_worker()
     if passphrase is None:
         # The error names every tier as this child saw it: which one was
         # supposed to answer is the whole question when reading the log.

@@ -385,8 +385,36 @@ def _graphical_session_present() -> bool:
 #: One worker serializes every bounded OS-keyring access.  A wedged
 #: call occupies the single slot; later calls wait in the queue for at
 #: most their own timeout and then cancel out of it, so the process
-#: never accumulates threads against one wedged backend.
-_keyring_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="os-keyring")
+#: never accumulates threads against one wedged backend.  Created on
+#: first use and retired by
+#: [`retire_keyring_worker`][terok_sandbox.vault.store.encryption.retire_keyring_worker],
+#: so a process that is done reading can be single-threaded again.
+_keyring_executor: ThreadPoolExecutor | None = None
+_keyring_worker_wedged = False
+
+
+def _keyring_worker() -> ThreadPoolExecutor:
+    """The shared keyring worker, started on first use."""
+    global _keyring_executor
+    if _keyring_executor is None:
+        _keyring_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="os-keyring")
+    return _keyring_executor
+
+
+def retire_keyring_worker() -> None:
+    """Join the keyring worker so the process is single-threaded again.
+
+    A process that confines itself after its passphrase chain needs
+    this: Landlock below ABI 8 restricts one thread, and the helper
+    refuses a process with two.  A worker abandoned in a wedged read
+    cannot be joined and is left where it is — the confinement then
+    reports the thread, which is the honest outcome.  The next read
+    starts a fresh worker.
+    """
+    global _keyring_executor
+    executor, _keyring_executor = _keyring_executor, None
+    if executor is not None and not _keyring_worker_wedged:
+        executor.shutdown(wait=True)
 
 
 def _call_with_timeout(fn: Callable[[], str | None], timeout: float) -> str | None:
@@ -397,13 +425,15 @@ def _call_with_timeout(fn: Callable[[], str | None], timeout: float) -> str | No
     no state to corrupt.  A worker exception re-raises here, in the
     caller's thread.
     """
-    future = _keyring_executor.submit(fn)
+    global _keyring_worker_wedged
+    future = _keyring_worker().submit(fn)
     try:
         return future.result(timeout)
     except TimeoutError:
         # A queued call leaves the queue; a running one is abandoned to
         # the single slot it already occupies.
         future.cancel()
+        _keyring_worker_wedged = True
         _logger.warning("OS keyring access exceeded %.0fs; skipping the tier", timeout)
         raise
 

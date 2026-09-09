@@ -238,6 +238,38 @@ class TestSessionCacheFacade:
         assert "no libkeyutils" in detail
 
 
+class TestKeyringWorkerRetirement:
+    """The OS-keyring read leaves a worker thread; a child retires it before Landlock."""
+
+    @pytest.fixture(autouse=True)
+    def _fresh_worker(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Start from no worker and no wedge, whatever an earlier test left behind."""
+        monkeypatch.setattr(encryption, "_keyring_executor", None)
+        monkeypatch.setattr(encryption, "_keyring_worker_wedged", False)
+
+    def test_a_finished_read_leaves_no_thread_behind(self) -> None:
+        before = set(threading.enumerate())
+        assert encryption._call_with_timeout(lambda: "pw", 1.0) == "pw"
+        spawned = set(threading.enumerate()) - before
+        assert spawned
+        encryption.retire_keyring_worker()
+        assert not any(thread.is_alive() for thread in spawned)
+        # A later read starts a fresh worker; retirement is not a one-way door.
+        assert encryption._call_with_timeout(lambda: "again", 1.0) == "again"
+        encryption.retire_keyring_worker()
+
+    def test_a_wedged_worker_is_abandoned_not_joined(self) -> None:
+        """Joining a stuck read would hang the child; the thread stays and Landlock says so."""
+        release = threading.Event()
+        before = set(threading.enumerate())
+        with pytest.raises(TimeoutError):
+            encryption._call_with_timeout(lambda: release.wait(5) and "late", 0.05)
+        spawned = set(threading.enumerate()) - before
+        encryption.retire_keyring_worker()  # returns at once
+        assert any(thread.is_alive() for thread in spawned)
+        release.set()
+
+
 class TestLockedCollectionPromptPolicy:
     """A locked collection prompts only an interactive caller on a desktop.
 

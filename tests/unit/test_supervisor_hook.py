@@ -304,6 +304,10 @@ class TestHookSpawn:
         assert f"--unit={mod._supervisor_state.unit_name(container_id)}" in systemd_run
         assert systemd_run[-3:] == [str(wrapper), container_id, str(sidecar_path)]
         assert any(arg.startswith("--setenv=XDG_RUNTIME_DIR=") for arg in systemd_run)
+        # The keyring the unit reads is the operator's; a private one would hide it.
+        assert "--property=KeyringMode=inherit" in systemd_run
+        assert "--property=NoNewPrivileges=yes" in systemd_run
+        assert not any("PrivateUsers" in arg or "ProtectSystem" in arg for arg in systemd_run)
         assert show[:4] == ["systemctl", "--user", "show", "--property=MainPID"]
         pid_file = hook_root / "pids" / f"supervisor-{container_id}.pid"
         assert pid_file.read_text().strip() == "4242"
