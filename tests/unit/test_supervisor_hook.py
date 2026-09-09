@@ -43,6 +43,10 @@ def _load_hook_module() -> object:
         mod = importlib.util.module_from_spec(spec)
         sys.modules["supervisor_hook"] = mod
         spec.loader.exec_module(mod)
+        # The test host's own user manager must never place a test's
+        # supervisor: the daemon path is the default, and the unit-path
+        # tests say so explicitly.
+        mod._supervisor_state.user_manager_reachable = lambda _dir: False
         return mod
     finally:
         sys.path.remove(str(hooks_dir))
