@@ -24,6 +24,8 @@ from __future__ import annotations
 
 import contextlib
 import os
+import shutil
+import subprocess  # nosec B404 — the user manager's verbs, fixed argv
 import sys
 import time
 from pathlib import Path
@@ -31,6 +33,9 @@ from pathlib import Path
 #: Trusted ``$PATH`` for hook subprocess execution — same allowlist
 #: shield's ``_oci_state.py`` pins, kept in sync deliberately.
 _TRUSTED_PATH = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+
+#: Prefix of the transient user unit that hosts one container's supervisor.
+_UNIT_PREFIX = "terok-supervisor-"
 
 #: Persistent hook diary ``log`` mirrors into, and the container tag it
 #: stamps on each line.  Both stay unset until ``set_log_context`` resolves
@@ -88,7 +93,66 @@ def bootstrap_env(host_uid: int) -> None:
     for var in ("LD_PRELOAD", "LD_LIBRARY_PATH", "LD_AUDIT", "PYTHONPATH", "PYTHONHOME"):
         os.environ.pop(var, None)
     if not os.environ.get("XDG_RUNTIME_DIR"):
-        os.environ["XDG_RUNTIME_DIR"] = f"/run/user/{host_uid}"
+        os.environ["XDG_RUNTIME_DIR"] = str(user_runtime_dir(host_uid))
+
+
+def user_runtime_dir(host_uid: int) -> Path:
+    """logind's per-user runtime directory for *host_uid*.
+
+    The one place that spells the path: the hook pins the supervisor's
+    ``XDG_RUNTIME_DIR`` to it, and the placement question below is asked
+    of it, on the hook side and on the launcher side alike.
+    """
+    return Path(f"/run/user/{host_uid}")
+
+
+def user_manager_reachable(runtime_dir: Path) -> bool:
+    """Whether a per-user systemd manager answers under *runtime_dir*.
+
+    The fact that decides where a container's supervisor runs: as a
+    transient unit of that manager, in the operator's own namespaces
+    where the user keyring is the operator's, or as a daemon inside the
+    container runtime's user namespace, where the hook itself runs.  The
+    manager's private socket is the evidence; ``systemd-run`` on the
+    trusted PATH is what asks it.
+    """
+    private = runtime_dir / "systemd" / "private"
+    return private.is_socket() and shutil.which("systemd-run") is not None
+
+
+def unit_name(container_id: str) -> str:
+    """The transient user unit hosting *container_id*'s supervisor."""
+    return f"{_UNIT_PREFIX}{container_id[:12]}.service"
+
+
+def unit_pattern() -> str:
+    """The glob that names every supervisor unit at once."""
+    return f"{_UNIT_PREFIX}*"
+
+
+def unit_active(name: str) -> bool:
+    """Whether the user manager reports unit *name* active."""
+    return _systemctl("is-active", name) == 0
+
+
+def stop_unit(name: str) -> None:
+    """Stop unit *name* through the user manager; a unit it never had is no error."""
+    _systemctl("stop", name)
+
+
+def kill_units(pattern: str) -> None:
+    """SIGKILL every unit matching *pattern* at once — the panic path's verb."""
+    _systemctl("kill", "--signal=SIGKILL", pattern)
+
+
+def _systemctl(*args: str) -> int:
+    """Run one quiet ``systemctl --user`` verb; its exit status is the answer."""
+    try:
+        return subprocess.run(  # nosec B603 B607 — fixed verbs on the trusted PATH
+            ["systemctl", "--user", "--quiet", *args], check=False
+        ).returncode
+    except OSError:
+        return 1
 
 
 def pid_exists(pid: int) -> bool:

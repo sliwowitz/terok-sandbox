@@ -295,68 +295,20 @@ def test_store_returns_false_when_library_unavailable(monkeypatch: pytest.Monkey
 # ── reading across a user namespace ─────────────────────────────────
 
 
-def test_load_crosses_a_user_namespace_through_the_session_keyring(
-    fake_lib: FakeKeyutils,
-) -> None:
-    """The supervisor's children read the operator's cache, or the vault won't open.
+def test_load_from_another_user_namespace_is_a_miss(fake_lib: FakeKeyutils) -> None:
+    """The cache is the operator's user keyring, and only the operator's namespace has it.
 
-    They run inside podman's rootless user namespace, where ``@u`` is a
-    different keyring — an empty one.  The session keyring crosses that
-    boundary unchanged and holds the link ``store`` left behind, which is
-    the only route to the key from in there.
+    A reader inside podman's rootless namespace resolves ``@u`` to its own
+    empty keyring.  That reader is never this tier's customer: a
+    supervisor runs where the keyring is the operator's, or the cache
+    tier is the session file instead (``session_cache`` chooses).
     """
     kernel_keyring.store("s3cret", MOCK_DB_PATH)
 
     fake_lib.enter_user_namespace()
 
-    assert kernel_keyring.load(MOCK_DB_PATH) == "s3cret"
-    assert kernel_keyring.is_cached(MOCK_DB_PATH) is True
-
-
-def test_load_stays_blind_across_a_namespace_without_the_session_link(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Without the ``@u`` link there is no bridge, and the miss is honest.
-
-    The pair to the test above: it is the link that carries the cache
-    across, not the crossing being harmless.
-    """
-    lib = FakeKeyutils(link_ok=False)
-    monkeypatch.setattr(kernel_keyring, "_load_library", lambda: lib)
-    kernel_keyring.store("s3cret", MOCK_DB_PATH)
-
-    lib.enter_user_namespace()
-
     assert kernel_keyring.load(MOCK_DB_PATH) is None
-
-
-def test_is_bridged_answers_for_the_reader_in_the_other_namespace(
-    fake_lib: FakeKeyutils,
-) -> None:
-    """It asks the ``@s`` leg alone, because that is the only leg those readers have."""
-    assert kernel_keyring.is_bridged(MOCK_DB_PATH) is False
-    kernel_keyring.store("s3cret", MOCK_DB_PATH)
-    assert kernel_keyring.is_bridged(MOCK_DB_PATH) is True
-
-
-def test_is_bridged_is_false_without_the_session_link(monkeypatch: pytest.MonkeyPatch) -> None:
-    """A cache the operator can read and the supervisor cannot is the reported state."""
-    lib = FakeKeyutils(link_ok=False)
-    monkeypatch.setattr(kernel_keyring, "_load_library", lambda: lib)
-    kernel_keyring.store("s3cret", MOCK_DB_PATH)
-
-    assert kernel_keyring.load(MOCK_DB_PATH) == "s3cret"
-    assert kernel_keyring.is_bridged(MOCK_DB_PATH) is False
-
-
-def test_is_bridged_is_false_without_the_facility(monkeypatch: pytest.MonkeyPatch) -> None:
-    """No keyring at all is one more way for the supervisor not to find it."""
-
-    def _raise() -> object:
-        raise kernel_keyring._KeyutilsUnavailable("libkeyutils not loadable")
-
-    monkeypatch.setattr(kernel_keyring, "_load_library", _raise)
-    assert kernel_keyring.is_bridged(MOCK_DB_PATH) is False
+    assert kernel_keyring.is_cached(MOCK_DB_PATH) is False
 
 
 def test_a_revoked_key_is_a_miss_and_says_nothing(
@@ -364,11 +316,9 @@ def test_a_revoked_key_is_a_miss_and_says_nothing(
 ) -> None:
     """A dead key is the same answer as no key, and not worth a word.
 
-    The session-keyring leg walks keys the user-keyring leg never saw, and
-    a revoked one among them used to raise — so an operator whose vault
-    runs on a different tier entirely got two lines about the keyring on
-    every single container start, about a key that can never be read
-    again and that no action of theirs would change.
+    A revoked key can never be read again, and no action of the
+    operator's would change that, so a line about it on every container
+    start would only be noise.
     """
 
     def _revoked(_ring: int, _ktype: bytes, _desc: bytes, _dest: int) -> int:
@@ -408,31 +358,13 @@ def test_a_permission_fault_is_still_reported(
 def test_store_warns_when_the_session_link_fails(
     monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
-    """A failed link is the supervisor losing the cache — say so."""
+    """A failed possession link is logged; the store itself still goes ahead."""
     monkeypatch.setattr(kernel_keyring, "_load_library", lambda: FakeKeyutils(link_ok=False))
 
     with caplog.at_level("WARNING"):
         kernel_keyring.store("s3cret", MOCK_DB_PATH)
 
-    assert "supervisor child" in caplog.text
-
-
-def test_a_faulting_keyring_does_not_veto_the_next_one(
-    monkeypatch: pytest.MonkeyPatch, fake_lib: FakeKeyutils
-) -> None:
-    """A hit anywhere is a hit — an earlier permission fault is not the answer."""
-    kernel_keyring.store("s3cret", MOCK_DB_PATH)
-    real_search = fake_lib.keyctl_search
-
-    def _faulting(ring: int, ktype: bytes, desc: bytes, dest: int) -> int:
-        if ring == _UID_RING:
-            ctypes.set_errno(13)  # EACCES
-            return -1
-        return real_search(ring, ktype, desc, dest)
-
-    monkeypatch.setattr(fake_lib, "keyctl_search", _faulting)
-
-    assert kernel_keyring.load(MOCK_DB_PATH) == "s3cret"
+    assert "link failed" in caplog.text
 
 
 # ── load / forget ───────────────────────────────────────────────────

@@ -332,6 +332,34 @@ class TestSupervisionStatus:
         assert str(missing.socket) in text
         assert str(hook_log) in text
 
+    def test_warning_reads_the_diary_verdict(self, tmp_path: Path) -> None:
+        """With the container id known, the line says whether the hook fired and where to read."""
+        missing = ServiceEndpoint("vault", socket=tmp_path / "vault.sock")
+        hook_log = tmp_path / "logs" / "hook.log"
+        silent = SupervisionStatus(_NAME, (missing,), (missing,), hook_log, hook_fired=False)
+        assert "no entry for this container" in silent.warning()
+        fired = SupervisionStatus(
+            _NAME,
+            (missing,),
+            (missing,),
+            hook_log,
+            hook_fired=True,
+            supervisor_log=tmp_path / "logs" / "abc.log",
+        )
+        assert "the hook fired" in fired.warning()
+        assert str(tmp_path / "logs" / "abc.log") in fired.warning()
+
+    def test_diary_evidence_is_the_container_tag(self, tmp_path: Path) -> None:
+        from terok_sandbox.supervision import _diary_mentions
+
+        diary = tmp_path / "hook.log"
+        assert _diary_mentions(diary, "abc123def456789") is False
+        diary.write_text(
+            "2026-09-09T20:09:14Z [abc123def456] spawned supervisor pid 5 for abc123def456789\n"
+        )
+        assert _diary_mentions(diary, "abc123def456789") is True
+        assert _diary_mentions(diary, "fff123def456789") is False
+
     def test_warn_unsupervised_is_silent_when_healthy(
         self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
     ) -> None:

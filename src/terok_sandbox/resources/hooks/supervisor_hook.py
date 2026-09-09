@@ -18,6 +18,12 @@ Layout assumed:
     <root>/pids/supervisor-<container_id>.pid
     <root>/supervisor_wrapper.py
 
+Where the supervisor runs is decided by one fact, read the same way
+on the launcher side: a per-user systemd manager that answers makes it
+a transient user unit of that manager, in the operator's own
+namespaces; otherwise it is a daemon inside the container runtime's
+user namespace, where this hook itself runs.
+
 Soft-fails on every error path: a missing sidecar, unreachable
 session bus, failed Popen all log and return normally so the
 container still starts.  ``terok-shield``'s nft hook is fail-closed
@@ -67,6 +73,10 @@ _CHILD_VERB_MARK = b"supervise-child"
 
 #: Where the stray-children sweep reads process argvs from (patchable in tests).
 _PROC_DIR = Path("/proc")
+
+#: The pinned part of the spawn env a user unit receives — the rest of
+#: the unit's environment is the user manager's own, never the hook's.
+_UNIT_ENV = ("XDG_RUNTIME_DIR", "HOME", "DBUS_SESSION_BUS_ADDRESS")
 
 
 def main() -> None:
@@ -177,7 +187,7 @@ def _dispatch(
     # trace, not just swallowed runtime stderr.
     _supervisor_state.set_log_context(root, container_id)
     if stage == "poststop":
-        _reap_supervisor(container_id, root)
+        _reap_supervisor(container_id, root, host_uid)
         return
     if stage != "createRuntime":
         _supervisor_state.log(f"terok-sandbox supervisor hook: unknown stage {stage!r}")
@@ -198,8 +208,11 @@ def _spawn_supervisor(
     host_uid: int,
     container_pid: int | None = None,
 ) -> None:
-    """Start the supervisor wrapper for *container_id* as a detached child.
+    """Start the supervisor wrapper for *container_id* where this host places it.
 
+    A user unit when the per-user manager answers, a detached daemon
+    otherwise — and a daemon when the manager refuses the unit, so a
+    container never starts unsupervised over a placement detail.
     *container_pid* (the container init host-PID from the OCI state) is
     passed to the wrapper as an optional 3rd positional so the supervisor
     can watch it directly; ``None`` simply omits it.
@@ -229,15 +242,103 @@ def _spawn_supervisor(
         return
 
     env = _spawn_env(host_uid)
+    wrapper_argv = ["/usr/bin/python3", str(wrapper_path), container_id, str(sidecar_path)]
+    if container_pid is not None:
+        wrapper_argv.append(str(container_pid))
+
+    unit: str | None = None
+    pid: int | None = None
+    if _supervisor_state.user_manager_reachable(_supervisor_state.user_runtime_dir(host_uid)):
+        unit = _supervisor_state.unit_name(container_id)
+        pid = _spawn_unit(unit, wrapper_argv, env, log_file)
+    if pid is None:
+        unit = None
+        pid = _spawn_daemon(wrapper_argv, env, log_file)
+    if pid is None:
+        return
+
+    try:
+        pid_file.write_text(f"{pid}\n")
+    except OSError as exc:
+        # The PID file is the only handle poststop has to reap a daemon
+        # (a unit is also reachable by name).  Losing it would orphan the
+        # supervisor, so take it down synchronously right here.
+        _supervisor_state.log(f"terok-sandbox supervisor hook: pid file write failed: {exc}")
+        if unit is not None:
+            _supervisor_state.stop_unit(unit)
+        else:
+            _kill_daemon(pid)
+    else:
+        # Success — recorded so a non-empty hook.log means "the hook fired
+        # and here is what it did", and an empty/absent one means it never
+        # ran at all: exactly the fork a stuck-unsupervised container turns on.
+        placement = f"user unit {unit}" if unit is not None else "a namespace daemon"
+        _supervisor_state.log(
+            f"terok-sandbox supervisor hook: spawned supervisor pid {pid} for {container_id}"
+            f" as {placement}"
+        )
+
+
+def _spawn_unit(
+    unit: str, wrapper_argv: list[str], env: dict[str, str], log_file: Path
+) -> int | None:
+    """Ask the user manager to run the wrapper as transient unit *unit*.
+
+    The unit collects itself when it ends, appends its output to the same
+    per-container log the daemon placement writes, and carries only the
+    pinned trio of ``_UNIT_ENV`` — the manager's own environment is the
+    rest, never the runtime's hook env.  Returns the unit's main PID, or
+    ``None`` when the manager refused, so the caller falls back to a
+    daemon.  A unit that already exists for this container is one such
+    refusal, which is the idempotent respawn.
+    """
+    argv = [
+        "systemd-run",
+        "--user",
+        "--quiet",
+        "--collect",
+        f"--unit={unit}",
+        f"--property=StandardOutput=append:{log_file}",
+        f"--property=StandardError=append:{log_file}",
+        *(f"--setenv={key}={env[key]}" for key in _UNIT_ENV if key in env),
+        *wrapper_argv,
+    ]
+    try:
+        run = subprocess.run(  # noqa: S603  # nosec B603 B607
+            argv, capture_output=True, text=True, check=False
+        )
+        if run.returncode != 0:
+            _supervisor_state.log(
+                f"terok-sandbox supervisor hook: systemd-run refused {unit}"
+                f" ({run.stderr.strip() or run.returncode}) — falling back to a namespace daemon"
+            )
+            return None
+        shown = subprocess.run(  # noqa: S603  # nosec B603 B607
+            ["systemctl", "--user", "show", "--property=MainPID", "--value", unit],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    except OSError as exc:
+        _supervisor_state.log(f"terok-sandbox supervisor hook: user manager unreachable: {exc}")
+        return None
+    try:
+        return int(shown.stdout.strip())
+    except ValueError:
+        return 0
+
+
+def _spawn_daemon(wrapper_argv: list[str], env: dict[str, str], log_file: Path) -> int | None:
+    """Detach the wrapper as its own session inside the runtime's namespace.
+
+    The floor placement: the process group the new session opens is what
+    poststop signals, and the log file gets the wrapper's output directly.
+    """
     try:
         log_fh = log_file.open("ab")
     except OSError as exc:
         _supervisor_state.log(f"terok-sandbox supervisor hook: cannot open log file: {exc}")
-        return
-
-    wrapper_argv = ["/usr/bin/python3", str(wrapper_path), container_id, str(sidecar_path)]
-    if container_pid is not None:
-        wrapper_argv.append(str(container_pid))
+        return None
     try:
         proc = subprocess.Popen(  # noqa: S603  # nosec B603
             wrapper_argv,
@@ -249,36 +350,24 @@ def _spawn_supervisor(
             close_fds=True,
         )
     except OSError as exc:
-        log_fh.close()
         _supervisor_state.log(f"terok-sandbox supervisor hook: wrapper spawn failed: {exc}")
-        return
+        return None
     finally:
         log_fh.close()
+    return proc.pid
 
-    try:
-        pid_file.write_text(f"{proc.pid}\n")
-    except OSError as exc:
-        # PID file is the only handle poststop has to reap the wrapper.
-        # Losing it would orphan the supervisor, so reap synchronously
-        # right here: SIGTERM, brief poll, escalate to SIGKILL if the
-        # wrapper doesn't oblige.
-        _supervisor_state.log(f"terok-sandbox supervisor hook: pid file write failed: {exc}")
-        with contextlib.suppress(ProcessLookupError, OSError):
-            os.kill(proc.pid, signal.SIGTERM)
-        for _ in range(_REAP_POLL_TICKS):
-            time.sleep(_REAP_POLL_INTERVAL_S)
-            if not _supervisor_state.pid_exists(proc.pid):
-                break
-        else:
-            with contextlib.suppress(ProcessLookupError, OSError):
-                os.kill(proc.pid, signal.SIGKILL)
+
+def _kill_daemon(pid: int) -> None:
+    """SIGTERM *pid*, poll briefly, escalate to SIGKILL if it does not oblige."""
+    with contextlib.suppress(ProcessLookupError, OSError):
+        os.kill(pid, signal.SIGTERM)
+    for _ in range(_REAP_POLL_TICKS):
+        time.sleep(_REAP_POLL_INTERVAL_S)
+        if not _supervisor_state.pid_exists(pid):
+            break
     else:
-        # Success — recorded so a non-empty hook.log means "the hook fired
-        # and here is what it did", and an empty/absent one means it never
-        # ran at all: exactly the fork a stuck-unsupervised container turns on.
-        _supervisor_state.log(
-            f"terok-sandbox supervisor hook: spawned supervisor pid {proc.pid} for {container_id}"
-        )
+        with contextlib.suppress(ProcessLookupError, OSError):
+            os.kill(pid, signal.SIGKILL)
 
 
 def _spawn_env(host_uid: int) -> dict[str, str]:
@@ -299,7 +388,7 @@ def _spawn_env(host_uid: int) -> dict[str, str]:
     the host filesystem view even in ``NS_ROOTLESS``).
     """
     env = dict(os.environ)
-    runtime = Path(f"/run/user/{host_uid}")
+    runtime = _supervisor_state.user_runtime_dir(host_uid)
     env["XDG_RUNTIME_DIR"] = str(runtime)
     with contextlib.suppress(KeyError):
         env["HOME"] = pwd.getpwuid(host_uid).pw_dir
@@ -321,10 +410,14 @@ def _supervisor_alive(pid_file: Path, wrapper_path: Path, container_id: str) -> 
     return _is_our_wrapper(pid, str(wrapper_path), container_id)
 
 
-def _reap_supervisor(container_id: str, root: Path) -> None:
-    """Group-SIGTERM the supervisor tree at poststop, group-SIGKILL past 2 s.
+def _reap_supervisor(container_id: str, root: Path, host_uid: int) -> None:
+    """Take the supervisor down at poststop: its unit by name, its daemon by group.
 
-    The createRuntime hook spawns the wrapper with
+    A user unit stops through the manager first; the group reap below then
+    finds its PID gone and clears the file.  The daemon placement is the
+    group reap alone.
+
+    The createRuntime hook spawns a daemon wrapper with
     ``start_new_session=True``, so the PID it records is also the
     **process-group ID** of the container's entire supervisor tree —
     restart-loop wrapper, supervisor, service children, watcher
@@ -347,6 +440,8 @@ def _reap_supervisor(container_id: str, root: Path) -> None:
     """
     pid_file = root / "pids" / f"supervisor-{container_id}.pid"
     wrapper_path = Path(__file__).resolve().parent.parent / "supervisor_wrapper.py"
+    if _supervisor_state.user_manager_reachable(_supervisor_state.user_runtime_dir(host_uid)):
+        _supervisor_state.stop_unit(_supervisor_state.unit_name(container_id))
     try:
         _reap_group(pid_file, wrapper_path, container_id)
     finally:

@@ -166,7 +166,13 @@ def _isolate_credential_keyring(monkeypatch: pytest.MonkeyPatch) -> None:
     import terok_sandbox.config as _config
     import terok_sandbox.vault.store.encryption as _enc
     import terok_sandbox.vault.store.kernel_keyring as _kk
+    from terok_sandbox.resources.hooks import _supervisor_state
 
+    # The suite's host: a user manager answers, so the supervisor is a
+    # user unit and the keyring is the cache backing — the world most
+    # tests were written in.  The test host itself has no manager, and
+    # the placement tests toggle this fact explicitly.
+    monkeypatch.setattr(_supervisor_state, "user_manager_reachable", lambda _dir: True)
     monkeypatch.setattr(_kk, "load", lambda _db=None: None)
     monkeypatch.setattr(_kk, "store", lambda _pw, _db=None: True)
     monkeypatch.setattr(_kk, "forget", lambda _db=None: True)

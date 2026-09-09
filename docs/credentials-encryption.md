@@ -40,6 +40,25 @@ top-to-bottom and stops at the first hit:
     `passphrase_command: cat /path/to/that/file` at it.  Same trust
     boundary (filesystem-level protection), one tier instead of two.
 
+## Where the supervisor runs
+
+One host fact places the per-container supervisor, and the OCI hook reads it
+the same way the launcher does: a per-user systemd manager that answers.
+With one, the supervisor is a transient unit of that manager
+(`terok-supervisor-<container id>.service`), in the operator's own namespaces.
+Without one, it is a daemon inside the container runtime's user namespace.
+The volatile cache tier follows the placement.
+A user-unit supervisor reads the operator's kernel keyring, so that is the
+backing.
+A namespace daemon sees an empty keyring there, so the backing is the session
+file under `$XDG_RUNTIME_DIR`, a path being a path in any namespace.
+Without a runtime directory the cache tier refuses, and the supervisor's
+children need `credentials.passphrase_command` instead.
+`vault status` names the backing and the reason; `sickbay` names the placement.
+Units of a user manager stop at the last logout unless `loginctl
+enable-linger` is set, the rule rootless podman documents for the containers
+themselves.
+
 ## Runtime service boundaries
 
 The per-container supervisor runs vault, signer, gate, and clearance in

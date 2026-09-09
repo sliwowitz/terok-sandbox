@@ -50,6 +50,7 @@ import ipaddress
 import stat
 import sys
 import time
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -121,6 +122,10 @@ class SupervisionStatus:
     missing: tuple[ServiceEndpoint, ...]
     hook_log: Path
     skipped: bool = False
+    hook_fired: bool | None = None
+    """Whether the hook diary has an entry for this container; ``None`` when unknown."""
+    supervisor_log: Path | None = None
+    """The per-container supervisor log, when the container id was known."""
 
     @property
     def ok(self) -> bool:
@@ -136,15 +141,26 @@ class SupervisionStatus:
             f"{endpoints}\n"
             "warning:   what they serve is dead in this container — the vault routes every\n"
             "warning:   provider token, the signer holds the git keys, the gate serves the repo\n"
-            f"warning:   hook diary: {self.hook_log} "
-            "(absent or empty ⇒ the OCI supervisor hook never fired)"
+            f"warning:   {self._where_to_look()}"
         )
+
+    def _where_to_look(self) -> str:
+        """The one line that says what the hook diary knows about this container."""
+        if self.hook_fired is None:
+            return f"hook diary: {self.hook_log} (absent or empty ⇒ the OCI supervisor hook never fired)"
+        if not self.hook_fired:
+            return (
+                f"hook diary {self.hook_log} has no entry for this container — the OCI "
+                "supervisor hook never fired; rerun `terok-sandbox setup`"
+            )
+        return f"the hook fired; the supervisor log says which child died and why: {self.supervisor_log}"
 
 
 def verify_supervision(
     cfg: SandboxConfig,
     container_name: str,
     *,
+    find_container_id: Callable[[], str | None] | None = None,
     timeout: float = _DEFAULT_TIMEOUT_S,
 ) -> SupervisionStatus:
     """Poll for the supervisor's sockets after *container_name* has started.
@@ -154,8 +170,12 @@ def verify_supervision(
     for the vault socket (always bound) and the gate socket (when the
     sidecar wired a gate).  Returns a
     [`SupervisionStatus`][terok_sandbox.supervision.SupervisionStatus]; a
-    missing socket means the supervisor is not up.  Never raises and never
-    blocks a healthy start beyond the time the sockets take to appear.
+    missing socket means the supervisor is not up.  *find_container_id*
+    is asked for the container's id only when something is missing; with
+    it the status also says whether the hook diary saw this container, so
+    the warning points at the log that has the answer.  Never raises and
+    never blocks a healthy start beyond the time the sockets take to
+    appear.
     """
     sidecar_path = cfg.state_dir / "sidecar" / f"{container_name}.json"
     # The install-global hook diary the OCI hook appends to (mirrors
@@ -182,7 +202,30 @@ def verify_supervision(
         # answer is unknown rather than bad.  Reporting every service
         # missing would be a false alarm on every start.
         return SupervisionStatus(container_name, expected, (), hook_log, skipped=True)
-    return SupervisionStatus(container_name, expected, missing, hook_log)
+    container_id = find_container_id() if missing and find_container_id else None
+    if container_id is None:
+        return SupervisionStatus(container_name, expected, missing, hook_log)
+    return SupervisionStatus(
+        container_name,
+        expected,
+        missing,
+        hook_log,
+        hook_fired=_diary_mentions(hook_log, container_id),
+        supervisor_log=cfg.state_dir / "logs" / f"{container_id}.log",
+    )
+
+
+def _diary_mentions(hook_log: Path, container_id: str) -> bool:
+    """Whether the hook diary carries a line tagged with this container.
+
+    The hook tags every line with the container's short id (see
+    ``_supervisor_state.set_log_context``), so the tag is the evidence
+    that it fired at all.  An unreadable diary counts as silent.
+    """
+    try:
+        return f"[{container_id[:12]}]" in hook_log.read_text(encoding="utf-8")
+    except OSError:
+        return False
 
 
 def _expected_endpoints(

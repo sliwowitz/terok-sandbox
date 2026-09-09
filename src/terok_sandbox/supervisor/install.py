@@ -45,6 +45,7 @@ if TYPE_CHECKING:
 from .._util import _proc
 from ..integrations.shield import ensure_user_hooks_dir_configured
 from ..paths import state_root
+from ..resources.hooks import _supervisor_state
 
 _HOOK_STAGES = ("createRuntime", "poststop")
 _HOOK_SCRIPT_NAME = "supervisor_hook.py"
@@ -162,6 +163,9 @@ def kill_all_supervisors() -> list[tuple[str, str | None]]:
     socket calls from a misbehaving container.
     """
     results: list[tuple[str, str | None]] = []
+    # Unit-placed supervisors first, by pattern: one verb reaches them all,
+    # and the group pass below then finds their PIDs already gone.
+    _supervisor_state.kill_units(_supervisor_state.unit_pattern())
     pids_dir = state_root() / _PIDS_DIR_NAME
     if pids_dir.is_dir():
         wrapper_path = str(state_root() / _WRAPPER_NAME)

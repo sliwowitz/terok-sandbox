@@ -256,6 +256,98 @@ class TestHookSpawn:
         pid_file = hook_root / "pids" / f"supervisor-{container_id}.pid"
         assert pid_file.read_text().strip() == "12345"
 
+    def test_createRuntime_runs_a_user_unit_when_the_manager_answers(
+        self, hook_root: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """With a per-user manager the wrapper becomes a transient unit; its MainPID is the record."""
+        mod = _load_hook_module()
+        container_id = "abc123def456789"
+        sidecar_path = _write_sidecar(
+            hook_root,
+            "demo",
+            {"container_name": "demo", "db_path": str(hook_root / "v.db"), "ipc_mode": "socket"},
+        )
+        fake_hooks_dir = hook_root / "hooks"
+        fake_hooks_dir.mkdir()
+        fake_hook_file = fake_hooks_dir / "supervisor_hook.py"
+        fake_hook_file.write_text("# fake")
+        wrapper = hook_root / "supervisor_wrapper.py"
+        _install_wrapper_alongside_hook(mod, wrapper)
+        monkeypatch.setattr(mod, "__file__", str(fake_hook_file))
+        _feed_stdin(
+            monkeypatch,
+            {"id": container_id, "annotations": {"terok.sandbox.sidecar": str(sidecar_path)}},
+        )
+        monkeypatch.setattr(mod.sys, "argv", ["supervisor_hook", "createRuntime"])
+        monkeypatch.setattr(mod._supervisor_state, "outer_host_uid", lambda: os.getuid())
+        monkeypatch.setattr(mod._supervisor_state, "user_manager_reachable", lambda _dir: True)
+
+        calls: list[list[str]] = []
+
+        def fake_run(argv: list[str], **_kw: object) -> MagicMock:
+            calls.append(argv)
+            return MagicMock(returncode=0, stdout="4242\n", stderr="")
+
+        with (
+            patch.object(mod.subprocess, "run", side_effect=fake_run),
+            patch.object(mod.subprocess, "Popen") as popen,
+        ):
+            mod.main()
+
+        popen.assert_not_called()
+        systemd_run, show = calls
+        assert systemd_run[:3] == ["systemd-run", "--user", "--quiet"]
+        assert f"--unit={mod._supervisor_state.unit_name(container_id)}" in systemd_run
+        assert systemd_run[-3:] == [str(wrapper), container_id, str(sidecar_path)]
+        assert any(arg.startswith("--setenv=XDG_RUNTIME_DIR=") for arg in systemd_run)
+        assert show[:4] == ["systemctl", "--user", "show", "--property=MainPID"]
+        pid_file = hook_root / "pids" / f"supervisor-{container_id}.pid"
+        assert pid_file.read_text().strip() == "4242"
+        diary = (hook_root / "logs" / "hook.log").read_text()
+        assert "as user unit terok-supervisor-abc123def456" in diary
+
+    def test_a_refused_unit_falls_back_to_a_daemon(
+        self, hook_root: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The manager saying no costs the placement, never the supervisor."""
+        mod = _load_hook_module()
+        container_id = "abc123def456789"
+        sidecar_path = _write_sidecar(
+            hook_root,
+            "demo",
+            {"container_name": "demo", "db_path": str(hook_root / "v.db"), "ipc_mode": "socket"},
+        )
+        fake_hooks_dir = hook_root / "hooks"
+        fake_hooks_dir.mkdir()
+        fake_hook_file = fake_hooks_dir / "supervisor_hook.py"
+        fake_hook_file.write_text("# fake")
+        _install_wrapper_alongside_hook(mod, hook_root / "supervisor_wrapper.py")
+        monkeypatch.setattr(mod, "__file__", str(fake_hook_file))
+        _feed_stdin(
+            monkeypatch,
+            {"id": container_id, "annotations": {"terok.sandbox.sidecar": str(sidecar_path)}},
+        )
+        monkeypatch.setattr(mod.sys, "argv", ["supervisor_hook", "createRuntime"])
+        monkeypatch.setattr(mod._supervisor_state, "outer_host_uid", lambda: os.getuid())
+        monkeypatch.setattr(mod._supervisor_state, "user_manager_reachable", lambda _dir: True)
+
+        refused = MagicMock(
+            returncode=1,
+            stdout="",
+            stderr="Unit terok-supervisor-abc123def456.service already exists.",
+        )
+        with (
+            patch.object(mod.subprocess, "run", return_value=refused),
+            patch.object(mod.subprocess, "Popen", return_value=MagicMock(pid=777)) as popen,
+        ):
+            mod.main()
+
+        popen.assert_called_once()
+        pid_file = hook_root / "pids" / f"supervisor-{container_id}.pid"
+        assert pid_file.read_text().strip() == "777"
+        diary = (hook_root / "logs" / "hook.log").read_text()
+        assert "falling back to a namespace daemon" in diary
+
     def test_createRuntime_forwards_container_init_pid(
         self, hook_root: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -391,6 +483,31 @@ class TestHookSpawn:
         # still matches the container's immutable env.  Removal belongs
         # to real teardown (cleanup / task delete / doctor stray sweep).
         assert sidecar_path.exists()
+
+    def test_poststop_stops_the_unit_by_name_when_the_manager_answers(
+        self, hook_root: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A unit-placed supervisor goes down through the manager, before the group reap."""
+        mod = _load_hook_module()
+        container_id = "abc123def456789"
+        sidecar_path = _write_sidecar(
+            hook_root,
+            "demo",
+            {"container_name": "demo", "db_path": str(hook_root / "v.db"), "ipc_mode": "socket"},
+        )
+        _feed_stdin(
+            monkeypatch,
+            {"id": container_id, "annotations": {"terok.sandbox.sidecar": str(sidecar_path)}},
+        )
+        monkeypatch.setattr(mod.sys, "argv", ["supervisor_hook", "poststop"])
+        monkeypatch.setattr(mod._supervisor_state, "outer_host_uid", lambda: os.getuid())
+        monkeypatch.setattr(mod._supervisor_state, "user_manager_reachable", lambda _dir: True)
+        stopped: list[str] = []
+        monkeypatch.setattr(mod._supervisor_state, "stop_unit", stopped.append)
+
+        mod.main()
+
+        assert stopped == [mod._supervisor_state.unit_name(container_id)]
 
     def test_poststop_without_pid_file_preserves_sidecar(
         self, hook_root: Path, monkeypatch: pytest.MonkeyPatch
