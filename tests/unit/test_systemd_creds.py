@@ -49,7 +49,9 @@ class TestAvailability:
         ):
             assert systemd_creds.is_available() is True
 
-    def test_is_available_false_when_varlink_socket_missing(self) -> None:
+    def test_is_available_false_when_varlink_socket_missing(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         """Recent binary + good version but no PID-1 systemd → tier unavailable.
 
         Reproduces the typical container case: ``systemd-creds`` is
@@ -58,6 +60,10 @@ class TestAvailability:
         non-root ``--user`` decrypt path would otherwise crash with
         ``Failed to connect to io.systemd.Credentials``.
         """
+        monkeypatch.setattr(
+            "terok_sandbox.vault.store.systemd_creds._VARLINK_SOCKET",
+            _FakeVarlinkSocket(present=False),
+        )
         with (
             patch("shutil.which", return_value="/usr/bin/systemd-creds"),
             patch("subprocess.run", return_value=_version_output(259)),
