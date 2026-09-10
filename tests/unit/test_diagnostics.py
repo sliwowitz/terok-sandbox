@@ -249,6 +249,7 @@ class TestRespawnSupervisor:
         )
         monkeypatch.setattr("terok_sandbox._util._proc.PROC_DIR", proc)
         monkeypatch.setattr(diag.subprocess, "run", lambda *_a, **_k: None)
+        monkeypatch.setattr(diag._supervisor_state, "unit_active", lambda _unit: False)
 
         result = respawn_supervisor(_CID, _CNAME, state_dir=tmp_path)
         assert result.alive is True

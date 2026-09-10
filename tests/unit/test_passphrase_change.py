@@ -846,7 +846,10 @@ class TestPlanProvisioning:
         plan = plan_provisioning(_cfg(tmp_path))
 
         assert PassphraseTier.KERNEL_KEYRING in plan.choices
-        assert plan.unavailable[PassphraseTier.KERNEL_KEYRING] == "no libkeyutils; no runtime dir"
+        assert (
+            plan.unavailable[PassphraseTier.KERNEL_KEYRING]
+            == "kernel keyring unusable here: no libkeyutils; no runtime dir"
+        )
 
     def test_systemd_creds_auto_selects(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch

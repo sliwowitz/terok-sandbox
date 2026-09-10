@@ -19,6 +19,7 @@ from pathlib import Path
 
 import pytest
 
+from terok_sandbox._util._placement import SupervisorPlacement
 from terok_sandbox.vault.store import (
     encryption,
     kernel_keyring,
@@ -183,37 +184,94 @@ class TestSessionCacheFacade:
         assert forgotten == ["kernel"]
         assert not session_file.is_cached(_DB)
 
-    def test_a_file_backed_cache_crosses_a_namespace_by_construction(
+    def test_a_user_unit_supervisor_reads_the_keyring(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """A path is a path in any namespace, so presence is the whole question."""
-        monkeypatch.setattr(kernel_keyring, "unavailable_reason", lambda: "no libkeyutils")
-        assert not session_cache.is_bridged(_DB)
-        session_cache.store("pw", _DB)
-        assert session_cache.is_bridged(_DB)
-
-    def test_a_kernel_backed_cache_asks_the_keyring(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """Only the kernel backing has a boundary to answer for."""
-        asked: list[str] = []
+        """Where the supervisor is a user unit, the operator's keyring is its cache."""
+        stored: list[str] = []
+        monkeypatch.setattr(
+            session_cache, "supervisor_placement", lambda: SupervisorPlacement.USER_UNIT
+        )
         monkeypatch.setattr(kernel_keyring, "unavailable_reason", lambda: None)
         monkeypatch.setattr(
-            kernel_keyring, "is_bridged", lambda db: bool(asked.append(str(db))) or True
+            kernel_keyring, "store", lambda pw, _db: bool(stored.append(pw)) or True
         )
-        assert session_cache.is_bridged(_DB)
-        assert asked == [str(_DB)]
+        assert session_cache.store("pw", _DB)
+        assert stored == ["pw"]
+        assert not session_file.is_cached(_DB)
 
-    def test_unavailable_only_when_both_backings_are(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setattr(kernel_keyring, "unavailable_reason", lambda: "no libkeyutils")
+    def test_a_namespace_daemon_gets_the_session_file(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Inside the container namespace the keyring is a stranger; a path is a path."""
+        monkeypatch.setattr(
+            session_cache, "supervisor_placement", lambda: SupervisorPlacement.NAMESPACE_DAEMON
+        )
+        monkeypatch.setattr(kernel_keyring, "unavailable_reason", lambda: None)
+        assert session_cache.store("pw", _DB)
+        assert session_file.is_cached(_DB)
+        assert "the supervisor runs in the container namespace" in session_cache.backing_detail(
+            cached=True
+        )
+
+    def test_unavailable_is_the_chosen_backings_reason(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(
+            session_cache, "supervisor_placement", lambda: SupervisorPlacement.NAMESPACE_DAEMON
+        )
         assert session_cache.unavailable_reason() is None
         monkeypatch.setattr(session_file, "unavailable_reason", lambda: "no runtime dir")
-        assert session_cache.unavailable_reason() == "no libkeyutils; no runtime dir"
+        assert session_cache.unavailable_reason() == (
+            "the supervisor runs in the container namespace, without a user manager; no runtime dir"
+        )
+        assert session_cache.backing_detail(cached=False).startswith("unusable here: ")
 
     def test_detail_names_the_degraded_backing(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """The status chain must show the degradation, never hide it."""
+        """A unit host whose kernel facility is gone still says why the file serves."""
+        monkeypatch.setattr(
+            session_cache, "supervisor_placement", lambda: SupervisorPlacement.USER_UNIT
+        )
         monkeypatch.setattr(kernel_keyring, "unavailable_reason", lambda: "no libkeyutils")
         detail = session_cache.backing_detail(cached=True)
         assert "session file" in detail
         assert "no libkeyutils" in detail
+
+
+class TestKeyringWorkerRetirement:
+    """The OS-keyring read leaves a worker thread; a child retires it before Landlock."""
+
+    @pytest.fixture(autouse=True)
+    def _fresh_worker(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Start from no worker and no wedge, whatever an earlier test left behind."""
+        monkeypatch.setattr(encryption, "_keyring_executor", None)
+        monkeypatch.setattr(encryption, "_keyring_worker_wedged", False)
+
+    def test_a_finished_read_leaves_no_thread_behind(self) -> None:
+        before = set(threading.enumerate())
+        assert encryption._call_with_timeout(lambda: "pw", 1.0) == "pw"
+        spawned = set(threading.enumerate()) - before
+        assert spawned
+        encryption.retire_keyring_worker()
+        assert not any(thread.is_alive() for thread in spawned)
+        # A later read starts a fresh worker; retirement is not a one-way door.
+        assert encryption._call_with_timeout(lambda: "again", 1.0) == "again"
+        encryption.retire_keyring_worker()
+
+    def test_a_wedged_worker_is_abandoned_not_joined(self) -> None:
+        """Joining a stuck read would hang the child; the thread stays and Landlock says so."""
+        release = threading.Event()
+        before = set(threading.enumerate())
+        with pytest.raises(TimeoutError):
+            encryption._call_with_timeout(lambda: release.wait(5) and "late", 0.05)
+        spawned = set(threading.enumerate()) - before
+        encryption.retire_keyring_worker()  # returns at once
+        assert any(thread.is_alive() for thread in spawned)
+        release.set()
+        # The wedge belonged to that worker: the next one is joined again.
+        assert encryption._call_with_timeout(lambda: "fresh", 1.0) == "fresh"
+        assert encryption._keyring_worker_wedged is False
+        encryption.retire_keyring_worker()
 
 
 class TestLockedCollectionPromptPolicy:

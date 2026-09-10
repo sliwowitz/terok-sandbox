@@ -255,36 +255,11 @@ class TestVaultUnlockedCheck:
         assert "vault is locked" in verdict.detail
         assert "vault unlock" in verdict.detail
 
-    def test_error_when_the_cache_answers_only_this_process(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """A cache the supervisor cannot reach is a failure, however green it looks here.
-
-        Resolving the chain in the CLI's own context answers for the one
-        process that is not required to succeed.  The children walk it in
-        another user namespace, and the volatile cache is the tier whose
-        answer differs there.
-        """
-        from terok_sandbox.vault.store import session_cache
+    def test_ok_when_the_cache_tier_answers(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """The cache tier answering here is healthy; the children read the same backing."""
         from terok_sandbox.vault.store.tiers import PassphraseTier
 
         self._chain(monkeypatch, "found-it", PassphraseTier.KERNEL_KEYRING)
-        monkeypatch.setattr(session_cache, "is_bridged", lambda _db: False)
-
-        verdict = _make_vault_unlocked_check().evaluate(0, "", "")
-        assert verdict.severity == "error"
-        assert "not to the supervisor" in verdict.detail
-        assert "passphrase_command" in verdict.detail
-
-    def test_ok_when_the_cache_reaches_the_supervisor(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """The same tier, reachable across the boundary, is simply healthy."""
-        from terok_sandbox.vault.store import session_cache
-        from terok_sandbox.vault.store.tiers import PassphraseTier
-
-        self._chain(monkeypatch, "found-it", PassphraseTier.KERNEL_KEYRING)
-        monkeypatch.setattr(session_cache, "is_bridged", lambda _db: True)
 
         assert _make_vault_unlocked_check().evaluate(0, "", "").severity == "ok"
 

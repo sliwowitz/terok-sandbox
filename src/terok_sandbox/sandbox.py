@@ -880,7 +880,12 @@ class Sandbox:
         from .supervision import verify_supervision, warn_unsupervised
 
         try:
-            warn_unsupervised(verify_supervision(self._cfg, container_name))
+            status = verify_supervision(
+                self._cfg,
+                container_name,
+                find_container_id=lambda: self._runtime.container(container_name).id,
+            )
+            warn_unsupervised(status)
         except Exception as exc:  # noqa: BLE001 — diagnostics must never fail a launch
             print(
                 f"warning: supervision check errored for {container_name!r}: {exc}", file=sys.stderr

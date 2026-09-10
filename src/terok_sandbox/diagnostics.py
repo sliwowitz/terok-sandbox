@@ -44,6 +44,7 @@ from pathlib import Path
 
 from ._util import _proc
 from .paths import state_root
+from .resources.hooks import _supervisor_state
 from .supervisor.install import (
     _HOOK_SCRIPT_NAME,
     _PIDS_DIR_NAME,
@@ -187,10 +188,14 @@ def supervisor_liveness(
     if _pid_alive(pid) and _wrapper_argv_matches(pid, wrapper, container_id):
         services = _proc.service_children(container_id)
         running = ", ".join(services) if services else "none"
+        unit = _supervisor_state.unit_name(container_id)
+        placement = (
+            f"user unit {unit}" if _supervisor_state.unit_active(unit) else "namespace daemon"
+        )
         return SupervisorLiveness(
             alive=True,
             pid=pid,
-            detail=f"supervisor pid {pid} alive; children running: {running}",
+            detail=f"supervisor pid {pid} alive as {placement}; children running: {running}",
             services=services,
         )
     return SupervisorLiveness(

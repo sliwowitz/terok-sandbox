@@ -179,22 +179,17 @@ def _make_vault_unlocked_check() -> DoctorCheck:
     do not start without a passphrase, so this is the first check
     operators should see fail.
 
-    Walking the chain here answers it for *this* process, which is not
-    the process that has to succeed.  The children walk the same chain
-    inside podman's rootless user namespace, and the volatile cache tier
-    is the one whose answer differs there: its key lives in a per-namespace
-    ``@u``, reachable from the children only through the session keyring
-    (see [`session_cache.is_bridged`][terok_sandbox.vault.store.session_cache.is_bridged]).
-    So a cache that answers only this process is reported as the failure
-    it is, rather than as a green line above two dead children.
+    Walking the chain here answers it for *this* process.  The cache
+    backing follows the supervisor's placement
+    ([`session_cache`][terok_sandbox.vault.store.session_cache]), so the
+    children read the same backing this process reads; whether they
+    actually came up is the supervisor-children check's question.
     """
 
     def _eval(_rc: int, _stdout: str, _stderr: str) -> CheckVerdict:
         """Walk the resolution chain locally; report the verdict."""
         from .config import SandboxConfig
-        from .vault.store import session_cache
         from .vault.store.encryption import WrongPassphraseError
-        from .vault.store.tiers import PassphraseTier
 
         cfg = SandboxConfig()
         try:
@@ -207,16 +202,6 @@ def _make_vault_unlocked_check() -> DoctorCheck:
                 "vault is locked — no passphrase available."
                 " Run `terok-sandbox vault unlock` (kernel-keyring cache)"
                 " or `terok-sandbox setup` to provision.",
-            )
-        if tier is PassphraseTier.KERNEL_KEYRING and not session_cache.is_bridged(cfg.db_path):
-            return CheckVerdict(
-                "error",
-                "credentials-DB passphrase available here, but not to the supervisor:"
-                " the cache is not reachable from the rootless user namespace its"
-                " children run in, so a task started now gets no vault and no SSH agent."
-                " Run `terok-sandbox vault unlock` from this session, or set"
-                " `credentials.passphrase_command` for a tier that does not depend on"
-                " which session cached it.",
             )
         source = f" via {tier.value}" if tier is not None else ""
         return CheckVerdict("ok", f"credentials-DB passphrase available{source}")

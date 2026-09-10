@@ -401,17 +401,38 @@ def _resolve_service_passphrase(service: str, cfg: SidecarConfig) -> str | None:
 
     from terok_sandbox.vault.store.encryption import (
         NoPassphraseError,
+        probe_passphrase_chain,
         resolve_passphrase_with_source,
+        retire_keyring_worker,
     )
 
-    passphrase, source = resolve_passphrase_with_source(
-        credentials_db=cfg.db_path,
-        systemd_creds_file=_systemd_creds_path(cfg),
-        use_keyring=cfg.credentials_use_keyring,
-        passphrase_command=cfg.credentials_passphrase_command,
-    )
+    creds_file = _systemd_creds_path(cfg)
+    try:
+        passphrase, source = resolve_passphrase_with_source(
+            credentials_db=cfg.db_path,
+            systemd_creds_file=creds_file,
+            use_keyring=cfg.credentials_use_keyring,
+            passphrase_command=cfg.credentials_passphrase_command,
+        )
+    finally:
+        # The OS-keyring tier reads on a worker thread; the Landlock
+        # confinement that follows needs this process single-threaded.
+        retire_keyring_worker()
     if passphrase is None:
-        raise NoPassphraseError(f"no SQLCipher passphrase available for {cfg.db_path}")
+        # The error names every tier as this child saw it: which one was
+        # supposed to answer is the whole question when reading the log.
+        walked = "; ".join(
+            f"{row.source.value}: {row.detail}"
+            for row in probe_passphrase_chain(
+                credentials_db=cfg.db_path,
+                systemd_creds_file=creds_file,
+                use_keyring=cfg.credentials_use_keyring,
+                passphrase_command=cfg.credentials_passphrase_command,
+            )
+        )
+        raise NoPassphraseError(
+            f"no SQLCipher passphrase available for {cfg.db_path} — tiers walked: {walked}"
+        )
     _logger.info("%s child vault passphrase resolved via %s tier", service, source)
     return passphrase
 

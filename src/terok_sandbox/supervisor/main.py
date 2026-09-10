@@ -181,13 +181,14 @@ async def _supervise(
     When *container_pid* is known, a direct PID watch is added — the one
     arm that still fires when nested ``podman wait`` is blind.
     """
+    watched_pid = container_pid if container_pid and container_pid > 0 else None
     tasks = {
-        asyncio.create_task(_wait_for_container(container_id)),
+        asyncio.create_task(_wait_for_container(container_id, retry=watched_pid is None)),
         asyncio.create_task(stop_event.wait()),
         asyncio.create_task(_await_all_children(handles)),
     }
-    if container_pid and container_pid > 0:
-        tasks.add(asyncio.create_task(_wait_for_container_pid(container_pid)))
+    if watched_pid is not None:
+        tasks.add(asyncio.create_task(_wait_for_container_pid(watched_pid)))
     done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
     for task in pending:
         task.cancel()
@@ -250,7 +251,7 @@ async def _kill_children(handles: list[ChildHandle]) -> None:
 # ── Internal helpers ────────────────────────────────────────────────────
 
 
-async def _wait_for_container(container_id: str) -> int:
+async def _wait_for_container(container_id: str, *, retry: bool = True) -> int:
     """Block until the container exits; surface its exit code.
 
     Runs ``podman wait <container_id>`` (podman prints the container's
@@ -261,9 +262,9 @@ async def _wait_for_container(container_id: str) -> int:
     (crun 0.17: no rootless-marker vars, so podman thinks it is rootful
     and dies on ``/var/lib/containers``), which made the supervisor
     self-terminate seconds after start.  A failed invocation therefore
-    logs the degradation — loudly once, then quietly — and retries on a
-    slow clock; the stop signal and the poststop hook own teardown
-    while the watcher is blind.
+    logs the degradation once and, with *retry*, tries again on a slow
+    clock; without it — the PID watch is armed and owns the container's
+    death — this arm simply stays quiet until teardown cancels it.
     """
     failures = 0
     while True:
@@ -277,19 +278,7 @@ async def _wait_for_container(container_id: str) -> int:
         try:
             stdout, stderr = await proc.communicate()
         except asyncio.CancelledError:
-            # Stop-signal path: terminate the lingering ``podman wait``
-            # before propagating cancellation, so the subprocess doesn't
-            # outlive the supervisor and pin the container ID.  Bound the
-            # post-SIGTERM wait so a hung podman can't stall shutdown.
-            with contextlib.suppress(ProcessLookupError):
-                proc.terminate()
-            try:
-                await asyncio.wait_for(proc.wait(), timeout=_PODMAN_WAIT_CANCEL_GRACE_S)
-            except (TimeoutError, asyncio.CancelledError):
-                with contextlib.suppress(ProcessLookupError):
-                    proc.kill()
-                with contextlib.suppress(asyncio.CancelledError, Exception):
-                    await proc.wait()
+            await _reap_wait(proc)
             raise
         if proc.returncode == 0:
             try:
@@ -299,15 +288,36 @@ async def _wait_for_container(container_id: str) -> int:
         failures += 1
         log = _logger.error if failures == 1 else _logger.debug
         log(
-            "podman wait %s failed (exit %s): %s — container-exit watching degraded, "
-            "retrying in %.0fs (teardown still arrives via the PID watch / stop signal / "
-            "poststop hook)",
+            "podman wait %s failed (exit %s): %s — %s",
             container_id,
             proc.returncode,
             stderr.decode(errors="replace").strip(),
-            _PODMAN_WAIT_RETRY_S,
+            f"container-exit watching degraded, retrying in {_PODMAN_WAIT_RETRY_S:.0f}s"
+            " (teardown still arrives via the stop signal / poststop hook)"
+            if retry
+            else "the container PID watch owns teardown",
         )
+        if not retry:
+            await asyncio.Event().wait()
         await asyncio.sleep(_PODMAN_WAIT_RETRY_S)
+
+
+async def _reap_wait(proc: asyncio.subprocess.Process) -> None:
+    """Take a lingering ``podman wait`` down with the cancelled arm.
+
+    The stop-signal path: the subprocess must not outlive the supervisor
+    and pin the container ID.  SIGTERM, a bounded wait so a hung podman
+    cannot stall shutdown, then SIGKILL.
+    """
+    with contextlib.suppress(ProcessLookupError):
+        proc.terminate()
+    try:
+        await asyncio.wait_for(proc.wait(), timeout=_PODMAN_WAIT_CANCEL_GRACE_S)
+    except (TimeoutError, asyncio.CancelledError):
+        with contextlib.suppress(ProcessLookupError):
+            proc.kill()
+        with contextlib.suppress(asyncio.CancelledError, Exception):
+            await proc.wait()
 
 
 async def _wait_for_container_pid(pid: int) -> None:

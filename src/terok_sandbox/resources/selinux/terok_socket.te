@@ -17,19 +17,22 @@ module terok_socket 1.1;
 #    Confined-user setups (``user_t``, ``staff_t``, ``sysadm_t``) are
 #    *not* covered and must add their own rules.
 #
-# 2. ``container_runtime_t`` — the per-container supervisor is spawned
-#    by terok-sandbox's OCI hook, which crun runs in its own domain, so
-#    the supervisor that binds the vault / ssh-signer / gate / clearance
-#    sockets inherits ``container_runtime_t`` rather than the operator's
-#    ``unconfined_t``.  It needs the same create/bind/listen/IO set to
-#    stand those listeners up.  Granting it to the whole runtime domain
-#    is broader than a dedicated supervisor type would be, but the
-#    integrity property still holds: ``container_t`` (rule 3) can only
-#    ``connectto``, never ``create``, so a sandboxed agent still cannot
-#    forge a ``terok_socket_t`` listener to phish a sibling's tokens —
-#    and ``container_runtime_t`` is already in the TCB for every
-#    container it launches.  A dedicated ``terok_supervisor_t`` (via a
-#    type transition) is a possible future tightening.
+# 2. ``container_runtime_t`` — the floor placement.  Where no per-user
+#    systemd manager answers, terok-sandbox's OCI hook spawns the
+#    per-container supervisor itself, and crun runs the hook in its own
+#    domain, so the supervisor that binds the vault / ssh-signer / gate /
+#    clearance sockets inherits ``container_runtime_t``.  It needs the
+#    same create/bind/listen/IO set to stand those listeners up.  With a
+#    user manager the supervisor is one of its units and binds as
+#    ``unconfined_t`` (rule 1), and this rule sits unused.  Granting it
+#    to the whole runtime domain is broader than a dedicated supervisor
+#    type would be, but the integrity property still holds:
+#    ``container_t`` (rule 3) can only ``connectto``, never ``create``,
+#    so a sandboxed agent still cannot forge a ``terok_socket_t``
+#    listener to phish a sibling's tokens — and ``container_runtime_t``
+#    is already in the TCB for every container it launches.  Splitting
+#    this rule into a floor-only module is the tightening a host that
+#    never falls to the floor could take.
 #
 # 3. ``container_t`` (rootless Podman containers) may ``connectto`` —
 #    and only ``connectto`` — ``terok_socket_t`` sockets.  This is

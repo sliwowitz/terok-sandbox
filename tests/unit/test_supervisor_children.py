@@ -559,7 +559,7 @@ class TestServicePassphraseResolution:
             "terok_sandbox.vault.store.encryption.resolve_passphrase_with_source",
             return_value=(None, None),
         ):
-            with pytest.raises(NoPassphraseError, match="no SQLCipher passphrase"):
+            with pytest.raises(NoPassphraseError, match="tiers walked: systemd-creds: "):
                 _resolve_service_passphrase("signer", cfg)
 
 

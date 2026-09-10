@@ -175,7 +175,7 @@ async def test_all_children_dying_unblocks_the_supervisor(sidecar: Path) -> None
     """
     spawn = _FakeSpawner()
 
-    async def _never_returns(_cid: str) -> int:
+    async def _never_returns(_cid: str, **_kw: object) -> int:
         await asyncio.Event().wait()
         return 0
 
@@ -279,6 +279,46 @@ class TestSupervise:
             await _supervise("cid", [handle], stop)  # must return, not raise
 
 
+class TestPodmanWaitArm:
+    """A failed ``podman wait`` invocation: retried on its own, silent under a PID watch."""
+
+    @staticmethod
+    def _failing_exec() -> AsyncMock:
+        proc = MagicMock(returncode=125)
+        proc.communicate = AsyncMock(return_value=(b"", b"mkdir /var/lib/containers: denied"))
+        return AsyncMock(return_value=proc)
+
+    @pytest.mark.asyncio
+    async def test_retries_on_a_slow_clock_when_it_is_the_only_watch(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from terok_sandbox.supervisor import main
+
+        spawn = self._failing_exec()
+        monkeypatch.setattr(main.asyncio, "create_subprocess_exec", spawn)
+        monkeypatch.setattr(main, "_PODMAN_WAIT_RETRY_S", 0.01)
+        arm = asyncio.wait_for(main._wait_for_container("cid", retry=True), timeout=0.2)
+        with pytest.raises(TimeoutError):
+            await arm
+        assert spawn.await_count > 1
+
+    @pytest.mark.asyncio
+    async def test_stays_quiet_under_a_pid_watch(
+        self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """One line, no retries: the PID watch owns teardown, this arm only waits to be cancelled."""
+        from terok_sandbox.supervisor import main
+
+        spawn = self._failing_exec()
+        monkeypatch.setattr(main.asyncio, "create_subprocess_exec", spawn)
+        monkeypatch.setattr(main, "_PODMAN_WAIT_RETRY_S", 0.01)
+        arm = asyncio.wait_for(main._wait_for_container("cid", retry=False), timeout=0.2)
+        with caplog.at_level("ERROR"), pytest.raises(TimeoutError):
+            await arm
+        assert spawn.await_count == 1
+        assert "the container PID watch owns teardown" in caplog.text
+
+
 class TestContainerPidWatch:
     """The direct container-init-PID watch — the podman-free death signal."""
 
@@ -375,7 +415,7 @@ class TestContainerPidWatch:
         stop = asyncio.Event()
         hang = asyncio.Event()  # podman-wait + children arms both hang on this
 
-        async def _hang(*_a: object) -> int:
+        async def _hang(*_a: object, **_k: object) -> int:
             await hang.wait()
             return 0
 

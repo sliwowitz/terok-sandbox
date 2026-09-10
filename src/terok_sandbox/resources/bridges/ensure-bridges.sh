@@ -109,9 +109,13 @@ _terok_bridge_alive() {
 # The absence is the finding; the cause is not.  A path nothing binds is either
 # a layout this container predates or a supervisor child that failed to start,
 # and from in here the two look identical.  Name both and let the operator look.
+#
+# Every shell asks, but the finding is worth one report: the last one is kept
+# on disk, and a shell that finds the same set again stays quiet.
 _terok_report_missing_bridge_targets() {
   local var path
   local -a missing=()
+  local report="$_TEROK_PIDDIR/missing-bridge-targets"
   for var in TEROK_VAULT_SOCKET TEROK_SSH_SIGNER_SOCKET TEROK_GATE_SOCKET; do
     path="${!var:-}"
     if [[ -n "$path" && ! -S "$path" ]]; then
@@ -119,8 +123,13 @@ _terok_report_missing_bridge_targets() {
     fi
   done
   if [[ ${#missing[@]} -eq 0 ]]; then
+    rm -f "$report"
     return 0
   fi
+  if [[ -f "$report" && "$(cat "$report")" == "$(printf '%s\n' "${missing[@]}")" ]]; then
+    return 0
+  fi
+  printf '%s\n' "${missing[@]}" > "$report"
   {
     echo "terok: this container advertises bridge targets that do not exist:"
     printf '%s\n' "${missing[@]}"

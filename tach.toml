@@ -33,6 +33,14 @@ path = "terok_sandbox._util"
 layer = "foundation"
 utility = true
 
+# The OCI supervisor hook's stdlib ballast — importable from the package
+# too, so the placement fact the hook reads and the fact the launcher
+# reads are one function.
+[[modules]]
+path = "terok_sandbox.resources.hooks._supervisor_state"
+layer = "foundation"
+depends_on = []
+
 # Podman argv policy — managed-flag sets, container mount-point constants,
 # and the freeform-args validators shared by config parsing and launch.
 [[modules]]
@@ -449,6 +457,7 @@ depends_on = [
 path = "terok_sandbox.supervisor"
 layer = "core"
 depends_on = [
+    "terok_sandbox.resources.hooks._supervisor_state",
     "terok_sandbox.supervisor.main",
     "terok_sandbox.supervisor.sidecar",
     "terok_sandbox.integrations.shield",
@@ -565,6 +574,7 @@ path = "terok_sandbox"
 layer = "surface"
 depends_on = [
     "terok_sandbox._setup_manual",
+    "terok_sandbox.resources.hooks._supervisor_state",
     "terok_sandbox.cli",
     "terok_sandbox.commands",
     "terok_sandbox.launch",
