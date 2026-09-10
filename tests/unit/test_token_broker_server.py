@@ -144,6 +144,9 @@ class TestRouteTable:
             {"upstream": "https://api.openai.com", "path_upstreams": {"/api": ""}},
             {"upstream": "https://api.anthropic.com", "oauth_extra_headers": []},
             {"upstream": "https://api.anthropic.com", "oauth_extra_headers": {"": "x"}},
+            {"upstream": "https://api.openai.com", "oauth_credential_headers": []},
+            {"upstream": "https://api.openai.com", "oauth_credential_headers": {"": "x"}},
+            {"upstream": "https://api.openai.com", "oauth_credential_headers": {"x": ""}},
         ],
     )
     def test_rejects_malformed_optional_route_maps(
@@ -545,6 +548,7 @@ def _forwarding_env(tmp_path: Path):
                 "raw_path": request.raw_path,
                 "qs": request.query_string,
                 "beta": request.headers.get("anthropic-beta", ""),
+                "account_id": request.headers.get("ChatGPT-Account-ID", ""),
             }
         )
 
@@ -763,6 +767,48 @@ class TestForwardingPath:
             body = await resp.json()
             assert body["auth"] == "Bearer sk-codex"
             assert body["beta"] == ""
+
+        await upstream_server.close()
+
+    async def test_oauth_header_can_come_from_credential_metadata(self, _forwarding_env) -> None:
+        """A route can forward non-secret OAuth metadata alongside the real bearer."""
+        from aiohttp.test_utils import TestClient, TestServer
+
+        upstream_app, tmp_path, _tokens = _forwarding_env
+        upstream_server = TestServer(upstream_app)
+        await upstream_server.start_server()
+
+        db = CredentialDB(tmp_path / "test.db", passphrase="test")
+        db.store_credential(
+            "default",
+            "codex",
+            {"type": "oauth", "access_token": "sk-codex", "account_id": "account-a"},
+        )
+        codex_token = db.create_token("proj", "t1", "default", "codex")
+        db.close()
+
+        routes = tmp_path / "routes.json"
+        routes.write_text(
+            json.dumps(
+                {
+                    "codex": {
+                        "upstream": f"http://127.0.0.1:{upstream_server.port}",
+                        "oauth_credential_headers": {"ChatGPT-Account-ID": "account_id"},
+                    }
+                }
+            )
+        )
+
+        broker_app = _build_app(str(tmp_path / "test.db"), str(routes))
+        async with TestClient(TestServer(broker_app)) as client:
+            resp = await client.post(
+                "/backend-api/ps/mcp",
+                headers={"Authorization": f"Bearer {codex_token}"},
+            )
+            assert resp.status == 200
+            body = await resp.json()
+            assert body["auth"] == "Bearer sk-codex"
+            assert body["account_id"] == "account-a"
 
         await upstream_server.close()
 
