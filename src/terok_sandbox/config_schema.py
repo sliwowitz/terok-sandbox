@@ -244,9 +244,6 @@ class RawShieldSection(BaseModel):
     disable_firewall_no_protection: bool = Field(
         default=False, description="**Dangerous**: disable egress firewall entirely"
     )
-    profiles: dict[str, Any] | None = Field(
-        default=None, description="Named shield profiles for per-project firewall rules"
-    )
     audit: bool = Field(default=True, description="Enable shield audit logging")
     dnsmasq_path: Path | None = Field(
         default=None,
