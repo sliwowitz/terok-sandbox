@@ -80,7 +80,7 @@ def _handle_prepare(
         no_broker: Disable the vault token broker (default: on).
         scope: Credential scope.  Required for gate/broker/ssh; omit for
             a shield-only run.
-        profiles: Override shield profiles for this container.
+        profiles: Shield profiles to apply to this container.
         output_json: Emit a JSON array instead of a shell-quoted string.
         cfg: Optional [`SandboxConfig`][terok_sandbox.SandboxConfig] override.
     """
@@ -189,7 +189,10 @@ LAUNCH_COMMANDS: tuple[CommandDef, ...] = (
             ArgDef(
                 name="--profiles",
                 type=_csv_list,
-                help="Override shield profiles for this container (comma-separated, e.g. 'dev,pypi')",
+                help=(
+                    "Shield profiles to apply to this container"
+                    " (comma-separated, e.g. 'dev-standard,dev-python')"
+                ),
             ),
             ArgDef(
                 name="--json",
@@ -231,7 +234,10 @@ LAUNCH_COMMANDS: tuple[CommandDef, ...] = (
             ArgDef(
                 name="--profiles",
                 type=_csv_list,
-                help="Override shield profiles for this container (comma-separated, e.g. 'dev,pypi')",
+                help=(
+                    "Shield profiles to apply to this container"
+                    " (comma-separated, e.g. 'dev-standard,dev-python')"
+                ),
             ),
         ),
     ),

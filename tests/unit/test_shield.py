@@ -58,7 +58,7 @@ def make_mock_shield(
     [
         pytest.param(
             {"gate_port": GATE_PORT, "token_broker_port": 18731, "ssh_signer_port": 18732},
-            ("dev-standard",),
+            (),
             GATE_PORT,
             True,
             id="defaults",
@@ -326,7 +326,7 @@ def test_status_defaults() -> None:
     """Status reflects the default configured shield state."""
     assert ShieldManager(MOCK_TASK_DIR, SandboxConfig()).status() == {
         "mode": "hook",
-        "profiles": ["dev-standard"],
+        "profiles": [],
         "audit_enabled": True,
     }
 
