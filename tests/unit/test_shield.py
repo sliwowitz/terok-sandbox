@@ -17,6 +17,7 @@ from terok_shield import (
     ShieldNeedsSetup,
     ShieldState,
 )
+from terok_shield.profiles import UnknownProfileError
 
 from terok_sandbox.config import SandboxConfig
 from terok_sandbox.integrations.shield import (
@@ -428,6 +429,20 @@ def test_pre_start_converts_shield_needs_setup_to_system_exit() -> None:
     with (
         patch.object(ShieldManager, "shield", new=mock_shield),
         pytest.raises(SystemExit, match="hooks not installed"),
+    ):
+        manager.pre_start("ctr")
+
+
+def test_pre_start_converts_unknown_profile_to_system_exit() -> None:
+    """An unknown profile name becomes a SystemExit that names the available profiles."""
+    mock_shield = make_mock_shield()
+    mock_shield.pre_start.side_effect = UnknownProfileError(
+        "Unknown profile 'typo'; available profiles: base, dev-standard"
+    )
+    manager = ShieldManager(MOCK_TASK_DIR)
+    with (
+        patch.object(ShieldManager, "shield", new=mock_shield),
+        pytest.raises(SystemExit, match="available profiles: base, dev-standard"),
     ):
         manager.pre_start("ctr")
 
