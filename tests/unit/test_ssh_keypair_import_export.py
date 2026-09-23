@@ -22,6 +22,7 @@ from terok_sandbox.vault.ssh.keypair import (
     openssh_pem_of,
     parse_openssh_keypair,
 )
+from terok_sandbox.vault.ssh.manager import SSHManager
 from terok_sandbox.vault.store.db import CredentialDB, UnsafeCommentError
 
 
@@ -313,7 +314,7 @@ class TestExport:
     def test_picks_key_by_id(
         self, db: CredentialDB, disk_keypair: tuple[Path, Path], tmp_path: Path
     ) -> None:
-        """Explicit ``key_id`` exports that specific key, not the most-recent."""
+        """Explicit ``key_id`` exports that specific key, not the selected default."""
         priv, pub = disk_keypair
         first = import_ssh_keypair(db, "proj", priv, pub_path=pub)
         kp2 = generate_keypair("ed25519", comment="second")
@@ -321,11 +322,22 @@ class TestExport:
         second_pub = tmp_path / "id2.pub"
         second_priv.write_bytes(openssh_pem_of(kp2.private_der))
         second_pub.write_text(kp2.public_line + "\n")
-        import_ssh_keypair(db, "proj", second_priv, pub_path=second_pub)
+        second = import_ssh_keypair(db, "proj", second_priv, pub_path=second_pub)
+        db.set_default_ssh_key("proj", second.key_id)
 
         result = export_ssh_keypair(db, "proj", tmp_path / "out", key_id=first.key_id)
         assert result.key_id == first.key_id
         assert result.fingerprint == first.fingerprint
+
+    def test_exports_scope_default(self, db: CredentialDB, tmp_path: Path) -> None:
+        """Without a key ID, export follows the explicit scope default."""
+        manager = SSHManager(scope="proj", db=db)
+        first = manager.mint()
+        second = manager.mint()
+        db.set_default_ssh_key("proj", second["key_id"])
+        result = export_ssh_keypair(db, "proj", tmp_path / "out")
+        assert result.key_id == second["key_id"]
+        assert result.key_id != first["key_id"]
 
     def test_unknown_key_id_raises(
         self, db: CredentialDB, disk_keypair: tuple[Path, Path], tmp_path: Path
@@ -597,11 +609,13 @@ class TestEnsureInfraKeypair:
 
         entered = {"count": 0}
         exited = {"count": 0}
+        real_transaction = db.transaction
 
         @contextmanager
         def _spy():
             entered["count"] += 1
-            yield db._conn  # type: ignore[attr-defined]
+            with real_transaction() as conn:
+                yield conn
             exited["count"] += 1
 
         monkeypatch.setattr(db, "transaction", _spy)
@@ -672,14 +686,8 @@ class TestEnsureInfraKeypair:
         assert db.list_ssh_keys_for_scope("%host") == []
         assert db.count_ssh_keys() == 0
 
-    def test_multi_assigned_scope_returns_newest_not_oldest(self, db: CredentialDB) -> None:
-        """If the scope has multiple assigned keys, pick the newest.
-
-        ``load_ssh_keys_for_scope`` orders by ``assigned_at`` ascending,
-        so the naive ``existing[0]`` would resurrect the oldest key —
-        bad if an additive rotation ever leaves stale material under
-        the scope.  We assert the newest assignment wins.
-        """
+    def test_multi_assigned_scope_returns_selected_default(self, db: CredentialDB) -> None:
+        """An additional infrastructure key replaces the default only when selected."""
         old_kp = generate_keypair("ed25519", comment="old-key")
         new_kp = generate_keypair("ed25519", comment="new-key")
 
@@ -701,6 +709,8 @@ class TestEnsureInfraKeypair:
         )
         db.assign_ssh_key("%host", new_id, allow_infra=True)
 
+        assert ensure_infra_keypair("%host", db=db).fingerprint == old_kp.fingerprint
+        db.set_default_ssh_key("%host", new_id, allow_infra=True)
         result = ensure_infra_keypair("%host", db=db)
         assert result.fingerprint == new_kp.fingerprint
         assert result.fingerprint != old_kp.fingerprint

@@ -99,6 +99,29 @@ The full export list lives in
 | `terok-sandbox ssh …` | Per-scope SSH key management in the credentials DB |
 | `terok-sandbox credentials encrypt-db` | Encrypt (migrate) a plaintext credentials DB |
 
+### SSH keys
+
+```bash
+terok-sandbox ssh add myscope
+terok-sandbox ssh add myscope -c gitlab-deploy
+terok-sandbox ssh list --scope myscope
+terok-sandbox ssh pub myscope
+terok-sandbox ssh default myscope 2
+terok-sandbox ssh pub myscope --key-id 2
+```
+
+`ssh add` always creates another key. Without `-c` / `--comment`, its name is
+the next unused `myscope-N`; an interactive terminal prompts to accept or
+override that suggestion. Imports preserve their original comment unless
+`-c` / `--comment` overrides it.
+
+The first assigned key becomes the scope's default. Adding or renaming keys
+does not change it. `ssh list` marks the default with `*`; `ssh default`
+selects another assigned key to offer first through the SSH agent socket.
+`ssh pub` prints every assigned public key, one per line with the default
+first, or just the key selected by `--key-id`. `ssh add --force` replaces
+the scope's existing keys with a fresh default.
+
 ## Requirements
 
 - Linux with **Podman** (rootless, ≥ 5.6 recommended)

@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import argparse
 from io import StringIO
 from unittest.mock import patch
 
@@ -103,7 +104,7 @@ class TestCommandRegistry:
     def test_ssh_subverbs_present(self) -> None:
         ssh = _RESOLVED.find_at(("ssh",))
         names = {c.name for c in ssh.children}
-        assert {"import", "add", "remove"} <= names
+        assert {"import", "add", "default", "pub", "remove"} <= names
 
     def test_vault_passphrase_nested_subgroup(self) -> None:
         """The ``vault passphrase`` subgroup is reachable as a nested CommandDef."""
@@ -189,6 +190,43 @@ class TestShieldCLI:
         assert "hook" in out
         assert "dev-standard" in out
         assert "enabled" in out
+
+
+class TestSSHArguments:
+    """SSH shortcuts and selectors keep the standalone and embedded CLIs aligned."""
+
+    @pytest.mark.parametrize("flag", ["-c", "--comment"])
+    @pytest.mark.parametrize(
+        "command",
+        [
+            ("add", "proj"),
+            ("import", "proj", "--private-key", "key"),
+            ("remove", "--scope", "proj"),
+        ],
+    )
+    def test_comment_aliases(self, flag: str, command: tuple[str, ...]) -> None:
+        """Each existing comment option accepts its long and short spelling."""
+        parser = argparse.ArgumentParser()
+        CommandTree(SSH_COMMANDS).wire(parser)
+        args = parser.parse_args(["ssh", *command, flag, "deploy"])
+        assert args.comment == "deploy"
+
+    def test_default_accepts_scope_and_integer_key_id(self) -> None:
+        """The default verb selects an existing key by its displayed database ID."""
+        parser = argparse.ArgumentParser()
+        CommandTree(SSH_COMMANDS).wire(parser)
+        args = parser.parse_args(["ssh", "default", "proj", "42"])
+        assert args.scope == "proj"
+        assert args.key_id == 42
+        assert args._cmd.name == "default"
+
+    def test_pub_rejects_obsolete_all_flag(self) -> None:
+        """Printing all public keys needs no opt-in flag."""
+        parser = argparse.ArgumentParser()
+        CommandTree(SSH_COMMANDS).wire(parser)
+        with pytest.raises(SystemExit) as exc:
+            parser.parse_args(["ssh", "pub", "proj", "--all"])
+        assert exc.value.code == 2
 
 
 class TestHandlerCfgSignatures:

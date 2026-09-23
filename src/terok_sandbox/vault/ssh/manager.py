@@ -14,11 +14,12 @@ bytes-level keypair vocabulary (``GeneratedKeypair``, fingerprint helpers).
 
 from __future__ import annotations
 
+from itertools import count
 from pathlib import Path
-from typing import TYPE_CHECKING, TypedDict
+from typing import TYPE_CHECKING, TypedDict, cast
 
-from ..store.db import CredentialDB, _require_safe_scope
-from .keypair import DEFAULT_RSA_BITS, GeneratedKeypair, generate_keypair, public_line_of
+from ..store.db import CredentialDB, _require_user_scope
+from .keypair import DEFAULT_RSA_BITS, GeneratedKeypair, generate_keypair
 
 if TYPE_CHECKING:
     from terok_sandbox.config import SandboxConfig
@@ -38,16 +39,11 @@ class SSHManager:
     """Mints SSH keypairs for a scope and stores them in the vault.
 
     Each scope may hold multiple keys (e.g. GitHub + GitLab), each with a
-    distinct fingerprint.  ``init`` is **idempotent** for the default
-    invocation: re-running ``ssh-init`` on a scope that already has a
-    ``tk-main:`` key returns that key without minting a new one — the
-    operator sees the same public line they registered upstream rather
-    than a fresh side key they'd have to re-register.  ``force=True``
-    **rotates** atomically (new key takes the scope in a single
-    transaction that revokes prior assignments), and a custom
-    ``comment`` opts back into the additive path so multi-deploy-key
-    setups (GitHub + GitLab on one scope) still work — but only when
-    asked for explicitly.
+    distinct fingerprint.  ``init`` reuses the scope's default key unless
+    an explicit comment requests another key or ``force=True`` rotates
+    the scope to a new sole key.  ``mint`` always creates an additional
+    key without changing an existing default.  Comments are labels only;
+    default selection belongs to the scope assignment.
 
     Two constructors for two ownership stories:
 
@@ -122,12 +118,10 @@ class SSHManager:
 
         Args:
             key_type: ``"ed25519"`` (default) or ``"rsa"``.
-            comment: Comment to embed in the public key.  When ``None``,
-                falls back to ``tk-main:<scope>`` on first init and to
-                idempotent reuse on subsequent inits.  A non-``None``
-                value (including ``""``) opts back into additive
-                generation — the value lands verbatim and the call
-                always mints a new key.
+            comment: An explicit label requests an additional key.
+                ``None`` reuses the default key, or generates a
+                ``<scope>-<number>`` label when creating the first key.
+                An explicit empty string is preserved.
             force: When ``True``, rotate — the new key takes the scope in
                 a single transaction that drops every prior assignment.
 
@@ -140,36 +134,42 @@ class SSHManager:
                 *before* any key material is generated so a rejected
                 call leaves no orphaned row in ``ssh_keys``.
         """
-        _require_safe_scope(self._scope)
-
-        # Idempotent default path: a bare ``ssh-init`` on a scope that
-        # already carries a primary key returns the existing one rather
-        # than minting a side key the user would have to re-register
-        # upstream.  An explicit ``comment`` or ``force`` is treated as
-        # the operator opting back into "make a new key": ``comment``
-        # for additive multi-deploy-key setups, ``force`` for rotation.
-        if not force and comment is None:
-            for record in self._db.load_ssh_keys_for_scope(self._scope):
-                if record.comment.startswith("tk-main:"):
+        _require_user_scope(self._scope)
+        with self._db.transaction():
+            if not force and comment is None:
+                if existing := self._db.list_ssh_keys_for_scope(self._scope):
+                    record = existing[0]
                     return SSHInitResult(
                         key_id=record.id,
                         key_type=record.key_type,
                         fingerprint=record.fingerprint,
                         comment=record.comment,
-                        public_line=public_line_of(record),
+                        public_line=cast(str, self._db.get_ssh_public_key(record.id)),
                     )
+            return self._create_key(key_type, comment, rotate=force)
 
-        existing = self._db.list_ssh_keys_for_scope(self._scope)
-        # After a force-rotation the new key is the scope's only key, so it
-        # *is* the primary even when prior keys existed.  An explicit empty
-        # comment is honored; only ``None`` falls back to the derived default.
-        primary = force or not existing
-        effective_comment = (
-            comment
-            if comment is not None
-            else self._default_comment(existing_count=len(existing), primary=primary)
+    def mint(self, key_type: str = "ed25519", comment: str | None = None) -> SSHInitResult:
+        """Create an additional key, preserving the scope's existing default.
+
+        With no explicit *comment*, use the next unused ``<scope>-<number>``
+        label.  The first key assigned to a scope becomes its default.
+        """
+        _require_user_scope(self._scope)
+        with self._db.transaction():
+            return self._create_key(key_type, comment, rotate=False)
+
+    def suggested_comment(self) -> str:
+        """Return the smallest unused positive ``<scope>-<number>`` label."""
+        comments = {row.comment for row in self._db.list_ssh_keys_for_scope(self._scope)}
+        return next(
+            candidate
+            for number in count(1)
+            if (candidate := f"{self._scope}-{number}") not in comments
         )
 
+    def _create_key(self, key_type: str, comment: str | None, *, rotate: bool) -> SSHInitResult:
+        """Store and assign a new key within the caller's transaction."""
+        effective_comment = self.suggested_comment() if comment is None else comment
         keypair = generate_keypair(key_type, comment=effective_comment)
         key_id = self._db.store_ssh_key(
             key_type=keypair.key_type,
@@ -178,7 +178,7 @@ class SSHManager:
             comment=keypair.comment,
             fingerprint=keypair.fingerprint,
         )
-        if force:
+        if rotate:
             self._db.replace_ssh_keys_for_scope(self._scope, keep_key_id=key_id)
         else:
             self._db.assign_ssh_key(self._scope, key_id)
@@ -190,17 +190,6 @@ class SSHManager:
             comment=keypair.comment,
             public_line=keypair.public_line,
         )
-
-    def _default_comment(self, *, existing_count: int, primary: bool) -> str:
-        """Pick a default comment based on post-operation key-set state.
-
-        The signer's ``tk-main:`` promotion heuristic expects exactly one
-        primary key per scope; additional keys use ``tk-side:`` so they
-        don't compete for the front of the identity list.
-        """
-        if primary:
-            return f"tk-main:{self._scope}"
-        return f"tk-side:{self._scope}:{existing_count + 1}"
 
 
 __all__ = ["SSHInitResult", "SSHManager", "DEFAULT_RSA_BITS", "GeneratedKeypair"]

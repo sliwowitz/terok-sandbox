@@ -283,10 +283,6 @@ async def _serve_agent_session(
         _logger.warning("No SSH keys loaded for scope %r", scope)
         return
 
-    # Promote the tk-main key to the front so SSH offers it first to GitHub,
-    # ensuring the primary workspace key is used for the main repo without
-    # requiring IdentityFile configuration in the container.
-    keys = sorted(keys, key=lambda k: 0 if k[2].startswith("tk-main:") else 1)
     key_by_blob = {pub_blob: (priv, comment) for priv, pub_blob, comment in keys}
     _logger.info(
         "SSH agent session ready for scope %r from %s — %d key(s) available",

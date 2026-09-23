@@ -8,6 +8,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
+import sqlcipher3.dbapi2 as sqlcipher
 
 from terok_sandbox.vault.store.db import (
     CredentialDB,
@@ -100,6 +101,207 @@ class TestAssignments:
         key_id = _store_key(db, "fp-1")
         db.unassign_ssh_key("nope", key_id)  # never assigned → idempotent
         assert db.list_ssh_keys_for_scope("nope") == []
+
+
+class TestDefaults:
+    """Defaults belong to scope assignments, never to keys or their comments."""
+
+    def test_first_assignment_is_default_and_additions_preserve_it(self, db: CredentialDB) -> None:
+        """First assignment, not key creation order or legacy labels, picks the default."""
+        older = _store_key(db, "old", comment="tk-main:proj")
+        first = _store_key(db, "first", comment="custom")
+        db.assign_ssh_key("proj", first)
+        db.assign_ssh_key("proj", older)
+        db.assign_ssh_key("proj", older)
+        assert db.list_ssh_key_defaults() == {"proj": first}
+        assert [r.id for r in db.list_ssh_keys_for_scope("proj")] == [first, older]
+        assert [r.id for r in db.load_ssh_keys_for_scope("proj")] == [first, older]
+
+    def test_default_can_be_shared_and_changed_independently(self, db: CredentialDB) -> None:
+        """A shared key may be default in several scopes, or in only one."""
+        shared, alternate = _store_key(db, "shared"), _store_key(db, "alternate")
+        for scope in ("alpha", "beta"):
+            db.assign_ssh_key(scope, shared)
+            db.assign_ssh_key(scope, alternate)
+        assert db.list_ssh_key_defaults() == {"alpha": shared, "beta": shared}
+        db.set_default_ssh_key("beta", alternate)
+        db.set_ssh_key_comment("alternate", "tk-main:alpha")
+        assert db.list_ssh_key_defaults() == {"alpha": shared, "beta": alternate}
+        assert [r.id for r in db.list_ssh_keys_for_scope("beta")] == [alternate, shared]
+
+    @pytest.mark.parametrize("missing", [False, True])
+    def test_rejecting_unassigned_default_preserves_old_default(
+        self, db: CredentialDB, missing: bool
+    ) -> None:
+        """A missing link cannot clear the previous selection or create a new link."""
+        current = _store_key(db, "current")
+        target = current + 1 if missing else _store_key(db, "unassigned")
+        db.assign_ssh_key("proj", current)
+        with pytest.raises(ValueError, match="not assigned"):
+            db.set_default_ssh_key("proj", target)
+        assert db.list_ssh_key_defaults() == {"proj": current}
+        assert db.list_ssh_key_assignments() == [("proj", current)]
+
+    def test_unassign_default_promotes_oldest_remaining(self, db: CredentialDB) -> None:
+        """Removal advances deterministically and preserves defaults in other scopes."""
+        first, second, third = (_store_key(db, str(i)) for i in range(3))
+        for key_id in (first, second, third):
+            db.assign_ssh_key("proj", key_id)
+        db.assign_ssh_key("other", first)
+        db.unassign_ssh_key("proj", first)
+        assert db.list_ssh_key_defaults() == {"other": first, "proj": second}
+        db.unassign_ssh_key("proj", third)
+        assert db.list_ssh_key_defaults()["proj"] == second
+        db.unassign_ssh_key("proj", second)
+        assert db.list_ssh_key_defaults() == {"other": first}
+
+    def test_delete_promotes_replacements_in_every_scope(self, db: CredentialDB) -> None:
+        """Deleting a shared default selects each scope's own remaining key."""
+        shared, alpha, beta = (_store_key(db, str(i)) for i in range(3))
+        for scope, replacement in (("alpha", alpha), ("beta", beta)):
+            db.assign_ssh_key(scope, shared)
+            db.assign_ssh_key(scope, replacement)
+        db.delete_ssh_key(shared)
+        assert db.list_ssh_key_defaults() == {"alpha": alpha, "beta": beta}
+
+    def test_index_rejects_multiple_defaults(self, db: CredentialDB) -> None:
+        """SQLite enforces the one-default-per-scope ceiling independently of methods."""
+        first, second = _store_key(db, "first"), _store_key(db, "second")
+        db.assign_ssh_key("proj", first)
+        db.assign_ssh_key("proj", second)
+        with pytest.raises(sqlcipher.IntegrityError), db.transaction():
+            db._conn.execute(
+                "UPDATE ssh_key_assignments SET is_default = 1 WHERE key_id = ?", (second,)
+            )
+        assert db.list_ssh_key_defaults() == {"proj": first}
+
+    def test_default_flag_rejects_non_boolean_values(self, db: CredentialDB) -> None:
+        """The marker cannot hold values outside zero and one."""
+        first = _store_key(db, "first")
+        db.assign_ssh_key("proj", first)
+        with pytest.raises(sqlcipher.IntegrityError), db.transaction():
+            db._conn.execute("UPDATE ssh_key_assignments SET is_default = 2")
+
+    @pytest.mark.parametrize("operation", ["select", "unassign", "delete", "replace"])
+    def test_outer_transaction_rolls_back_defaults_and_assignments(
+        self, db: CredentialDB, operation: str
+    ) -> None:
+        """Every assignment mutation composes with an enclosing transaction."""
+        first, second = _store_key(db, "first"), _store_key(db, "second")
+        db.assign_ssh_key("proj", first)
+        db.assign_ssh_key("proj", second)
+        with pytest.raises(RuntimeError), db.transaction():
+            match operation:
+                case "select":
+                    db.set_default_ssh_key("proj", second)
+                case "unassign":
+                    db.unassign_ssh_key("proj", first)
+                case "delete":
+                    db.delete_ssh_key(first)
+                case "replace":
+                    db.replace_ssh_keys_for_scope("proj", keep_key_id=second)
+            raise RuntimeError("abort")
+        assert db.list_ssh_key_defaults() == {"proj": first}
+        assert db.list_ssh_key_assignments() == [("proj", first), ("proj", second)]
+        assert db.count_ssh_keys() == 2
+
+    def test_infra_default_requires_explicit_opt_in(self, db: CredentialDB) -> None:
+        """Default selection cannot bypass infrastructure-scope protection."""
+        first, second = _store_key(db, "first"), _store_key(db, "second")
+        for key_id in (first, second):
+            db.assign_ssh_key("%host", key_id, allow_infra=True)
+        with pytest.raises(InvalidScopeName):
+            db.set_default_ssh_key("%host", second)
+        db.set_default_ssh_key("%host", second, allow_infra=True)
+        assert db.list_ssh_key_defaults() == {"%host": second}
+
+
+class TestDefaultMigration:
+    """Both DB openers upgrade legacy assignments without interpreting labels."""
+
+    @pytest.mark.parametrize("reader", [False, True])
+    def test_v3_assignments_gain_one_default_per_scope(self, tmp_path: Path, reader: bool) -> None:
+        """Oldest assignments win independently in each scope, with key-ID tie breaks."""
+        from terok_sandbox.vault.daemon.token_broker import _TokenDB
+        from terok_sandbox.vault.store.encryption import open_sqlcipher
+        from terok_sandbox.vault.store.migrations import (
+            SCHEMA_VERSION,
+            ensure_credentials_schema,
+        )
+
+        path = tmp_path / "legacy.db"
+        conn = open_sqlcipher(path, "test")
+        conn.execute(
+            "CREATE TABLE ssh_key_assignments ("
+            "scope TEXT NOT NULL, key_id INTEGER NOT NULL REFERENCES ssh_keys(id) ON DELETE CASCADE,"
+            "assigned_at TEXT NOT NULL DEFAULT (datetime('now')), PRIMARY KEY (scope, key_id))"
+        )
+        ensure_credentials_schema(conn)
+        for fingerprint, comment in (("one", "custom"), ("two", "tk-main:alpha")):
+            conn.execute(
+                "INSERT INTO ssh_keys (key_type, private_der, public_blob, comment, fingerprint)"
+                " VALUES ('ed25519', ?, ?, ?, ?)",
+                (b"private", b"public", comment, fingerprint),
+            )
+        conn.executemany(
+            "INSERT INTO ssh_key_assignments (scope, key_id, assigned_at) VALUES (?, ?, ?)",
+            [
+                ("alpha", 1, "2026-01-01"),
+                ("alpha", 2, "2026-01-01"),
+                ("beta", 2, "2026-01-01"),
+                ("beta", 1, "2026-01-02"),
+            ],
+        )
+        conn.execute("PRAGMA user_version = 3")
+        conn.commit()
+        conn.close()
+
+        opened = (
+            _TokenDB(str(path), passphrase="test")
+            if reader
+            else CredentialDB(path, passphrase="test")
+        )
+        try:
+            assert [r.id for r in opened.load_ssh_keys_for_scope("alpha")] == [1, 2]
+            assert [r.id for r in opened.load_ssh_keys_for_scope("beta")] == [2, 1]
+            assert opened._conn.execute("PRAGMA user_version").fetchone() == (SCHEMA_VERSION,)
+        finally:
+            opened._conn.close()
+
+        reopened = CredentialDB(path, passphrase="test")
+        try:
+            assert reopened.list_ssh_key_defaults() == {"alpha": 1, "beta": 2}
+            assert [r.comment for r in reopened.list_all_ssh_keys()] == ["custom", "tk-main:alpha"]
+            reopened.set_default_ssh_key("alpha", 2)
+        finally:
+            reopened.close()
+        verified = CredentialDB(path, passphrase="test")
+        try:
+            assert verified.list_ssh_key_defaults() == {"alpha": 2, "beta": 2}
+        finally:
+            verified.close()
+
+
+class TestPublicKey:
+    """Public-key display never queries secret columns."""
+
+    @pytest.mark.parametrize("key_type", ["ed25519", "rsa"])
+    def test_renders_key_without_reading_private_material(
+        self, db: CredentialDB, key_type: str
+    ) -> None:
+        """The public line matches generation while private column reads are denied."""
+        from terok_sandbox.vault.ssh.manager import SSHManager
+
+        result = SSHManager(scope="proj", db=db).mint(key_type=key_type)
+
+        def deny_private_read(action, table, column, *_):
+            if action == sqlcipher.SQLITE_READ and table == "ssh_keys" and column == "private_der":
+                return sqlcipher.SQLITE_DENY
+            return sqlcipher.SQLITE_OK
+
+        db._conn.set_authorizer(deny_private_read)
+        assert db.get_ssh_public_key(result["key_id"]) == result["public_line"]
+        assert db.get_ssh_public_key(result["key_id"] + 1) is None
 
 
 class TestCascadeOrphan:
