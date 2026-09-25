@@ -5,7 +5,7 @@
 
 # Idempotent socat bridge launcher for container ↔ host-side sandbox services.
 #
-# Manages up to four bridges:
+# Manages up to five bridges:
 #
 #   1. SSH signer        — UNIX socket → ssh-agent-bridge.sh → TCP or host socket
 #   2. Vault (HTTP leg)  — in socket mode: TCP-LISTEN → TEROK_VAULT_SOCKET
@@ -15,12 +15,15 @@
 #                          broker, which is only exposed on TCP)
 #   4. Gate server       — TCP listener → host UNIX socket (socket mode) or
 #                          host loopback TCP port (TCP mode); git HTTP either way
+#   5. Vault (TLS leg)   — TLS listener → the vault HTTP loopback, for clients
+#                          that insist on an https:// vault URL
 #
 # Transport selection is env-var driven (set at container creation):
 #
 #   Socket mode: TEROK_VAULT_LOOPBACK_PORT=<port>,
 #                TEROK_VAULT_SOCKET=<path>, TEROK_GATE_SOCKET=<path>
 #   TCP mode:    TEROK_TOKEN_BROKER_PORT=<port>, TEROK_GATE_PORT=<port>
+#   Either mode: TEROK_VAULT_TLS_PORT=<port> adds the TLS leg
 #
 # Uses PID files (not socket existence) to detect dead bridges — stale
 # socket files persist after process death and are unreliable sentinels.
@@ -46,6 +49,13 @@ _TEROK_SSH_LISTEN="UNIX-LISTEN:${_TEROK_SSH_AGENT_SOCK},fork"
 _TEROK_VAULT_SOCKET_LISTEN="UNIX-LISTEN:${_TEROK_VAULT_SOCK},fork"
 _TEROK_VAULT_LOOPBACK_LISTEN="TCP-LISTEN:${TEROK_VAULT_LOOPBACK_PORT:-},bind=127.0.0.1,fork,reuseaddr"
 _TEROK_GATE_LISTEN="TCP-LISTEN:9418,fork,reuseaddr"
+
+# The TLS leg's certificate: self-signed, for localhost only, made in this
+# container and never leaving it.  The directory appears whole or not at all,
+# so its presence means the pair is complete.  Trusting it is each client's
+# own opt-in; the container's trust store never learns of it.
+_TEROK_VAULT_TLS_DIR="$_TEROK_PIDDIR/vault-tls"
+_TEROK_VAULT_TLS_LISTEN="OPENSSL-LISTEN:${TEROK_VAULT_TLS_PORT:-},bind=127.0.0.1,fork,reuseaddr,cert=${_TEROK_VAULT_TLS_DIR}/cert.pem,key=${_TEROK_VAULT_TLS_DIR}/key.pem,verify=0"
 
 # How long a bridge waits for its backend.  socat holds each connection and
 # re-attempts the connect for about thirty seconds.  The supervisor binds its
@@ -185,6 +195,28 @@ _terok_start_bridge() {
   return 1
 }
 
+# Make the TLS leg's certificate, unless another shell got there first.
+#
+# The pair is written to a private temporary directory and renamed into place.
+# The rename is atomic and refuses to replace a directory another shell has
+# already placed, so racing shells agree on one certificate.  It is valid for
+# ten years because it lives exactly as long as the container.
+_terok_make_vault_tls_cert() {
+  local tmp
+  if ! command -v openssl >/dev/null 2>&1; then
+    echo "terok: vault TLS bridge skipped — openssl is missing from this image" >&2
+    return 1
+  fi
+  tmp="$(mktemp -d "${_TEROK_VAULT_TLS_DIR}.XXXXXX")" || return 1
+  openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:P-256 -nodes -days 3650 \
+      -subj /CN=localhost -addext "subjectAltName=DNS:localhost,IP:127.0.0.1" \
+      -addext "basicConstraints=critical,CA:FALSE" -addext "extendedKeyUsage=serverAuth" \
+      -keyout "$tmp/key.pem" -out "$tmp/cert.pem" 2>/dev/null \
+    && mv -T "$tmp" "$_TEROK_VAULT_TLS_DIR" 2>/dev/null
+  rm -rf "$tmp"
+  [[ -d "$_TEROK_VAULT_TLS_DIR" ]]
+}
+
 # ── SSH signer bridge ────────────────────────────────────────────────────
 # Requires a phantom token.  Transport: TEROK_SSH_SIGNER_SOCKET (mounted
 # host socket) or TEROK_SSH_SIGNER_PORT (TCP to host loopback).
@@ -240,6 +272,17 @@ fi
 if [[ -n "${TEROK_TOKEN_BROKER_PORT:-}" ]] && [[ -n "${TEROK_VAULT_LOOPBACK_PORT:-}" ]]; then
   _terok_start_bridge "$_TEROK_PIDDIR/vault-loopback.pid" "$_TEROK_VAULT_LOOPBACK_LISTEN" \
     "TCP:host.containers.internal:${TEROK_TOKEN_BROKER_PORT},${_TEROK_BRIDGE_RETRY}"
+fi
+
+# ── Vault TLS bridge ─────────────────────────────────────────────────────
+# Terminates TLS in front of the loopback bridge, so it serves either
+# transport.  The TLS adds no protection — both ends are this container.  It
+# exists for clients that refuse a plain-HTTP vault URL.
+if [[ -n "${TEROK_VAULT_TLS_PORT:-}" ]] && [[ -n "${TEROK_VAULT_LOOPBACK_PORT:-}" ]]; then
+  if [[ -d "$_TEROK_VAULT_TLS_DIR" ]] || _terok_make_vault_tls_cert; then
+    _terok_start_bridge "$_TEROK_PIDDIR/vault-tls.pid" "$_TEROK_VAULT_TLS_LISTEN" \
+      "TCP:127.0.0.1:${TEROK_VAULT_LOOPBACK_PORT},${_TEROK_BRIDGE_RETRY}"
+  fi
 fi
 
 # ── Gate server bridge (socket mode) ─────────────────────────────────────
