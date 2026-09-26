@@ -1034,7 +1034,12 @@ def _build_app(
     smoke tests that don't care about the side-channel); production
     callers point at [`credential_audit_log_path`][terok_sandbox.vault.daemon.audit.credential_audit_log_path].
     """
-    app = web.Application(client_max_size=_MAX_REQUEST_BODY_SIZE)
+    # auto_decompress=False keeps request bodies as opaque bytes too: the broker
+    # forwards them with their Content-Encoding, so the agent's codec (zstd) never
+    # has to be installed on the host.
+    app = web.Application(
+        client_max_size=_MAX_REQUEST_BODY_SIZE, handler_args={"auto_decompress": False}
+    )
     app[_KEY_ROUTES] = _RouteTable(routes_path)
     app[_KEY_TOKEN_DB] = _TokenDB(db_path, passphrase=passphrase)
     # Default refresh-lock dir for standalone callers; VaultProxy.start

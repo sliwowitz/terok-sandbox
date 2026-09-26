@@ -1082,6 +1082,47 @@ class TestForwardingPath:
 
         await upstream_server.close()
 
+    async def test_request_body_and_encoding_pass_through_undecoded(self, _forwarding_env) -> None:
+        """A compressed request body reaches the upstream verbatim, Content-Encoding kept.
+
+        Regression: the broker's server decoded request bodies, so codex's zstd-compressed
+        requests failed with ``400 Can not decode content-encoding: zstandard (zstd)``
+        on hosts without a zstd codec — before anything reached the upstream.
+        """
+        from aiohttp import web as _web
+        from aiohttp.test_utils import TestClient, TestServer
+
+        body = b"opaque bytes no host codec needs to understand"
+        seen: dict = {}
+
+        async def _record(request: _web.Request) -> _web.Response:
+            seen["encoding"] = request.headers.get("Content-Encoding")
+            seen["body"] = await request.read()
+            return _web.Response()
+
+        upstream_app = _web.Application(handler_args={"auto_decompress": False})
+        upstream_app.router.add_route("*", "/{tail:.*}", _record)
+        upstream_server = TestServer(upstream_app)
+        await upstream_server.start_server()
+
+        _, tmp_path, tokens = _forwarding_env
+        routes = tmp_path / "routes.json"
+        routes.write_text(
+            json.dumps({"claude": {"upstream": f"http://127.0.0.1:{upstream_server.port}"}})
+        )
+
+        broker_app = _build_app(str(tmp_path / "test.db"), str(routes))
+        async with TestClient(TestServer(broker_app)) as client:
+            resp = await client.post(
+                "/v1/messages",
+                headers={"Authorization": f"Bearer {tokens['claude']}", "Content-Encoding": "zstd"},
+                data=body,
+            )
+            assert resp.status == 200
+
+        assert seen == {"encoding": "zstd", "body": body}
+        await upstream_server.close()
+
     async def test_websocket_upstream_handshake_drops_client_extensions(
         self, tmp_path: Path
     ) -> None:
