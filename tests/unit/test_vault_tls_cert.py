@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import os
 import shutil
 import subprocess
 from pathlib import Path
@@ -18,11 +19,12 @@ pytestmark = pytest.mark.skipif(
 )
 
 
-def _make_cert(tls_dir: Path, path: str = "/usr/bin:/bin") -> subprocess.CompletedProcess:
+def _make_cert(tls_dir: Path, path_prefix: str = "") -> subprocess.CompletedProcess:
     """Source the bridge script inertly and make the certificate into *tls_dir*.
 
     ``mkdir`` is shadowed while sourcing so the script's PID-dir setup never
-    touches the real ``/tmp``; the empty environment keeps every bridge down.
+    touches the real ``/tmp``; an environment of nothing but ``PATH`` keeps
+    every bridge down.  *path_prefix* puts stand-in tools ahead of the real ones.
     """
     script = bridges_resource_dir() / "ensure-bridges.sh"
     return subprocess.run(
@@ -32,10 +34,11 @@ def _make_cert(tls_dir: Path, path: str = "/usr/bin:/bin") -> subprocess.Complet
             f'mkdir() {{ :; }}; source "{script}"; unset -f mkdir; '
             f'_TEROK_VAULT_TLS_DIR="{tls_dir}"; _terok_make_vault_tls_cert',
         ],
-        env={"PATH": path},
+        env={"PATH": f"{path_prefix}{os.environ['PATH']}"},
         capture_output=True,
         text=True,
         check=False,
+        timeout=30,
     )
 
 
@@ -81,7 +84,7 @@ def test_openssl_failure_is_reported(tmp_path: Path) -> None:
     tls_dir = tmp_path / "bridges" / "vault-tls"
     tls_dir.parent.mkdir()
 
-    done = _make_cert(tls_dir, path=f"{fake_bin}:/usr/bin:/bin")
+    done = _make_cert(tls_dir, path_prefix=f"{fake_bin}:")
 
     assert done.returncode != 0
     assert "openssl could not make its certificate" in done.stderr
