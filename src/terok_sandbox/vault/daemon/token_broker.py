@@ -240,7 +240,7 @@ class _TokenDB:
             " FROM ssh_keys k"
             " JOIN ssh_key_assignments a ON a.key_id = k.id"
             " WHERE a.scope = ?"
-            " ORDER BY a.assigned_at",
+            " ORDER BY a.is_default DESC, a.assigned_at, k.id",
             (scope,),
         ).fetchall()
         return [SSHKeyRecord(*r) for r in rows]

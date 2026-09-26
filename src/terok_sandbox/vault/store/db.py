@@ -34,6 +34,7 @@ and the SQLCipher open helpers live in
 
 from __future__ import annotations
 
+import base64
 import contextlib
 import dataclasses
 import json
@@ -375,6 +376,18 @@ class CredentialDB:
         ).fetchone()
         return SSHKeyRow(*row) if row else None
 
+    def get_ssh_public_key(self, key_id: int) -> str | None:
+        """Return an OpenSSH public line without reading private key material."""
+        row = self._conn.execute(
+            "SELECT key_type, public_blob, comment FROM ssh_keys WHERE id = ?",
+            (key_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        key_type, public_blob, comment = row
+        encoded = base64.b64encode(public_blob).decode("ascii")
+        return f"ssh-{key_type} {encoded} {comment}".rstrip()
+
     def set_ssh_key_comment(self, fingerprint: str, comment: str) -> bool:
         """Update the comment of the key with *fingerprint*.
 
@@ -399,7 +412,9 @@ class CredentialDB:
         return bool(cur.rowcount)
 
     def assign_ssh_key(self, scope: str, key_id: int, *, allow_infra: bool = False) -> None:
-        """Grant *scope* access to *key_id* (idempotent).
+        """Grant *scope* access to *key_id*, defaulting only its first key.
+
+        Reassigning an existing link leaves the scope's default unchanged.
 
         Rejects unsafe scope names with [`InvalidScopeName`][terok_sandbox.vault.store.db.InvalidScopeName] — the
         value is later embedded in per-scope Unix-socket paths, so
@@ -419,12 +434,50 @@ class CredentialDB:
             _require_safe_scope(scope)
         else:
             _require_user_scope(scope)
+        with contextlib.nullcontext() if self._in_outer_tx else self.transaction():
+            self._conn.execute(
+                "INSERT OR IGNORE INTO ssh_key_assignments (scope, key_id) VALUES (?, ?)",
+                (scope, key_id),
+            )
+            self._ensure_default_ssh_key(scope)
+
+    def set_default_ssh_key(self, scope: str, key_id: int, *, allow_infra: bool = False) -> None:
+        """Offer an already assigned key first for this scope only.
+
+        Raises ``ValueError`` if the key is not assigned to *scope*.
+        The previous default remains unchanged when validation fails.
+        """
+        if allow_infra:
+            _require_safe_scope(scope)
+        else:
+            _require_user_scope(scope)
+        with contextlib.nullcontext() if self._in_outer_tx else self.transaction():
+            assigned = self._conn.execute(
+                "SELECT 1 FROM ssh_key_assignments WHERE scope = ? AND key_id = ?",
+                (scope, key_id),
+            ).fetchone()
+            if assigned is None:
+                raise ValueError(f"key {key_id} is not assigned to scope {scope!r}")
+            self._conn.execute(
+                "UPDATE ssh_key_assignments SET is_default = 0 WHERE scope = ?",
+                (scope,),
+            )
+            self._conn.execute(
+                "UPDATE ssh_key_assignments SET is_default = 1 WHERE scope = ? AND key_id = ?",
+                (scope, key_id),
+            )
+
+    def _ensure_default_ssh_key(self, scope: str) -> None:
+        """Promote the oldest remaining assignment only when no default exists."""
         self._conn.execute(
-            "INSERT OR IGNORE INTO ssh_key_assignments (scope, key_id) VALUES (?, ?)",
-            (scope, key_id),
+            "UPDATE ssh_key_assignments SET is_default = 1"
+            " WHERE scope = ? AND key_id = ("
+            " SELECT key_id FROM ssh_key_assignments WHERE scope = ?"
+            " ORDER BY assigned_at, key_id LIMIT 1)"
+            " AND NOT EXISTS ("
+            " SELECT 1 FROM ssh_key_assignments WHERE scope = ? AND is_default = 1)",
+            (scope, scope, scope),
         )
-        if not self._in_outer_tx:
-            self._conn.commit()
 
     def unassign_ssh_key(self, scope: str, key_id: int, *, allow_infra: bool = False) -> None:
         """Revoke *scope*'s access to *key_id*; drop the key row if orphaned.
@@ -437,19 +490,19 @@ class CredentialDB:
             _require_safe_scope(scope)
         else:
             _require_user_scope(scope)
-        cur = self._conn.execute(
-            "DELETE FROM ssh_key_assignments WHERE scope = ? AND key_id = ?",
-            (scope, key_id),
-        )
-        if cur.rowcount:
-            self._conn.execute(
-                "DELETE FROM ssh_keys WHERE id = ? AND NOT EXISTS ("
-                "  SELECT 1 FROM ssh_key_assignments WHERE key_id = ?"
-                ")",
-                (key_id, key_id),
+        with contextlib.nullcontext() if self._in_outer_tx else self.transaction():
+            cur = self._conn.execute(
+                "DELETE FROM ssh_key_assignments WHERE scope = ? AND key_id = ?",
+                (scope, key_id),
             )
-        if not self._in_outer_tx:
-            self._conn.commit()
+            if cur.rowcount:
+                self._conn.execute(
+                    "DELETE FROM ssh_keys WHERE id = ? AND NOT EXISTS ("
+                    "  SELECT 1 FROM ssh_key_assignments WHERE key_id = ?"
+                    ")",
+                    (key_id, key_id),
+                )
+                self._ensure_default_ssh_key(scope)
 
     def replace_ssh_keys_for_scope(
         self, scope: str, *, keep_key_id: int, allow_infra: bool = False
@@ -471,7 +524,7 @@ class CredentialDB:
         else:
             _require_user_scope(scope)
 
-        def _body() -> None:
+        with contextlib.nullcontext() if self._in_outer_tx else self.transaction():
             self._conn.execute(
                 "INSERT OR IGNORE INTO ssh_key_assignments (scope, key_id) VALUES (?, ?)",
                 (scope, keep_key_id),
@@ -500,19 +553,7 @@ class CredentialDB:
                     f")",
                     tuple(stale_ids),
                 )
-
-        # Same ``_in_outer_tx`` pattern as the rest of the write methods.
-        # ``with self._conn:`` is the sqlite3 connection's own auto-commit
-        # context — it would clobber the outer ``BEGIN IMMEDIATE`` that
-        # ``transaction()`` started.  When inside an outer scope, run the
-        # body raw and let the outer block own the commit; standalone
-        # callers still get the self-contained connection-managed
-        # transaction they used to.
-        if self._in_outer_tx:
-            _body()
-        else:
-            with self._conn:
-                _body()
+            self._ensure_default_ssh_key(scope)
 
     def unassign_all_ssh_keys(self, scope: str, *, allow_infra: bool = False) -> int:
         """Revoke every key currently assigned to *scope*.  Returns count removed.
@@ -524,15 +565,16 @@ class CredentialDB:
             _require_safe_scope(scope)
         else:
             _require_user_scope(scope)
-        key_ids = [
-            r[0]
-            for r in self._conn.execute(
-                "SELECT key_id FROM ssh_key_assignments WHERE scope = ?",
-                (scope,),
-            ).fetchall()
-        ]
-        for kid in key_ids:
-            self.unassign_ssh_key(scope, kid, allow_infra=allow_infra)
+        with contextlib.nullcontext() if self._in_outer_tx else self.transaction():
+            key_ids = [
+                r[0]
+                for r in self._conn.execute(
+                    "SELECT key_id FROM ssh_key_assignments WHERE scope = ?",
+                    (scope,),
+                ).fetchall()
+            ]
+            for kid in key_ids:
+                self.unassign_ssh_key(scope, kid, allow_infra=allow_infra)
         return len(key_ids)
 
     def delete_ssh_key(self, key_id: int, *, allow_infra: bool = False) -> bool:
@@ -551,42 +593,39 @@ class CredentialDB:
         [`transaction()`][terok_sandbox.vault.store.db.CredentialDB.transaction]
         scope — in which case the outer block owns the commit.
         """
-        if not allow_infra:
-            infra = [
+        with contextlib.nullcontext() if self._in_outer_tx else self.transaction():
+            scopes = [
                 r[0]
                 for r in self._conn.execute(
                     "SELECT scope FROM ssh_key_assignments WHERE key_id = ?",
                     (key_id,),
                 ).fetchall()
-                if r[0].startswith("%")
             ]
-            if infra:
+            infra = [scope for scope in scopes if scope.startswith("%")]
+            if infra and not allow_infra:
                 raise InvalidScopeName(
                     f"key {key_id} is assigned to infrastructure scope(s) {infra}: "
                     "'%' prefix is reserved for sandbox infrastructure and not "
                     "deletable through caller-driven writes"
                 )
-        cur = self._conn.execute("DELETE FROM ssh_keys WHERE id = ?", (key_id,))
-        if not self._in_outer_tx:
-            self._conn.commit()
+            cur = self._conn.execute("DELETE FROM ssh_keys WHERE id = ?", (key_id,))
+            for scope in scopes:
+                self._ensure_default_ssh_key(scope)
         return bool(cur.rowcount)
 
     def list_ssh_keys_for_scope(self, scope: str) -> list[SSHKeyRow]:
         """Return metadata rows for every key assigned to *scope*.
 
-        Ordered by ``assigned_at`` with ``k.id`` as a secondary key so
+        The default is first, followed by ``assigned_at`` and ``k.id`` so
         two assignments inside the same SQLite-second (``datetime('now')``
-        has 1-second resolution) sort by insert order rather than
-        implementation-defined order.  Callers that do ``rows[-1]`` to
-        pick "the most recently assigned" get a deterministic answer
-        even under sub-second concurrency.
+        has 1-second resolution) have a deterministic key-ID tiebreak.
         """
         rows = self._conn.execute(
             "SELECT k.id, k.key_type, k.fingerprint, k.comment, k.created_at"
             " FROM ssh_keys k"
             " JOIN ssh_key_assignments a ON a.key_id = k.id"
             " WHERE a.scope = ?"
-            " ORDER BY a.assigned_at, k.id",
+            " ORDER BY a.is_default DESC, a.assigned_at, k.id",
             (scope,),
         ).fetchall()
         return [SSHKeyRow(*r) for r in rows]
@@ -596,7 +635,7 @@ class CredentialDB:
 
         Same deterministic ordering as
         [`list_ssh_keys_for_scope`][terok_sandbox.vault.store.db.CredentialDB.list_ssh_keys_for_scope]
-        — ``assigned_at`` first, then ``k.id`` as the sub-second tiebreak.
+        — default first, then assignment time and key ID.
         """
         rows = self._conn.execute(
             "SELECT k.id, k.key_type, k.private_der, k.public_blob,"
@@ -604,7 +643,7 @@ class CredentialDB:
             " FROM ssh_keys k"
             " JOIN ssh_key_assignments a ON a.key_id = k.id"
             " WHERE a.scope = ?"
-            " ORDER BY a.assigned_at, k.id",
+            " ORDER BY a.is_default DESC, a.assigned_at, k.id",
             (scope,),
         ).fetchall()
         return [SSHKeyRecord(*r) for r in rows]
@@ -641,6 +680,14 @@ class CredentialDB:
             "SELECT scope, key_id FROM ssh_key_assignments ORDER BY scope, key_id",
         ).fetchall()
         return [(r[0], r[1]) for r in rows]
+
+    def list_ssh_key_defaults(self) -> dict[str, int]:
+        """Return the default key ID for each populated scope."""
+        return dict(
+            self._conn.execute(
+                "SELECT scope, key_id FROM ssh_key_assignments WHERE is_default = 1 ORDER BY scope"
+            ).fetchall()
+        )
 
     def count_ssh_keys(self) -> int:
         """Return the number of distinct keypairs stored in the DB.

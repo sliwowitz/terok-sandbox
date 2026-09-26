@@ -149,8 +149,8 @@ def generate_keypair(key_type: str, *, comment: str) -> GeneratedKeypair:
     Args:
         key_type: ``"ed25519"`` or ``"rsa"``.
         comment: Comment to embed in the public line.  Surfaces in
-            ``ssh-add -L`` output and drives the signer's ``tk-main:``
-            promotion heuristic.  Rejected with [`UnsafeCommentError`][terok_sandbox.vault.store.db.UnsafeCommentError]
+            ``ssh-add -L`` output as a label, without priority semantics.
+            Rejected with [`UnsafeCommentError`][terok_sandbox.vault.store.db.UnsafeCommentError]
             if it contains control characters or exceeds the length limit.
     """
     _require_safe_comment(comment)
@@ -242,12 +242,7 @@ def ensure_infra_keypair(
     with db.transaction():
         existing = db.load_ssh_keys_for_scope(scope)
         if existing:
-            # ``load_ssh_keys_for_scope`` orders by ``assigned_at``
-            # ascending, so the last element is the most recently
-            # assigned key.  Prefer it: if an additive rotation ever
-            # leaves more than one key under the scope, returning the
-            # oldest would silently resurrect the rotated-out material.
-            record = existing[-1]
+            record = existing[0]
             return InfraKeypair(
                 scope=scope,
                 private_pem=openssh_pem_of(record.private_der),
@@ -387,7 +382,7 @@ def export_ssh_keypair(
     key_id: int | None = None,
     out_name: str | None = None,
 ) -> ExportResult:
-    """Write a scope's key back out as a standard OpenSSH file pair.
+    """Write a scope's default or selected key as a standard OpenSSH file pair.
 
     The private bytes come out of the DB as PKCS#8 DER; this function
     re-armors them as OpenSSH PEM — the same format ``ssh-keygen`` writes
@@ -546,7 +541,7 @@ def _pick_key_for_export(db: CredentialDB, scope: str, key_id: int | None) -> SS
     if not records:
         raise ValueError(f"scope {scope!r} has no SSH keys assigned")
     if key_id is None:
-        return records[-1]  # most recently assigned
+        return records[0]
     for r in records:
         if r.id == key_id:
             return r

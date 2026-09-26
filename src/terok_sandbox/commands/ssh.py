@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: 2026 Jiri Vyskocil
 # SPDX-License-Identifier: Apache-2.0
 
-"""SSH-key CLI verbs — list, import, add, export, pub, link, rename, remove.
+"""SSH-key CLI verbs — list, import, add, export, pub, default, link, rename, remove.
 
 Operates on the SSH key tables of the credentials DB.  Each handler
 opens the DB with the CLI's prompt-on-tty policy and closes it before
@@ -12,6 +12,7 @@ terminal escapes into operator output.
 
 from __future__ import annotations
 
+import sys
 from fnmatch import fnmatch
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -67,7 +68,12 @@ def _build_key_rows(cfg: SandboxConfig) -> list[KeyRow]:
         db.close()
 
 
-def _print_key_table(rows: list[KeyRow], *, numbered: bool = False) -> None:
+def _print_key_table(
+    rows: list[KeyRow],
+    *,
+    numbered: bool = False,
+    defaults: dict[str, int] | None = None,
+) -> None:
     """Print a formatted table of SSH key rows.
 
     All untrusted fields are sanitised before display so a crafted
@@ -76,18 +82,25 @@ def _print_key_table(rows: list[KeyRow], *, numbered: bool = False) -> None:
     Args:
         rows: Key rows to display.
         numbered: Prefix each row with a 1-based index for interactive selection.
+        defaults: Scope-to-key mapping to mark in an optional DEFAULT column.
     """
     if not rows:
         print("No SSH keys registered.")
         return
 
-    headers = ("SCOPE", "KEY", "TYPE", "FINGERPRINT", "PATH")
+    headers: tuple[str, ...] = ("SCOPE", "KEY", "TYPE", "FINGERPRINT", "PATH")
     display = [
         tuple(
             sanitize_tty(f) for f in (r.scope, r.comment, r.key_type, r.fingerprint, r.public_key)
         )
         for r in rows
     ]
+    if defaults is not None:
+        headers = (*headers, "DEFAULT")
+        display = [
+            (*fields, "*" if defaults.get(row.scope) == _key_id_from_row(row) else "")
+            for row, fields in zip(rows, display, strict=True)
+        ]
     widths = [max(len(h), *(len(d[i]) for d in display)) for i, h in enumerate(headers)]
 
     if numbered:
@@ -199,7 +212,12 @@ def _handle_ssh_list(
         # fingerprints aren't exposed via routine ``ssh list``.
         rows = [r for r in rows if not _is_infra_scope(r.scope)]
 
-    _print_key_table(rows)
+    db = _open_db(cfg)
+    try:
+        defaults = db.list_ssh_key_defaults()
+    finally:
+        db.close()
+    _print_key_table(rows, defaults=defaults)
 
 
 def _handle_ssh_import(
@@ -271,7 +289,12 @@ def _handle_ssh_add(
     force: bool = False,
     cfg: SandboxConfig | None = None,
 ) -> None:
-    """Generate a new SSH keypair in the vault for *scope*."""
+    """Generate a new SSH keypair without changing the scope's existing default.
+
+    Without ``--comment``, interactive callers can override the suggested
+    scope-based name.  Noninteractive callers accept it without a prompt.
+    ``--force`` replaces the scope's keys instead of adding another key.
+    """
     from ..vault.ssh.manager import SSHManager
 
     _validate_scope_name(scope)
@@ -282,7 +305,22 @@ def _handle_ssh_add(
     db = _open_db(cfg)
     try:
         manager = SSHManager(scope=scope, db=db)
-        result = manager.init(key_type=key_type, comment=comment, force=force)
+        if comment is None and sys.stdin.isatty():
+            suggested = manager.suggested_comment()
+            try:
+                entered = input(f"SSH key comment [{suggested}]: ")
+                comment = None if entered in ("", suggested) else entered
+            except (EOFError, KeyboardInterrupt):
+                print()
+                raise SystemExit("Aborted.") from None
+        try:
+            result = (
+                manager.init(key_type=key_type, comment=comment, force=True)
+                if force
+                else manager.mint(key_type=key_type, comment=comment)
+            )
+        except ValueError as exc:
+            raise SystemExit(f"Cannot create SSH key: {exc}") from exc
         print(f"SSH key ready for scope '{sanitize_tty(scope)}':")
         print(f"  id:          {result['key_id']}")
         print(f"  type:        {sanitize_tty(result['key_type'])}")
@@ -334,40 +372,49 @@ def _handle_ssh_pub(
     *,
     scope: str,
     key_id: int | None = None,
-    all_keys: bool = False,
     cfg: SandboxConfig | None = None,
 ) -> None:
-    """Print a scope's public key line(s) to stdout.
+    """Print every assigned public key, one per line with the default first.
 
-    Default: the most recently assigned key — the one likely to be the
-    primary deploy key.  ``--all`` prints every key assigned to the scope
-    (one per line, newest last); ``--key-id`` targets a specific row.
+    ``--key-id`` restricts the output to one key assigned to the scope.
     """
     from ..vault.ssh.keypair import public_line_of
 
     _validate_scope_name(scope)
     cfg = _resolve_cfg(cfg)
 
-    if all_keys and key_id is not None:
-        raise SystemExit("--all and --key-id are mutually exclusive")
-
     db = _open_db(cfg)
     try:
         records = db.load_ssh_keys_for_scope(scope)
         if not records:
             raise SystemExit(f"scope {scope!r} has no SSH keys assigned")
-        if all_keys:
-            for record in records:
-                print(public_line_of(record))
-            return
-        if key_id is None:
-            record = records[-1]
-        else:
-            matches = [r for r in records if r.id == key_id]
-            if not matches:
+        if key_id is not None:
+            records = [r for r in records if r.id == key_id]
+            if not records:
                 raise SystemExit(f"key_id {key_id} is not assigned to scope {scope!r}")
-            record = matches[0]
-        print(public_line_of(record))
+        for record in records:
+            print(public_line_of(record))
+    finally:
+        db.close()
+
+
+def _handle_ssh_default(
+    *,
+    scope: str,
+    key_id: int,
+    cfg: SandboxConfig | None = None,
+) -> None:
+    """Choose which assigned key the scope's SSH agent offers first."""
+    _validate_scope_name(scope)
+    cfg = _resolve_cfg(cfg)
+
+    db = _open_db(cfg)
+    try:
+        try:
+            db.set_default_ssh_key(scope, key_id)
+        except ValueError as exc:
+            raise SystemExit(str(exc)) from exc
+        print(f"Default SSH key for scope '{sanitize_tty(scope)}': id={key_id}")
     finally:
         db.close()
 
@@ -580,7 +627,7 @@ SSH_COMMANDS: tuple[CommandDef, ...] = (
                         dest="public_key",
                     ),
                     ArgDef(
-                        name="--comment",
+                        name="-c/--comment",
                         help="Override the key's comment string",
                         default=None,
                     ),
@@ -599,8 +646,8 @@ SSH_COMMANDS: tuple[CommandDef, ...] = (
                         dest="key_type",
                     ),
                     ArgDef(
-                        name="--comment",
-                        help="Comment embedded in the public key (default: tk-main:<scope>)",
+                        name="-c/--comment",
+                        help="Key comment (default: next unused <scope>-N; prompted on a TTY)",
                         default=None,
                     ),
                     ArgDef(
@@ -624,7 +671,7 @@ SSH_COMMANDS: tuple[CommandDef, ...] = (
                     ),
                     ArgDef(
                         name="--key-id",
-                        help="Export a specific ssh_keys.id (default: most recently added)",
+                        help="Export a specific ssh_keys.id (default: the scope's default key)",
                         default=None,
                         dest="key_id",
                         type=int,
@@ -639,23 +686,26 @@ SSH_COMMANDS: tuple[CommandDef, ...] = (
             ),
             CommandDef(
                 name="pub",
-                help="Print a scope's public key to stdout",
+                help="Print all assigned public keys, one per line with the default first",
                 handler=LazyHandler("terok_sandbox.commands.ssh:_handle_ssh_pub"),
                 args=(
                     ArgDef(name="scope", help="Credential scope"),
                     ArgDef(
                         name="--key-id",
-                        help="Specific ssh_keys.id (default: most recently added)",
+                        help="Print only this assigned ssh_keys.id (default: every assigned key)",
                         default=None,
                         dest="key_id",
                         type=int,
                     ),
-                    ArgDef(
-                        name="--all",
-                        help="Print every key assigned to the scope, one per line",
-                        action="store_true",
-                        dest="all_keys",
-                    ),
+                ),
+            ),
+            CommandDef(
+                name="default",
+                help="Choose which assigned key the scope's SSH agent offers first",
+                handler=LazyHandler("terok_sandbox.commands.ssh:_handle_ssh_default"),
+                args=(
+                    ArgDef(name="scope", help="Credential scope"),
+                    ArgDef(name="key_id", help="Assigned ssh_keys.id to offer first", type=int),
                 ),
             ),
             CommandDef(
@@ -699,7 +749,7 @@ SSH_COMMANDS: tuple[CommandDef, ...] = (
                         default=None,
                     ),
                     ArgDef(
-                        name="--comment",
+                        name="-c/--comment",
                         help="Filter by comment (supports glob wildcards)",
                         default=None,
                     ),

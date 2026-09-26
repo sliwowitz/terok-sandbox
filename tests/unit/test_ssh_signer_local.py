@@ -14,10 +14,13 @@ from pathlib import Path
 import pytest
 
 from terok_sandbox.vault.ssh.keypair import generate_keypair
+from terok_sandbox.vault.ssh.manager import SSHManager
 from terok_sandbox.vault.ssh.signer import (
     SSH_AGENT_IDENTITIES_ANSWER,
     SSH_AGENTC_REQUEST_IDENTITIES,
+    _pack_string,
     _unpack_string,
+    start_ssh_signer,
     start_ssh_signer_local,
 )
 from terok_sandbox.vault.store.db import CredentialDB
@@ -42,6 +45,62 @@ def _build_msg(msg_type: int, payload: bytes = b"") -> bytes:
 @pytest.mark.asyncio
 class TestLocalSigner:
     """Verify the scope-bound local listener serves identities without a handshake."""
+
+    @pytest.mark.parametrize("token_gated", [False, True])
+    async def test_identity_order_tracks_scope_default_not_comments(
+        self, tmp_path: Path, token_gated: bool
+    ) -> None:
+        """Both signer entrypoints offer the selected default first after live mutations."""
+        db_path = tmp_path / "vault.db"
+        db = CredentialDB(db_path, passphrase="test")
+        manager = SSHManager(scope="proj", db=db)
+        first = manager.mint(comment="custom")
+        second = manager.mint(comment="tk-main:legacy")
+        sock_path = tmp_path / "agent.sock"
+        token = db.create_token("proj", "task", "proj", "ssh")
+        if token_gated:
+            server = await start_ssh_signer(
+                str(db_path), socket_path=str(sock_path), passphrase="test"
+            )
+        else:
+            server = await start_ssh_signer_local(
+                scope="proj", socket_path=sock_path, db_path=str(db_path), passphrase="test"
+            )
+
+        async def identities() -> list[str]:
+            """Ask a fresh connection for its offered comments in wire order."""
+            reader, writer = await asyncio.open_unix_connection(str(sock_path))
+            try:
+                if token_gated:
+                    writer.write(_pack_string(token.encode()))
+                writer.write(_build_msg(SSH_AGENTC_REQUEST_IDENTITIES))
+                await writer.drain()
+                msg_type, payload = await _read_response(reader)
+                assert msg_type == SSH_AGENT_IDENTITIES_ANSWER
+                (nkeys,) = struct.unpack_from(">I", payload)
+                comments = []
+                offset = 4
+                for _ in range(nkeys):
+                    _, offset = _unpack_string(memoryview(payload), offset)
+                    comment, offset = _unpack_string(memoryview(payload), offset)
+                    comments.append(comment.decode())
+                return comments
+            finally:
+                writer.close()
+                await writer.wait_closed()
+
+        try:
+            assert await identities() == ["custom", "tk-main:legacy"]
+            db.set_default_ssh_key("proj", second["key_id"])
+            manager.mint()
+            db.set_ssh_key_comment(first["fingerprint"], "tk-main:renamed")
+            assert await identities() == ["tk-main:legacy", "tk-main:renamed", "proj-1"]
+            db.unassign_ssh_key("proj", second["key_id"])
+            assert await identities() == ["tk-main:renamed", "proj-1"]
+        finally:
+            server.close()
+            await server.wait_closed()
+            db.close()
 
     async def test_returns_scope_identities_without_handshake(self, tmp_path: Path) -> None:
         """A direct connection lists the scope's keys — no token required."""

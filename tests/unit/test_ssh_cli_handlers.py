@@ -9,6 +9,7 @@ be pinned with a compact assertion against captured stdout or DB state.
 
 from __future__ import annotations
 
+from contextlib import closing
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -24,6 +25,7 @@ from terok_sandbox.commands import (
     _handle_ssh_remove,
     _handle_ssh_rename,
 )
+from terok_sandbox.commands.ssh import _handle_ssh_default
 from terok_sandbox.vault.ssh.keypair import generate_keypair, openssh_pem_of
 from terok_sandbox.vault.store.db import CredentialDB
 
@@ -115,44 +117,68 @@ def _seed_infra(db_path: Path, scope: str) -> int:
         db.close()
 
 
-class TestPubAll:
-    """``ssh-pub --all`` prints every key assigned to the scope."""
+class TestPub:
+    """``ssh pub`` prints every assigned key in the scope's offer order."""
 
-    def test_prints_single_key_by_default(
+    def test_prints_every_key_by_default(
         self,
         db_path: Path,
         mock_cfg: MagicMock,
         patched_open_db,
         capsys: pytest.CaptureFixture[str],
     ) -> None:
-        """Without ``--all``, the most recent key alone is printed."""
-        _seed(db_path, "proj")
-        _seed(db_path, "proj")
+        """The default invocation emits one complete line per assigned key."""
+        key_ids = [_seed(db_path, "proj") for _ in range(3)]
+        with closing(CredentialDB(db_path, passphrase="test")) as db:
+            expected = [db.get_ssh_public_key(key_id) for key_id in key_ids]
         _handle_ssh_pub(scope="proj", cfg=mock_cfg)
-        assert capsys.readouterr().out.count("\n") == 1
+        assert capsys.readouterr().out.splitlines() == expected
 
-    def test_all_prints_every_key(
+    def test_selected_default_is_first(
         self,
         db_path: Path,
         mock_cfg: MagicMock,
         patched_open_db,
         capsys: pytest.CaptureFixture[str],
     ) -> None:
-        """With ``--all``, one line per assigned key."""
-        for _ in range(3):
-            _seed(db_path, "proj")
-        _handle_ssh_pub(scope="proj", all_keys=True, cfg=mock_cfg)
-        lines = [ln for ln in capsys.readouterr().out.splitlines() if ln]
-        assert len(lines) == 3
-        assert all(ln.startswith("ssh-ed25519 ") for ln in lines)
+        """An explicit default leads; other keys retain their assignment order."""
+        first, second, third = [_seed(db_path, "proj") for _ in range(3)]
+        with closing(CredentialDB(db_path, passphrase="test")) as db:
+            db.set_default_ssh_key("proj", second)
+            expected = [db.get_ssh_public_key(key_id) for key_id in (second, first, third)]
+        _handle_ssh_pub(scope="proj", cfg=mock_cfg)
+        assert capsys.readouterr().out.splitlines() == expected
 
-    def test_all_conflicts_with_key_id(
-        self, db_path: Path, mock_cfg: MagicMock, patched_open_db
+
+class TestDefault:
+    """``ssh default`` selects an assigned key without changing assignments."""
+
+    def test_selects_assigned_key(
+        self, db_path: Path, mock_cfg: MagicMock, patched_open_db, capsys
     ) -> None:
-        """``--all`` and ``--key-id`` together is a user error."""
-        _seed(db_path, "proj")
-        with pytest.raises(SystemExit, match="mutually exclusive"):
-            _handle_ssh_pub(scope="proj", key_id=1, all_keys=True, cfg=mock_cfg)
+        """Selecting the second key moves it first and preserves both keys."""
+        first, second = [_seed(db_path, "proj") for _ in range(2)]
+        _handle_ssh_default(scope="proj", key_id=second, cfg=mock_cfg)
+        assert f"Default SSH key for scope 'proj': id={second}" in capsys.readouterr().out
+        with closing(CredentialDB(db_path, passphrase="test")) as db:
+            assert [row.id for row in db.list_ssh_keys_for_scope("proj")] == [second, first]
+
+    @pytest.mark.parametrize("missing", [False, True])
+    def test_rejects_unassigned_key(
+        self, db_path: Path, mock_cfg: MagicMock, patched_open_db, missing: bool
+    ) -> None:
+        """Missing keys and keys belonging only to another scope are rejected."""
+        first = _seed(db_path, "proj")
+        other = _seed(db_path, "other")
+        with pytest.raises(SystemExit, match="not assigned"):
+            _handle_ssh_default(scope="proj", key_id=other + 1 if missing else other, cfg=mock_cfg)
+        with closing(CredentialDB(db_path, passphrase="test")) as db:
+            assert db.list_ssh_key_defaults()["proj"] == first
+
+    def test_rejects_infrastructure_scope(self, mock_cfg: MagicMock, patched_open_db) -> None:
+        """Operator commands cannot change infrastructure defaults."""
+        with pytest.raises(SystemExit, match="reserved"):
+            _handle_ssh_default(scope="%host", key_id=1, cfg=mock_cfg)
 
 
 class TestLink:
@@ -357,6 +383,104 @@ class TestAdd:
         with pytest.raises(SystemExit, match="Unsupported --key-type"):
             _handle_ssh_add(scope="proj", key_type="dsa", cfg=mock_cfg)
 
+    def test_repeated_add_mints_numbered_keys_without_changing_default(
+        self, db_path: Path, mock_cfg: MagicMock, patched_open_db
+    ) -> None:
+        """Noninteractive add always mints and never prompts."""
+        with patch("sys.stdin.isatty", return_value=False), patch("builtins.input") as prompt:
+            _handle_ssh_add(scope="proj", cfg=mock_cfg)
+            _handle_ssh_add(scope="proj", cfg=mock_cfg)
+        prompt.assert_not_called()
+        with closing(CredentialDB(db_path, passphrase="test")) as db:
+            rows = db.list_ssh_keys_for_scope("proj")
+            assert [row.comment for row in rows] == ["proj-1", "proj-2"]
+            assert db.list_ssh_key_defaults()["proj"] == rows[0].id
+
+    @pytest.mark.parametrize(
+        ("answer", "expected"), [("", "proj-1"), ("deploy", "deploy"), (" deploy ", " deploy ")]
+    )
+    def test_interactive_comment_accepts_or_overrides_default(
+        self, db_path: Path, mock_cfg: MagicMock, patched_open_db, answer: str, expected: str
+    ) -> None:
+        """The interactive prompt supplies the same default as unattended minting."""
+        with (
+            patch("sys.stdin.isatty", return_value=True),
+            patch("builtins.input", return_value=answer) as prompt,
+        ):
+            _handle_ssh_add(scope="proj", cfg=mock_cfg)
+        prompt.assert_called_once_with("SSH key comment [proj-1]: ")
+        with closing(CredentialDB(db_path, passphrase="test")) as db:
+            assert db.list_ssh_keys_for_scope("proj")[0].comment == expected
+
+    @pytest.mark.parametrize("answer", ["", "proj-1"])
+    def test_accepted_suggestion_is_reallocated_after_concurrent_mint(
+        self, db_path: Path, mock_cfg: MagicMock, patched_open_db, answer: str
+    ) -> None:
+        """A stale suggestion cannot collide with a key minted while the prompt is open."""
+        from terok_sandbox.vault.ssh.manager import SSHManager
+
+        def claim_suggestion(_prompt: str) -> str:
+            """Mint the suggested name before the operator accepts it."""
+            with closing(CredentialDB(db_path, passphrase="test")) as db:
+                assert SSHManager(scope="proj", db=db).mint()["comment"] == "proj-1"
+            return answer
+
+        with (
+            patch("sys.stdin.isatty", return_value=True),
+            patch("builtins.input", side_effect=claim_suggestion),
+        ):
+            _handle_ssh_add(scope="proj", cfg=mock_cfg)
+        with closing(CredentialDB(db_path, passphrase="test")) as db:
+            rows = db.list_ssh_keys_for_scope("proj")
+            assert [row.comment for row in rows] == ["proj-1", "proj-2"]
+            assert db.list_ssh_key_defaults()["proj"] == rows[0].id
+
+    @pytest.mark.parametrize("comment", ["custom", "", "proj-1"])
+    def test_explicit_comment_skips_prompt(
+        self, db_path: Path, mock_cfg: MagicMock, patched_open_db, comment: str
+    ) -> None:
+        """A supplied comment, including an empty string, is used verbatim."""
+        with patch("sys.stdin.isatty", return_value=True), patch("builtins.input") as prompt:
+            _handle_ssh_add(scope="proj", comment=comment, cfg=mock_cfg)
+        prompt.assert_not_called()
+        with closing(CredentialDB(db_path, passphrase="test")) as db:
+            assert db.list_ssh_keys_for_scope("proj")[0].comment == comment
+
+    @pytest.mark.parametrize("error", [EOFError, KeyboardInterrupt])
+    def test_cancelled_prompt_leaves_keys_unchanged(
+        self, db_path: Path, mock_cfg: MagicMock, patched_open_db, error: type[BaseException]
+    ) -> None:
+        """Cancelling before minting cannot add or replace a key."""
+        first = _seed(db_path, "proj")
+        with (
+            patch("sys.stdin.isatty", return_value=True),
+            patch("builtins.input", side_effect=error),
+            pytest.raises(SystemExit, match="Aborted"),
+        ):
+            _handle_ssh_add(scope="proj", force=True, cfg=mock_cfg)
+        with closing(CredentialDB(db_path, passphrase="test")) as db:
+            assert [row.id for row in db.list_ssh_keys_for_scope("proj")] == [first]
+
+    def test_force_replaces_keys(self, db_path: Path, mock_cfg: MagicMock, patched_open_db) -> None:
+        """The explicit rotation flag still leaves a single fresh default."""
+        first = _seed(db_path, "proj")
+        _handle_ssh_add(scope="proj", force=True, comment="replacement", cfg=mock_cfg)
+        with closing(CredentialDB(db_path, passphrase="test")) as db:
+            rows = db.list_ssh_keys_for_scope("proj")
+            assert len(rows) == 1
+            assert rows[0].id != first
+            assert rows[0].comment == "replacement"
+            assert db.list_ssh_key_defaults()["proj"] == rows[0].id
+
+    def test_invalid_comment_exits_cleanly(
+        self, db_path: Path, mock_cfg: MagicMock, patched_open_db
+    ) -> None:
+        """Invalid comments report a CLI error without creating a key."""
+        with pytest.raises(SystemExit, match="Cannot create SSH key"):
+            _handle_ssh_add(scope="proj", comment="bad\x1bcomment", cfg=mock_cfg)
+        with closing(CredentialDB(db_path, passphrase="test")) as db:
+            assert db.list_ssh_keys_for_scope("proj") == []
+
 
 class TestExport:
     """``ssh-export`` writes OpenSSH files and maps library errors cleanly."""
@@ -406,6 +530,23 @@ class TestExport:
 
 class TestList:
     """``ssh-list`` renders the full key table or a single-scope subset."""
+
+    def test_marks_only_the_selected_default(
+        self, db_path: Path, mock_cfg: MagicMock, patched_open_db, capsys
+    ) -> None:
+        """The default column identifies the selected key, not the newest key."""
+        first, second, third = [_seed(db_path, "proj") for _ in range(3)]
+        with closing(CredentialDB(db_path, passphrase="test")) as db:
+            db.set_default_ssh_key("proj", second)
+        _handle_ssh_list(scope="proj", cfg=mock_cfg)
+        header, *rows = capsys.readouterr().out.splitlines()
+        assert header.endswith("DEFAULT")
+        assert len(rows) == 3
+        marked = [row for row in rows if row.rstrip().endswith("*")]
+        assert len(marked) == 1
+        assert f"db:ssh_keys/{second}" in marked[0]
+        assert f"db:ssh_keys/{first}" not in marked[0]
+        assert f"db:ssh_keys/{third}" not in marked[0]
 
     def test_lists_all_when_no_filter(
         self,
@@ -800,10 +941,12 @@ class TestCoverageGaps:
     ) -> None:
         """``--key-id`` of an assigned key prints just that one line."""
         key_id = _seed(db_path, "proj")
+        _seed(db_path, "proj")
+        with closing(CredentialDB(db_path, passphrase="test")) as db:
+            expected = db.get_ssh_public_key(key_id)
         _handle_ssh_pub(scope="proj", key_id=key_id, cfg=mock_cfg)
         out = capsys.readouterr().out.splitlines()
-        assert len(out) == 1
-        assert out[0].startswith("ssh-ed25519 ")
+        assert out == [expected]
 
     def test_ssh_import_missing_private_key(
         self, tmp_path: Path, mock_cfg: MagicMock, patched_open_db
@@ -914,6 +1057,7 @@ class TestCoverageGaps:
             {"scope": "absent", "private_key": "/nowhere/priv"},
         ),
         (_handle_ssh_add, {"scope": "absent"}),
+        (_handle_ssh_default, {"scope": "absent", "key_id": 9999}),
         (_handle_ssh_export, {"scope": "absent", "out_dir": "/tmp/terok-testing/x"}),
         (_handle_ssh_rename, {"fingerprint": "nope", "comment": "x"}),
         (_handle_ssh_remove, {"scope": "absent"}),

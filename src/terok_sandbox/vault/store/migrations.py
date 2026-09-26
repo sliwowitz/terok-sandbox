@@ -39,7 +39,8 @@ import sqlite3
 #:   agent names (``claude``, ``codex``, …) to the provider names they
 #:   authenticate to (``anthropic``, ``openai``, …) so one provider's
 #:   credential can serve many agents.
-SCHEMA_VERSION = 3
+#: * **v3 → v4** — store the default SSH key on each scope assignment.
+SCHEMA_VERSION = 4
 
 
 def ensure_credentials_schema(conn: sqlite3.Connection) -> None:
@@ -71,6 +72,7 @@ def ensure_credentials_schema(conn: sqlite3.Connection) -> None:
             scope        TEXT    NOT NULL,
             key_id       INTEGER NOT NULL REFERENCES ssh_keys(id) ON DELETE CASCADE,
             assigned_at  TEXT    NOT NULL DEFAULT (datetime('now')),
+            is_default   INTEGER NOT NULL DEFAULT 0 CHECK (is_default IN (0, 1)),
             PRIMARY KEY (scope, key_id)
         );
         CREATE TABLE IF NOT EXISTS proxy_tokens (
@@ -107,17 +109,25 @@ def migrate_credential_db_schema(conn: sqlite3.Connection) -> None:
     if current >= SCHEMA_VERSION:
         return
 
-    if current < 1:
-        _migrate_v0_to_v1(conn)
+    with conn:
+        conn.execute("BEGIN IMMEDIATE")
+        (current,) = conn.execute("PRAGMA user_version").fetchone()
+        if current >= SCHEMA_VERSION:
+            return
 
-    if current < 2:
-        _migrate_v1_to_v2(conn)
+        if current < 1:
+            _migrate_v0_to_v1(conn)
 
-    if current < 3:
-        _migrate_v2_to_v3(conn)
+        if current < 2:
+            _migrate_v1_to_v2(conn)
 
-    conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
-    conn.commit()
+        if current < 3:
+            _migrate_v2_to_v3(conn)
+
+        if current < 4:
+            _migrate_v3_to_v4(conn)
+
+        conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
 
 
 def _migrate_v0_to_v1(conn: sqlite3.Connection) -> None:
@@ -201,3 +211,25 @@ def _migrate_v2_to_v3(conn: sqlite3.Connection) -> None:
             "UPDATE OR IGNORE proxy_tokens SET provider = ? WHERE provider = ?",
             (new_name, old_name),
         )
+
+
+def _migrate_v3_to_v4(conn: sqlite3.Connection) -> None:
+    """Give each populated scope one default, independent of key comments."""
+    columns = {r[1] for r in conn.execute("PRAGMA table_info(ssh_key_assignments)")}
+    if "is_default" not in columns:
+        conn.execute(
+            "ALTER TABLE ssh_key_assignments ADD COLUMN is_default"
+            " INTEGER NOT NULL DEFAULT 0 CHECK (is_default IN (0, 1))"
+        )
+    conn.execute(
+        "UPDATE ssh_key_assignments AS a SET is_default = 1"
+        " WHERE key_id = ("
+        " SELECT key_id FROM ssh_key_assignments WHERE scope = a.scope"
+        " ORDER BY assigned_at, key_id LIMIT 1)"
+        " AND NOT EXISTS ("
+        " SELECT 1 FROM ssh_key_assignments WHERE scope = a.scope AND is_default = 1)"
+    )
+    conn.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS ssh_one_default_per_scope"
+        " ON ssh_key_assignments (scope) WHERE is_default = 1"
+    )
