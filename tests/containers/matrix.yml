@@ -34,6 +34,7 @@ slots:
   mageia:
   manjaro:
     extra-packages: [systemd]
+  nixos:
 
 phases:
   - name: unit tests

@@ -480,12 +480,11 @@ class TestLoadPassphraseFromCommand:
 
     def test_stdout_is_returned_stripped(self) -> None:
         """Trailing newline from ``echo`` (and any helper) is trimmed."""
-        assert load_passphrase_from_command("/bin/echo hunter2") == "hunter2"
+        assert load_passphrase_from_command("echo hunter2") == "hunter2"
 
     def test_quoted_argv_is_shlex_split(self) -> None:
         """``shlex`` handles quoted arguments so YAML strings need no special escaping."""
-        # /bin/sh -c 'printf "a b"' — one quoted arg through shell, no trailing newline
-        assert load_passphrase_from_command('/bin/sh -c "printf abc"') == "abc"
+        assert load_passphrase_from_command('sh -c "printf abc"') == "abc"
 
     def test_blank_command_returns_none(self) -> None:
         """A whitespace-only command shlex-splits to nothing — fall through, don't exec."""
@@ -494,7 +493,7 @@ class TestLoadPassphraseFromCommand:
     def test_non_zero_exit_returns_none(self, caplog: pytest.LogCaptureFixture) -> None:
         """A failed helper logs the exit code + stderr at WARNING and returns ``None``."""
         with caplog.at_level("WARNING", logger="terok_sandbox.vault.store.encryption"):
-            assert load_passphrase_from_command("/bin/false") is None
+            assert load_passphrase_from_command("false") is None
         assert "exited 1" in caplog.text
 
     def test_missing_binary_returns_none(self, caplog: pytest.LogCaptureFixture) -> None:
@@ -503,9 +502,10 @@ class TestLoadPassphraseFromCommand:
             assert load_passphrase_from_command("/nonexistent/binary") is None
         assert "failed to spawn" in caplog.text
 
-    def test_empty_stdout_returns_none(self) -> None:
+    def test_empty_stdout_returns_none(self, caplog: pytest.LogCaptureFixture) -> None:
         """A helper that exits 0 with no output is treated as "nothing to give"."""
-        assert load_passphrase_from_command("/bin/true") is None
+        assert load_passphrase_from_command("true") is None
+        assert not caplog.records
 
     def test_unbalanced_quotes_return_none(self, caplog: pytest.LogCaptureFixture) -> None:
         """``shlex.split`` rejects unbalanced quotes — log + None, no exception bubbles."""
@@ -517,7 +517,7 @@ class TestLoadPassphraseFromCommand:
         """A wedged helper hits the budget and falls through with a WARNING."""
         # Sub-second timeout so the test stays fast.
         with caplog.at_level("WARNING", logger="terok_sandbox.vault.store.encryption"):
-            assert load_passphrase_from_command("/bin/sleep 5", timeout=0.1) is None
+            assert load_passphrase_from_command("sleep 5", timeout=0.1) is None
         assert "timed out" in caplog.text
 
 
