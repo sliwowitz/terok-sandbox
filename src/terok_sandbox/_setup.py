@@ -26,9 +26,10 @@ every public entry point goes through `commands._handle_sandbox_setup`.
 from __future__ import annotations
 
 import contextlib
-import shutil
 from collections.abc import Callable, Iterable
 from pathlib import Path
+
+from terok_util import find_host_tool
 
 from ._stage import stage_line as _stage_line
 from ._util import _systemctl
@@ -46,8 +47,10 @@ from .config import SandboxConfig
 from .gate.server import GIT_HTTP_BACKEND_HINT, git_http_backend
 from .integrations.shield import BinaryCheck
 from .operator_cli import setup_invocation
+from .paths import namespace_state_dir
 
 _HOST_BINARIES: tuple[str, ...] = ("podman", "git", "ssh-keygen")
+_LEGACY_SETUP_STAMP = "setup.stamp"
 
 
 # ── Prereq reporting (host binaries, firewall binaries, SELinux) ─────
@@ -66,7 +69,6 @@ def run_prereq_report(cfg: SandboxConfig) -> tuple[SelinuxCheckResult, AppArmorC
     print("Prerequisites:")
     _report_host_binaries()
     _report_git_http_backend()
-    _report_init_binary()
     _report_firewall_binaries()
     if cfg.experimental:
         _report_krun_binaries()
@@ -77,7 +79,7 @@ def run_prereq_report(cfg: SandboxConfig) -> tuple[SelinuxCheckResult, AppArmorC
 def _report_host_binaries() -> None:
     for name in _HOST_BINARIES:
         with _stage_line(name) as s:
-            path = shutil.which(name)
+            path = find_host_tool(name)
             if path:
                 s.ok(path)
             else:
@@ -91,25 +93,6 @@ def _report_git_http_backend() -> None:
             s.ok(str(backend))
         else:
             s.missing(f"not in git's exec path ({GIT_HTTP_BACKEND_HINT})")
-
-
-def _report_init_binary() -> None:
-    """Stage line for catatonit — missing degrades stops, never blocks.
-
-    Managed launches pass ``--init`` only when
-    [`find_init_binary`][terok_sandbox.runtime.podman.find_init_binary]
-    hits, so a host without catatonit still works — its containers just
-    ignore SIGTERM and take the full grace period plus a force-kill on
-    every stop.  Worth a warning here, where the operator can still fix
-    it with one package install.
-    """
-    from .runtime.podman import find_init_binary
-
-    with _stage_line("catatonit") as s:
-        if path := find_init_binary():
-            s.ok(path)
-        else:
-            s.warn("not found — container stops degrade to grace-period timeout + force-kill")
 
 
 def _report_binary_checks(probe: Callable[[], Iterable[BinaryCheck]]) -> None:
@@ -243,7 +226,7 @@ def _report_apparmor() -> AppArmorCheckResult:
 # ── Service install phases ────────────────────────────────────────────
 
 
-def run_supervisor_install_phase() -> bool:
+def run_supervisor_install_phase(*, root: Path | None = None) -> bool:
     """Install the OCI supervisor hook + wrapper under ``state_root()``.
 
     Lays down (with ``state_root()`` resolved from ``paths.root`` —
@@ -269,7 +252,7 @@ def run_supervisor_install_phase() -> bool:
 
     with _stage_line("Supervisor hooks") as s:
         try:
-            install_supervisor_hooks()
+            install_supervisor_hooks(root=root)
         except Exception as exc:  # noqa: BLE001 — aggregator uniformity
             s.fail(str(exc))
             return False
@@ -277,7 +260,7 @@ def run_supervisor_install_phase() -> bool:
         return True
 
 
-def run_supervisor_uninstall_phase() -> bool:
+def run_supervisor_uninstall_phase(*, root: Path | None = None) -> bool:
     """Remove every file [`run_supervisor_install_phase`][terok_sandbox._setup.run_supervisor_install_phase] would write.
 
     Idempotent — missing files are tolerated.  Leaves any per-
@@ -290,7 +273,7 @@ def run_supervisor_uninstall_phase() -> bool:
 
     with _stage_line("Supervisor hooks") as s:
         try:
-            uninstall_supervisor_hooks()
+            uninstall_supervisor_hooks(root=root)
         except Exception as exc:  # noqa: BLE001
             s.fail(str(exc))
             return False
@@ -378,10 +361,8 @@ def run_legacy_install_cleanup_phase() -> bool:
       (``$XDG_RUNTIME_DIR/terok-shield-events.sock``) from the
       single-hub-socket era.
 
-    Operators upgrading from a pre-supervisor install lose access to old
-    tasks (per the hard rule: no state preservation across the
-    refactor); the cleanup is purely about removing the *host-side*
-    machinery that would fight a fresh setup for sockets / unit names.
+    Only obsolete host-side installation artifacts are removed. Task state,
+    credentials, and operator configuration are preserved.
     """
     with _stage_line("Legacy install cleanup") as s:
         _disable_legacy_units(_LEGACY_SYSTEMD_UNITS)
@@ -391,6 +372,8 @@ def run_legacy_install_cleanup_phase() -> bool:
         _unlink_legacy_runtime_sockets()
         _unlink_legacy_xdg_data_files()
         _unlink_legacy_shield_global_hooks()
+        with contextlib.suppress(OSError):
+            (namespace_state_dir() / _LEGACY_SETUP_STAMP).unlink(missing_ok=True)
         s.ok("swept (legacy units + sockets, if any)")
         return True
 

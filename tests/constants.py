@@ -37,6 +37,11 @@ PODMAN_BASE_IMAGE = "docker.io/library/alpine:latest"
 PODMAN_PULL_TIMEOUT = 300
 """Seconds allowed for the one-per-session base-image pull."""
 
+MISSING_PODMAN_INIT = (
+    b'Error: lookup init binary: exec: "catatonit": executable file not found in $PATH\n'
+)
+"""Podman's default init-helper lookup failure, before container creation."""
+
 # ── Nonexistent / missing paths ──────────────────────────────────────────────
 
 NONEXISTENT_DIR = Path("/nonexistent")

@@ -1,4 +1,12 @@
 # Changelog
+
+## v0.6.0 — Unreleased
+
+- Own sandbox setup readiness and compose Shield checks downward. Rerun setup after upgrading; downgrades are unsupported.
+- Use the launching host PATH for tools and setup-bound standalone Python hooks, including on NixOS.
+- Serialize setup and uninstall with the other packages.
+- Refuse stale initial passphrase provisioning without replacing an existing key.
+
 ## v0.5.0 — Past Prologue
 
 ## What's Changed
@@ -79,4 +87,3 @@ Hotfix for vault passphrase error modes [#390](https://github.com/terok-ai/terok
 * @franzpoeschel made their first contribution in https://github.com/terok-ai/terok-sandbox/pull/338
 
 **Full Changelog**: https://github.com/terok-ai/terok-sandbox/compare/v0.0.123...v0.1.0
-

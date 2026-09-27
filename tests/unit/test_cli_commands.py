@@ -10,6 +10,7 @@ from io import StringIO
 from unittest.mock import patch
 
 import pytest
+from terok_util import SetupRequiredError
 
 from terok_sandbox.cli import main
 from terok_sandbox.commands import (
@@ -132,6 +133,15 @@ class TestCLIBasics:
         out, _, rc = _run_cli("--version")
         assert rc == 0
         assert "terok-sandbox" in out
+
+    def test_setup_error_is_an_actionable_exit(self) -> None:
+        """Typed setup failures reach CLI users without an internal traceback."""
+        with patch.object(
+            CommandTree, "dispatch", side_effect=SetupRequiredError("Run setup again")
+        ):
+            with pytest.raises(SystemExit, match="Run setup again") as error:
+                main(["setup"])
+        assert error.value.__suppress_context__
 
     def test_shield_no_subcommand_shows_help(self) -> None:
         out, _, _ = _run_cli("shield")

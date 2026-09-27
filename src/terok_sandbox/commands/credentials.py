@@ -23,11 +23,11 @@ phase writes before re-keying.
 from __future__ import annotations
 
 import sys
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from terok_util import LazyHandler
+from terok_util import LazyHandler, setup_lock
 
 from ..operator_cli import setup_invocation
 from ..vault.store.tiers import CHOOSER_TIERS, PROVISIONABLE_TIERS, PassphraseTier
@@ -103,6 +103,7 @@ class TierProvisionResult:
     """``True`` iff this call minted the value (caller passed ``None``)."""
 
 
+@setup_lock()
 def provision_passphrase_tier(
     cfg: SandboxConfig | None = None,
     *,
@@ -129,11 +130,15 @@ def provision_passphrase_tier(
     trapdoor where an "unlock"-shaped prompt silently keys a brand-new
     vault to an unvalidated string.
 
+    Initial provisioning checks all tiers so a stale frontend configuration
+    cannot hide a passphrase provisioned by another request.
+
     Raises [`ValueError`][ValueError] for a tier outside
     [`PROVISIONABLE_TIERS`][terok_sandbox.vault.store.tiers.PROVISIONABLE_TIERS]
     or an explicit empty passphrase (SQLCipher reads ``""`` as "no
     encryption"), and [`RuntimeError`][RuntimeError] when the chosen
-    backend (systemd-creds, OS keyring) is unreachable.
+    backend (systemd-creds, OS keyring) is unreachable or an initial
+    passphrase is already provisioned.
     """
     from ..config import SandboxConfig
     from ..vault.store import session_cache, systemd_creds as _systemd_creds
@@ -169,6 +174,8 @@ def provision_passphrase_tier(
         # Raises WrongPassphraseError on mismatch — before the write, so
         # a bad value never lands on any tier.
         CredentialDB(cfg.db_path, passphrase=passphrase).close()
+    elif _resolve_existing(replace(cfg, credentials_use_keyring=True)) is not None:
+        raise RuntimeError("A vault passphrase is already provisioned; refusing to replace it.")
     if passphrase is None:
         passphrase = generate_passphrase()
 
@@ -351,6 +358,7 @@ def _handle_credentials_encrypt_db(
     import warnings
 
     from ..config import SandboxConfig
+    from ..vault.store.db import CredentialDB
     from ..vault.store.encryption import encrypt_in_place, is_plaintext_sqlite
 
     if cfg is None:
@@ -379,7 +387,8 @@ def _handle_credentials_encrypt_db(
         _maybe_acknowledge_recovery(cfg, echo_to_stdout=echo_passphrase)
 
     if not db_path.exists():
-        print(f"  no DB at {db_path}; will be created encrypted on first use.")
+        CredentialDB(db_path, passphrase=passphrase).close()
+        print(f"  created encrypted credentials database at {db_path}.")
         return
 
     # Snapshot the plaintext DB before touching anything — a failed
@@ -778,7 +787,7 @@ def _run_credentials_setup_phase(
     echo_passphrase: bool = False,
     passphrase_tier: str | None = None,
 ) -> bool:
-    """Migrate the credentials DB to SQLCipher; no-op on already-encrypted or absent.
+    """Provision an encrypted credentials DB; preserve an already-encrypted database.
 
     Each per-container supervisor opens the DB read-mostly for the
     lifetime of one container, so the migration writer contends for the
