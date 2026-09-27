@@ -82,9 +82,10 @@ def test_missing_podman_preserves_optional_probe_fallback(
 ) -> None:
     """Without an allowed tool directory, optional inspect still returns unknown."""
     monkeypatch.setenv("PATH", ":.:relative")
-    assert PodmanRuntime().container("ctr").state is None
+    container = PodmanRuntime().container("ctr")
+    assert container.state is None
     with pytest.raises(FileNotFoundError, match="podman"):
-        PodmanRuntime().container("ctr").login_command()
+        container.login_command()
 
 
 def test_owned_installer_resolves_both_sudo_and_bash(
