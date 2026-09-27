@@ -637,6 +637,33 @@ class TestUnlinkLegacyRuntimeSockets:
 class TestUnlinkLegacyXdgDataFiles:
     """``_unlink_legacy_xdg_data_files`` removes the pre-paths.root shield copy."""
 
+    @pytest.mark.parametrize("layout", ["default", "explicit", "symlink"])
+    def test_cleanup_preserves_the_active_shield_install(
+        self, layout: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Legacy cleanup cannot delete files the current Shield installer owns."""
+        from terok_util import SetupStatus, setup_status
+
+        from terok_sandbox.integrations.shield import HooksInstaller
+
+        data_home = tmp_path / "data"
+        root = data_home / "terok"
+        root.mkdir(parents=True)
+        monkeypatch.setenv("XDG_DATA_HOME", str(data_home))
+        if layout == "explicit":
+            monkeypatch.setenv("TEROK_ROOT", str(root))
+        elif layout == "symlink":
+            alias = tmp_path / "alias"
+            alias.symlink_to(root, target_is_directory=True)
+            monkeypatch.setenv("TEROK_ROOT", str(alias))
+        monkeypatch.setattr(HooksInstaller, "_check_tools", lambda self: ())
+        installer = HooksInstaller()
+        with patch("terok_sandbox._setup._systemctl.run_best_effort"):
+            for _ in range(2):
+                installer.install()
+                assert run_legacy_install_cleanup_phase()
+                assert setup_status(installer.check_setup()) == SetupStatus.READY
+
     def test_removes_stale_reader_and_prunes_empty_dirs(
         self, tmp_path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -648,6 +675,7 @@ class TestUnlinkLegacyXdgDataFiles:
         shield_root.mkdir(parents=True)
         (shield_root / "nflog-reader.py").write_text("# stale")
         monkeypatch.setenv("XDG_DATA_HOME", str(data_home))
+        monkeypatch.setenv("TEROK_ROOT", str(tmp_path / "current"))
 
         _unlink_legacy_xdg_data_files()
 
@@ -669,6 +697,7 @@ class TestUnlinkLegacyXdgDataFiles:
         sibling = terok_dir / "other"
         sibling.mkdir()
         monkeypatch.setenv("XDG_DATA_HOME", str(data_home))
+        monkeypatch.setenv("TEROK_ROOT", str(tmp_path / "current"))
 
         _unlink_legacy_xdg_data_files()
 
@@ -790,7 +819,7 @@ def test_legacy_cleanup_removes_only_aggregate_receipt(tmp_path, monkeypatch):
     stamp.write_text("old aggregate")
     keep = tmp_path / "credentials.db"
     keep.write_text("preserved")
-    monkeypatch.setattr(_setup, "namespace_state_dir", lambda: tmp_path)
+    monkeypatch.setattr(_setup, "namespace_state_dir", lambda subdir="": tmp_path / subdir)
     with patch.object(_setup._systemctl, "run_best_effort"):
         assert _setup.run_legacy_install_cleanup_phase()
     assert not stamp.exists()
