@@ -2390,24 +2390,13 @@ wheels = [
 
 [[package]]
 name = "terok-clearance"
-version = "0.8.1a1"
-source = { url = "https://github.com/terok-ai/terok-clearance/releases/download/v0.8.1a1/terok_clearance-0.8.1a1-py3-none-any.whl" }
+version = "0.8.1a2.dev237+g4f66788d5"
+source = { git = "https://github.com/sliwowitz/terok-clearance?rev=fix%2Fhost-tool-completeness#4f66788d551c20b52665ea8f1aa09ba66d691f0a" }
 dependencies = [
     { name = "asyncvarlink" },
     { name = "dbus-fast" },
     { name = "pyyaml" },
     { name = "terok-util" },
-]
-wheels = [
-    { url = "https://github.com/terok-ai/terok-clearance/releases/download/v0.8.1a1/terok_clearance-0.8.1a1-py3-none-any.whl", hash = "sha256:e2d318b30c75de5c1e3e99fca5f14b8897423c1f94fcd7abf26b39f87b70c395" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "asyncvarlink", specifier = "==0.3.2" },
-    { name = "dbus-fast", specifier = "~=5.0" },
-    { name = "pyyaml", specifier = "~=6.0" },
-    { name = "terok-util", url = "https://github.com/terok-ai/terok-util/releases/download/v0.4.0a1/terok_util-0.4.0a1-py3-none-any.whl" },
 ]
 
 [[package]]
@@ -2470,9 +2459,9 @@ requires-dist = [
     { name = "pydantic", specifier = "~=2.13" },
     { name = "ruamel-yaml", specifier = "==0.19.1" },
     { name = "sqlcipher3", specifier = "==0.6.2" },
-    { name = "terok-clearance", url = "https://github.com/terok-ai/terok-clearance/releases/download/v0.8.1a1/terok_clearance-0.8.1a1-py3-none-any.whl" },
-    { name = "terok-shield", url = "https://github.com/terok-ai/terok-shield/releases/download/v0.9.0a1/terok_shield-0.9.0a1-py3-none-any.whl" },
-    { name = "terok-util", url = "https://github.com/terok-ai/terok-util/releases/download/v0.4.0a1/terok_util-0.4.0a1-py3-none-any.whl" },
+    { name = "terok-clearance", git = "https://github.com/sliwowitz/terok-clearance?rev=fix%2Fhost-tool-completeness" },
+    { name = "terok-shield", git = "https://github.com/sliwowitz/terok-shield?rev=fix%2Fhost-tool-completeness" },
+    { name = "terok-util", git = "https://github.com/sliwowitz/terok-util?rev=fix%2Fhost-tool-completeness" },
 ]
 
 [package.metadata.requires-dev]
@@ -2506,44 +2495,23 @@ test = [
 
 [[package]]
 name = "terok-shield"
-version = "0.9.0a1"
-source = { url = "https://github.com/terok-ai/terok-shield/releases/download/v0.9.0a1/terok_shield-0.9.0a1-py3-none-any.whl" }
+version = "0.9.0a2.dev381+gc389e476e"
+source = { git = "https://github.com/sliwowitz/terok-shield?rev=fix%2Fhost-tool-completeness#c389e476e0a9fba75f6c866e7305ca511cff355d" }
 dependencies = [
     { name = "pydantic" },
     { name = "pyyaml" },
     { name = "terok-util" },
 ]
-wheels = [
-    { url = "https://github.com/terok-ai/terok-shield/releases/download/v0.9.0a1/terok_shield-0.9.0a1-py3-none-any.whl", hash = "sha256:22460dd10e7c7098648c782540505a74f5eb58476c3acbc215385868bea2e407" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "pydantic", specifier = "~=2.13" },
-    { name = "pyyaml", specifier = "~=6.0" },
-    { name = "terok-util", url = "https://github.com/terok-ai/terok-util/releases/download/v0.4.0a1/terok_util-0.4.0a1-py3-none-any.whl" },
-]
 
 [[package]]
 name = "terok-util"
-version = "0.4.0a1"
-source = { url = "https://github.com/terok-ai/terok-util/releases/download/v0.4.0a1/terok_util-0.4.0a1-py3-none-any.whl" }
+version = "0.4.0a2.dev120+g4fd25175f"
+source = { git = "https://github.com/sliwowitz/terok-util?rev=fix%2Fhost-tool-completeness#4fd25175fae9d2640ca9ce5e5b75488180876ba5" }
 dependencies = [
     { name = "jinja2" },
     { name = "packaging" },
     { name = "platformdirs" },
     { name = "ruamel-yaml" },
-]
-wheels = [
-    { url = "https://github.com/terok-ai/terok-util/releases/download/v0.4.0a1/terok_util-0.4.0a1-py3-none-any.whl", hash = "sha256:85bc694e90c6ea2d5c18300b4cbd02131fd40a7a1f431a33baebce5531938efd" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "jinja2", specifier = "~=3.1" },
-    { name = "packaging", specifier = "~=26.0" },
-    { name = "platformdirs", specifier = "~=4.11" },
-    { name = "ruamel-yaml", specifier = "==0.19.1" },
 ]
 
 [[package]]

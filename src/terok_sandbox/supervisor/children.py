@@ -47,7 +47,7 @@ from dataclasses import replace
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from terok_util import confine_filesystem, harden_self
+from terok_util import confine_filesystem, find_host_tool, harden_self
 
 from .sidecar import SERVICE_NAMES as _SERVICE_NAMES, SupervisorPaths, load_sidecar
 
@@ -78,11 +78,19 @@ _PR_SET_PDEATHSIG = 1
 #: omits runtime trees such as ``/run``: each service receives only its own
 #: explicit runtime lane from ``_writable_paths``.
 _SYSTEM_READABLE_ROOTS: tuple[Path, ...] = (
-    *(Path(p) for p in ("/usr", "/lib", "/lib64", "/bin", "/sbin", "/etc", "/proc", "/dev")),
+    *(
+        Path(p)
+        for p in ("/usr", "/lib", "/lib64", "/bin", "/sbin", "/etc", "/proc", "/dev", "/nix/store")
+    ),
     Path(sys.prefix),
     Path(sys.base_prefix),
+    Path(sys.executable).resolve(),
     Path(__file__).resolve().parents[2],
 )
+
+#: Git's HTTP service helpers. Only these executable files are granted,
+#: never the entire operator-selected GIT_EXEC_PATH directory.
+_GATE_GIT_HELPERS = ("git", "git-http-backend", "git-upload-pack", "git-receive-pack")
 
 #: Git opens this device read-write while serving pushes.  Passing the
 #: device itself lets terok-util install an exact-file rule rather than a
@@ -472,14 +480,26 @@ def _resolver_config_target() -> Path | None:
 def _readable_paths(service: str, cfg: SidecarConfig) -> tuple[Path, ...]:
     """Return service-specific exact files needed after confinement.
 
-    Vault is the only child that dials out: it reads its route table and
-    the resolver configuration behind ``/etc/resolv.conf``.
+    Vault reads its routes and resolver configuration. Gate executes the
+    operator-selected Git and its HTTP service helpers, including symlink
+    targets outside the system software roots.
     """
     readable: list[Path] = []
     if service == "vault":
         readable.append(_routes_path(cfg))
         if resolver := _resolver_config_target():
             readable.append(resolver)
+    elif service == "gate":
+        from terok_sandbox.gate.server import git_http_backend
+
+        if git := find_host_tool("git"):
+            readable.append(Path(git).resolve())
+            if (backend := git_http_backend()) and backend.is_absolute():
+                readable.extend(
+                    helper.resolve()
+                    for name in _GATE_GIT_HELPERS
+                    if (helper := backend.parent / name).is_file()
+                )
     return tuple(readable)
 
 

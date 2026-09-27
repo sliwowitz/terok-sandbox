@@ -16,6 +16,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import shlex
 import shutil
 import signal
 import socket
@@ -768,15 +769,70 @@ class TestReadablePaths:
         assert _resolver_config_target() is None
         assert _readable_paths("vault", _socket_cfg(tmp_path)) == (tmp_path / "routes.json",)
 
-    def test_only_vault_reads_beyond_the_system_roots(
+    def test_other_services_need_no_extra_data_paths(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         resolv = tmp_path / "resolv.conf"
         resolv.write_text("nameserver 127.0.0.53\n")
         monkeypatch.setattr("terok_sandbox.supervisor.children._RESOLV_CONF", resolv)
         cfg = _socket_cfg(tmp_path)
-        for service in ("verdict", "clearance", "gate", "signer"):
+        for service in ("verdict", "clearance", "signer"):
             assert _readable_paths(service, cfg) == ()
+
+    def test_gate_grants_exact_selected_tool_and_helper_targets(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Logical helper lookup survives symlinks without granting surrounding data."""
+        software = tmp_path / "software"
+        software.mkdir()
+        git = software / "frontend-git"
+        git.touch()
+        home = tmp_path / "home"
+        home.mkdir()
+        selected = tmp_path / "selected-git"
+        selected.symlink_to(git)
+        helpers = ("git", "git-http-backend", "git-upload-pack", "git-receive-pack")
+        for name in helpers:
+            (software / name).touch()
+            (home / name).symlink_to(software / name)
+        (home / "unrelated-secret").write_text("private")
+        monkeypatch.setattr(
+            "terok_sandbox.supervisor.children.find_host_tool", lambda _: str(selected)
+        )
+        monkeypatch.setattr(
+            "terok_sandbox.gate.server.git_http_backend", lambda: home / "git-http-backend"
+        )
+        assert set(_readable_paths("gate", _socket_cfg(tmp_path))) == {
+            git,
+            *(software / name for name in helpers),
+        }
+
+    def test_gate_rejects_relative_helper_search_roots(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A relative git exec-path must never turn the launch cwd into a grant."""
+        git = tmp_path / "git"
+        git.touch()
+        monkeypatch.setattr("terok_sandbox.supervisor.children.find_host_tool", lambda _: str(git))
+        monkeypatch.setattr(
+            "terok_sandbox.gate.server.git_http_backend", lambda: Path("git-http-backend")
+        )
+        assert _readable_paths("gate", _socket_cfg(tmp_path)) == (git,)
+
+    def test_gate_never_grants_a_directory_masquerading_as_a_helper(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """An executable directory or symlink to HOME is not an executable-file grant."""
+        git = tmp_path / "git"
+        git.touch()
+        home = tmp_path / "home"
+        home.mkdir()
+        helper = tmp_path / "helpers" / "git-http-backend"
+        helper.parent.mkdir()
+        helper.symlink_to(home, target_is_directory=True)
+        monkeypatch.setattr("terok_sandbox.supervisor.children.find_host_tool", lambda _: str(git))
+        monkeypatch.setattr("terok_sandbox.gate.server.git_http_backend", lambda: helper)
+        assert _readable_paths("gate", _socket_cfg(tmp_path)) == (git,)
 
 
 class TestConfinementWiring:
@@ -867,6 +923,13 @@ class TestConfinementWiring:
         from terok_sandbox.supervisor.children import _SYSTEM_READABLE_ROOTS
 
         assert SYSTEM_RUNTIME_ROOT not in _SYSTEM_READABLE_ROOTS
+
+    def test_shared_roots_include_nix_software_and_current_interpreter(self) -> None:
+        """Nix dependency closures are software roots, not grants over profiles or HOME."""
+        from terok_sandbox.supervisor.children import _SYSTEM_READABLE_ROOTS
+
+        assert Path("/nix/store") in _SYSTEM_READABLE_ROOTS
+        assert Path(sys.executable).resolve() in _SYSTEM_READABLE_ROOTS
 
     def test_unavailable_policy_warns(
         self, tmp_path: Path, caplog: pytest.LogCaptureFixture
@@ -1114,10 +1177,45 @@ class TestPolicyConfinesOnTheLiveKernel:
         assert lines[0].startswith("landlock:1:"), result.stderr
         assert lines[-1] == "resolved=1;keyring-off=1;config-denied;helper-denied"
 
-    def test_gate_accepts_real_git_push_inside_scoped_policy(self, tmp_path: Path) -> None:
+    @pytest.mark.parametrize("custom_git", [False, True], ids=["system-git", "profile-git"])
+    def test_gate_accepts_real_git_push_inside_scoped_policy(
+        self, tmp_path: Path, custom_git: bool
+    ) -> None:
         """Git can migrate quarantine objects without opening the other mirrors."""
-        if shutil.which("git") is None:
+        if (git := shutil.which("git")) is None:
             pytest.skip("needs git")
+        operator = tmp_path / "operator"
+        operator.mkdir()
+        secret = operator / "unrelated-secret"
+        secret.write_text("private")
+        child_env = os.environ.copy()
+        if custom_git:
+            exec_path = subprocess.check_output([git, "--exec-path"], text=True).strip()
+            software = tmp_path / "software"
+            software.mkdir()
+            profile = tmp_path / "profile"
+            profile.mkdir()
+            targets = {
+                "git": Path(git),
+                **{
+                    name: Path(exec_path) / name
+                    for name in ("git-http-backend", "git-upload-pack", "git-receive-pack")
+                },
+            }
+            for name, target in targets.items():
+                wrapper = software / name
+                wrapper.write_text(f'#!/bin/sh\nexec {shlex.quote(str(target))} "$@"\n')
+                wrapper.chmod(0o755)
+                ((profile if name == "git" else operator) / name).symlink_to(wrapper)
+            # Git prepends its exec-path when invoking builtins such as upload-pack.
+            # This must be a distinct inode, not a symlink to the already allowed Git.
+            internal_git = software / "internal-git"
+            shutil.copy2(git, internal_git)
+            (operator / "git").symlink_to(internal_git)
+            child_env["PATH"] = f"{profile}{os.pathsep}{child_env.get('PATH', '')}"
+            # Deliberately share the helper search directory with operator data:
+            # only selected executable files, never the whole directory, are safe grants.
+            child_env["GIT_EXEC_PATH"] = str(operator)
         mirror_root = tmp_path / "mirrors"
         scoped_repo = mirror_root / "proj.git"
         other_repo = mirror_root / "other.git"
@@ -1203,6 +1301,11 @@ class TestPolicyConfinesOnTheLiveKernel:
                 except (PermissionError, OSError):
                     probes.append("write-denied")
                 print("other-mirror:" + ",".join(probes), flush=True)
+                try:
+                    Path({str(secret)!r}).read_text()
+                    print("secret-LEAK", flush=True)
+                except (PermissionError, OSError):
+                    print("secret-denied", flush=True)
                 await run_gate(cfg, paths, stop)
 
             children.confine_filesystem = reporting_confine
@@ -1217,6 +1320,7 @@ class TestPolicyConfinesOnTheLiveKernel:
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
+            env=child_env,
         )
         try:
             assert process.stdout is not None
@@ -1227,6 +1331,7 @@ class TestPolicyConfinesOnTheLiveKernel:
                 f"gate child failed before reporting confinement: {report!r}"
             )
             assert process.stdout.readline().strip() == "other-mirror:read-denied,write-denied"
+            assert process.stdout.readline().strip() == "secret-denied"
 
             deadline = time.monotonic() + 5
             while True:
