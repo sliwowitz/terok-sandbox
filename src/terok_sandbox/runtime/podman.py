@@ -115,36 +115,23 @@ def _detect_rootless_network_mode() -> str:
 
 # ── Init binary (podman run --init) ───────────────────────────────────────
 
-_INIT_BINARY = "catatonit"
-_INIT_HELPER_DIRS: tuple[Path, ...] = (
-    Path("/usr/local/libexec/podman"),
-    Path("/usr/local/lib/podman"),
-    Path("/usr/libexec/podman"),
-    Path("/usr/lib/podman"),
+_INIT_LOOKUP_ERROR = (
+    'Error: lookup init binary: exec: "catatonit": executable file not found in $PATH'
 )
-"""Podman's default ``helper_binaries_dir`` search order (containers.conf)."""
 
 
-def find_init_binary() -> str | None:
-    """Locate the init binary ``podman run --init`` would inject, or ``None``.
+def init_binary_unavailable(exc: subprocess.CalledProcessError) -> bool:
+    """Identify Podman's missing default helper before container creation.
 
-    Deliberately conservative: only the directories podman searches *by
-    default* are probed — claiming ``--init`` on a hunch (say, a PATH
-    hit podman itself would not honour) would fail the launch outright,
-    while a false negative merely degrades it.  The probe has two
-    callers with one contract: [`Sandbox`][terok_sandbox.sandbox.Sandbox]
-    launches pass ``--init`` only when it hits, and
-    ``terok-sandbox setup`` warns when it misses — a catatonit-less
-    host still works, its containers just take the full grace period
-    plus a force-kill on every stop.  Hosts with a custom
-    ``helper_binaries_dir`` land on that same degraded-but-working
-    side.
+    Explicit broken init paths and unrelated launch errors must not
+    silently disable init. Unknown diagnostics remain failures.
     """
-    for directory in _INIT_HELPER_DIRS:
-        candidate = directory / _INIT_BINARY
-        if candidate.is_file() and os.access(candidate, os.X_OK):
-            return str(candidate)
-    return None
+    stderr = exc.stderr or ""
+    if isinstance(stderr, bytes):
+        stderr = stderr.decode(errors="replace")
+    lines = stderr.strip().splitlines()
+    errors = [line for line in lines if line.lstrip().startswith("Error:")]
+    return exc.returncode == 125 and errors == lines[-1:] == [_INIT_LOOKUP_ERROR]
 
 
 # ── Timeouts / constants ──────────────────────────────────────────────────

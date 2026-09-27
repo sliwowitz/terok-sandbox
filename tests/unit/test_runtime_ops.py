@@ -6,7 +6,6 @@
 from __future__ import annotations
 
 import subprocess
-from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -20,8 +19,9 @@ from terok_sandbox.runtime.podman import (
     _STOP_KILL_TIMEOUT,
     _STOP_PROBE_TIMEOUT,
     PodmanContainer,
-    find_init_binary,
+    init_binary_unavailable,
 )
+from tests.constants import MISSING_PODMAN_INIT, MOCK_BASE
 
 
 class TestExec:
@@ -160,44 +160,42 @@ class TestContainerStart:
         assert isinstance(exc_info.value.__cause__, subprocess.TimeoutExpired)
 
 
-class TestFindInitBinary:
-    """The probe mirrors podman's default helper-binaries search — nothing more."""
+class TestInitBinaryUnavailable:
+    """Only the early default-helper lookup failure permits degraded launch."""
 
-    def test_finds_catatonit_in_helper_dir(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """First helper dir containing the (executable) binary wins."""
-        from terok_sandbox.runtime import podman as podman_mod
+    @pytest.mark.parametrize(
+        "stderr",
+        [
+            MISSING_PODMAN_INIT,
+            MISSING_PODMAN_INIT.decode(),
+            b"Pulling image\n" + MISSING_PODMAN_INIT,
+        ],
+    )
+    def test_default_helper_missing(self, stderr) -> None:
+        assert init_binary_unavailable(subprocess.CalledProcessError(125, "podman", stderr=stderr))
 
-        binary = tmp_path / "catatonit"
-        binary.touch()
-        binary.chmod(0o755)
-        monkeypatch.setattr(podman_mod, "_INIT_HELPER_DIRS", (tmp_path,))
-
-        assert find_init_binary() == str(binary)
-
-    def test_non_executable_file_is_rejected(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """A catatonit podman could not exec must not trigger ``--init``."""
-        from terok_sandbox.runtime import podman as podman_mod
-
-        binary = tmp_path / "catatonit"
-        binary.touch()
-        binary.chmod(0o644)
-        monkeypatch.setattr(podman_mod, "_INIT_HELPER_DIRS", (tmp_path,))
-
-        assert find_init_binary() is None
-
-    def test_missing_everywhere_returns_none(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """No helper dir has it → None; PATH is deliberately not consulted."""
-        from terok_sandbox.runtime import podman as podman_mod
-
-        monkeypatch.setattr(podman_mod, "_INIT_HELPER_DIRS", (tmp_path,))
-
-        assert find_init_binary() is None
+    @pytest.mark.parametrize(
+        ("code", "stderr"),
+        [
+            (1, MISSING_PODMAN_INIT),
+            (125, None),
+            (125, b""),
+            (125, b"Error: image not found"),
+            (125, b"Error: OCI hook failed: " + MISSING_PODMAN_INIT),
+            (125, b"Error: OCI hook failed:\n" + MISSING_PODMAN_INIT),
+            (125, MISSING_PODMAN_INIT + b"Error: OCI runtime failed\n"),
+            (125, f"Error: container-init binary not found on the host: stat {MOCK_BASE / 'init'}"),
+            (125, b"Error: lookup init binary: permission denied"),
+            (
+                125,
+                b'Error: lookup init binary: exec: "catatonit": cannot run executable found relative to current directory',
+            ),
+        ],
+    )
+    def test_other_failures_are_not_missing_default_helper(self, code, stderr) -> None:
+        assert not init_binary_unavailable(
+            subprocess.CalledProcessError(code, "podman", stderr=stderr)
+        )
 
 
 def _stop_client(*, returncode: int = 0, stderr: str = "", hanging_polls: int = 0) -> MagicMock:

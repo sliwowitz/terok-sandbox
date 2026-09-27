@@ -23,16 +23,18 @@ from pathlib import Path, PurePosixPath
 from types import MappingProxyType
 from typing import TYPE_CHECKING
 
-from terok_util import podman_userns_args
+from terok_util import podman_userns_args, require_setup
 
+from ._util import warn_user
 from .config import SandboxConfig
 from .runtime import ContainerRuntime, PodmanRuntime
 from .runtime.gpu import GpuSelector, check_gpu_error, gpu_run_args
 from .runtime.podman import (
-    find_init_binary,
+    init_binary_unavailable,
     redact_env_args,
     unshielded_network_args,
 )
+from .setup import check_setup
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Mapping
@@ -46,6 +48,11 @@ if TYPE_CHECKING:
 
 READY_MARKER = ">> init complete"
 """Default log line emitted by init-ssh-and-repo.sh when the container is ready."""
+
+_INIT_FALLBACK_UNSAFE_FLAGS = frozenset(
+    {"--init", "--init-path", "--pod", "--pod-id-file", "--replace", "--detach"}
+)
+"""Explicit init choices or launch effects that cannot safely be replayed."""
 
 
 SAFE_RUNTIMES: frozenset[str] = frozenset({"crun", "krun"})
@@ -405,6 +412,18 @@ class RunSpec:
 # ---------------------------------------------------------------------------
 
 
+def _init_fallback_allowed(extra_args: tuple[str, ...]) -> bool:
+    """Decline retries when callers override init or detached-launch semantics."""
+    for arg in extra_args:
+        flag = arg.partition("=")[0]
+        if flag in _INIT_FALLBACK_UNSAFE_FLAGS:
+            return False
+        # Short-option bundles can disable detach too (e.g. -itd=false).
+        if flag.startswith("-") and not flag.startswith("--") and "d" in flag:
+            return False
+    return True
+
+
 def _validate_runtime(runtime: str) -> str:
     """Return *runtime* if it's a known-safe OCI runtime name.
 
@@ -664,15 +683,8 @@ class Sandbox:
         cmd: list[str] = ["podman", verb] + (["-d"] if verb == "run" else [])
         if spec.ephemeral:
             cmd.append("--rm")
-        # A real init as pid1: the spec's command runs as a *child* of
-        # podman's init binary, so SIGTERM actually terminates it.
-        # Without one the command itself is namespace-init, the kernel
-        # ignores default-disposition signals for init, and every
-        # ``podman stop`` burns the full grace period before SIGKILL —
-        # the degraded (but working) service a catatonit-less host
-        # gets; setup warns about it rather than blocking the launch.
-        if find_init_binary() is not None:
-            cmd.append("--init")
+        # Podman owns helper discovery, including configured non-FHS paths.
+        cmd.append("--init")
         cmd += podman_userns_args()
 
         # ``--runtime`` must come before the image to be honoured; emit
@@ -743,13 +755,28 @@ class Sandbox:
         cmd += list(spec.command)
         return cmd
 
-    def _exec_podman(self, cmd: list[str], *, input: bytes | None = None) -> None:
+    def _exec_podman(
+        self, cmd: list[str], *, input: bytes | None = None, init_fallback: bool = False
+    ) -> None:
         """Run a podman command, translating failures to SystemExit."""
         kwargs: dict = {"check": True, "capture_output": True}
         if input is not None:
             kwargs["input"] = input
         try:
-            subprocess.run(cmd, **kwargs)  # nosec B603 — argv built from fixed verbs + caller-controlled scope/container names — argv built from fixed verbs + caller-controlled scope/container names
+            try:
+                subprocess.run(cmd, **kwargs)  # nosec B603 — managed podman argv
+            except subprocess.CalledProcessError as exc:
+                if not init_fallback or not init_binary_unavailable(exc):
+                    raise
+                fallback_cmd = cmd.copy()
+                fallback_cmd[fallback_cmd.index("--init")] = "--init=false"
+                warn_user(
+                    "podman",
+                    "No usable default init helper; continuing without init. "
+                    "Process reaping and shutdown may degrade. Install catatonit "
+                    "or configure Podman's init_path.",
+                )
+                subprocess.run(fallback_cmd, **kwargs)  # nosec B603 — same argv, init disabled
         except FileNotFoundError:
             raise SystemExit("podman not found; please install podman")
         except subprocess.CalledProcessError as exc:
@@ -772,6 +799,7 @@ class Sandbox:
         after a successful start.  Raises [`GpuConfigError`][terok_sandbox.GpuConfigError] when the
         launch fails due to NVIDIA CDI misconfiguration.
         """
+        require_setup(check_setup(self._cfg, live=True))
         if spec.sealed:
             self.create(spec, hooks=hooks)
             # ``live`` volumes are bind-mounted (handled by _build_cmd);
@@ -800,7 +828,7 @@ class Sandbox:
         if hooks and hooks.pre_start:
             hooks.pre_start()
 
-        self._exec_podman(cmd)
+        self._exec_podman(cmd, init_fallback=_init_fallback_allowed(spec.extra_args))
 
         if hooks and hooks.post_start:
             hooks.post_start()
@@ -814,13 +842,14 @@ class Sandbox:
         ``podman create``.  The container can then receive injected files
         via [`copy_to`][terok_sandbox.sandbox.Sandbox.copy_to] before being started with [`start`][terok_sandbox.sandbox.Sandbox.start].
         """
+        require_setup(check_setup(self._cfg, live=True))
         cmd = self._build_cmd(spec, verb="create")
         print("$", shlex.join(redact_env_args(cmd)))
 
         if hooks and hooks.pre_start:
             hooks.pre_start()
 
-        self._exec_podman(cmd)
+        self._exec_podman(cmd, init_fallback=_init_fallback_allowed(spec.extra_args))
         return spec.container_name
 
     def start(self, container_name: str, *, hooks: LifecycleHooks | None = None) -> None:
@@ -840,6 +869,7 @@ class Sandbox:
 
         Fires *hooks.post_start* after a successful start.
         """
+        require_setup(check_setup(self._cfg, live=True))
         self._cfg.ensure_container_runtime_dir(container_name)
         handle = self._runtime.container(container_name)
         self._warn_if_outdated(container_name, handle)

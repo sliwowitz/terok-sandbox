@@ -17,23 +17,29 @@ groups: [test]
 
 slots:
   debian12:
-    extra-packages: [systemd]
+    extra-packages: [systemd, socat, openssl]
   ubuntu2404:
-    extra-packages: [systemd]
+    extra-packages: [systemd, socat, openssl]
   ubuntu2604:
-    extra-packages: [systemd]
+    extra-packages: [systemd, socat, openssl]
   debian13:
-    extra-packages: [systemd]
+    extra-packages: [systemd, socat, openssl]
   fedora43:
-    extra-packages: [systemd]
+    extra-packages: [systemd, socat, openssl]
   fedora44:
-    extra-packages: [systemd]
+    extra-packages: [systemd, socat, openssl]
   podman:
+    extra-packages: [socat, openssl]
   alpine:
+    extra-packages: [socat, openssl]
   void:
+    extra-packages: [socat, openssl]
   mageia:
+    extra-packages: [socat, openssl]
   manjaro:
-    extra-packages: [systemd]
+    extra-packages: [systemd, socat, openssl]
+  nixos:
+    extra-packages: [socat, openssl]
 
 phases:
   - name: unit tests

@@ -23,7 +23,7 @@ from terok_sandbox.sandbox import (
     Sharing,
     VolumeSpec,
 )
-from tests.constants import MOCK_BASE, MOCK_TASK_DIR
+from tests.constants import MISSING_PODMAN_INIT, MOCK_BASE, MOCK_TASK_DIR
 
 MOCK_HOST_DIR = MOCK_BASE / "host-dir"
 
@@ -401,38 +401,132 @@ class TestSandbox:
 
         assert "--rm" in mock_run.call_args[0][0]
 
-    def test_run_injects_init_process(self) -> None:
-        """A managed launch runs behind podman's ``--init`` when catatonit exists.
-
-        The spec command must not be namespace-init itself: the kernel
-        ignores default-disposition signals for init, so without a real
-        pid1 a stop's SIGTERM is a no-op and every stop burns the full
-        grace period before the SIGKILL.
-        """
+    @pytest.mark.parametrize("verb", ["run", "create"])
+    def test_launch_requests_podman_owned_init(self, verb: str) -> None:
+        """Podman resolves its helper; sandbox does not guess host paths."""
         with (
             patch("subprocess.run") as mock_run,
-            patch("builtins.print"),
+            patch("terok_sandbox.sandbox.warn_user") as warn,
             patch("terok_sandbox.integrations.shield.ShieldManager.pre_start", return_value=[]),
-            patch(
-                "terok_sandbox.sandbox.find_init_binary",
-                return_value="/usr/libexec/podman/catatonit",
-            ),
         ):
-            Sandbox().run(_make_spec())
+            getattr(Sandbox(), verb)(_make_spec())
 
+        mock_run.assert_called_once()
         assert "--init" in mock_run.call_args[0][0]
+        warn.assert_not_called()
 
-    def test_run_without_catatonit_falls_back_to_no_init(self) -> None:
-        """No catatonit → no ``--init``: degraded stops beat refused launches."""
+    @pytest.mark.parametrize("verb", ["run", "create"])
+    def test_missing_init_warns_and_retries_only_the_command(
+        self, verb: str, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """Fallback changes only the owned flag, not hooks or payload arguments."""
+        missing = subprocess.CalledProcessError(125, "podman", stderr=MISSING_PODMAN_INIT)
+        hooks = LifecycleHooks(pre_start=MagicMock(), post_start=MagicMock())
         with (
-            patch("subprocess.run") as mock_run,
-            patch("builtins.print"),
+            patch("subprocess.run", side_effect=[missing, MagicMock()]) as mock_run,
+            patch(
+                "terok_sandbox.integrations.shield.ShieldManager.pre_start", return_value=[]
+            ) as prepare,
+        ):
+            getattr(Sandbox(), verb)(
+                _make_spec(command=("echo", "--init"), extra_args=("--publish", "8080:80")),
+                hooks=hooks,
+            )
+
+        first, retry = (c.args[0] for c in mock_run.call_args_list)
+        expected = first.copy()
+        expected[expected.index("--init")] = "--init=false"
+        assert retry == expected
+        assert retry[-1] == "--init"
+        prepare.assert_called_once()
+        hooks.pre_start.assert_called_once()
+        assert hooks.post_start.call_count == (verb == "run")
+        warning = capsys.readouterr().err
+        assert warning.count("continuing without init") == 1
+        assert "catatonit" in warning
+        assert "shutdown" in warning
+
+    @pytest.mark.parametrize(
+        "extra_args",
+        [
+            ("--init",),
+            ("--init=false",),
+            ("--init-path", str(MOCK_BASE / "catatonit")),
+            (f"--init-path={MOCK_BASE / 'catatonit'}",),
+            ("--pod", "new:test"),
+            ("--pod=existing",),
+            ("--pod-id-file", str(MOCK_BASE / "pod")),
+            (f"--pod-id-file={MOCK_BASE / 'pod'}",),
+            ("--replace",),
+            ("--replace=false",),
+            ("--detach=false",),
+            ("--detach",),
+            ("-d=false",),
+            ("-itd=false",),
+        ],
+    )
+    def test_init_fallback_does_not_replay_caller_lifecycle_flags(self, extra_args) -> None:
+        """Do not override explicit init choices or repeat pod/replacement effects."""
+        missing = subprocess.CalledProcessError(125, "podman", stderr=MISSING_PODMAN_INIT)
+        with (
+            patch("subprocess.run", side_effect=missing) as mock_run,
+            patch("terok_sandbox.sandbox.warn_user") as warn,
             patch("terok_sandbox.integrations.shield.ShieldManager.pre_start", return_value=[]),
-            patch("terok_sandbox.sandbox.find_init_binary", return_value=None),
+            pytest.raises(SystemExit, match="lookup init binary"),
+        ):
+            Sandbox().run(_make_spec(extra_args=extra_args))
+        mock_run.assert_called_once()
+        warn.assert_not_called()
+
+    def test_failed_init_fallback_is_not_retried(self) -> None:
+        """A second failure propagates with the normal launch error contract."""
+        missing = subprocess.CalledProcessError(125, "podman", stderr=MISSING_PODMAN_INIT)
+        with (
+            patch("subprocess.run", side_effect=missing) as mock_run,
+            patch("terok_sandbox.sandbox.warn_user") as warn,
+            patch("terok_sandbox.integrations.shield.ShieldManager.pre_start", return_value=[]),
+            pytest.raises(SystemExit, match="lookup init binary"),
         ):
             Sandbox().run(_make_spec())
+        assert mock_run.call_count == 2
+        warn.assert_called_once()
 
-        assert "--init" not in mock_run.call_args[0][0]
+    @pytest.mark.parametrize(
+        ("code", "stderr"),
+        [
+            (1, MISSING_PODMAN_INIT),
+            (125, b"Error: image not found"),
+            (125, b"Error: OCI hook failed: " + MISSING_PODMAN_INIT),
+            (125, b"Error: OCI hook failed:\n" + MISSING_PODMAN_INIT),
+            (
+                125,
+                f"Error: container-init binary not found on the host: stat {MOCK_BASE / 'init'}".encode(),
+            ),
+        ],
+    )
+    def test_other_launch_failures_never_disable_init(self, code: int, stderr: bytes) -> None:
+        """No init downgrade for explicit configuration errors or generic failures."""
+        failure = subprocess.CalledProcessError(code, "podman", stderr=stderr)
+        with (
+            patch("subprocess.run", side_effect=failure) as mock_run,
+            patch("terok_sandbox.sandbox.warn_user") as warn,
+            patch("terok_sandbox.integrations.shield.ShieldManager.pre_start", return_value=[]),
+            pytest.raises(SystemExit) as caught,
+        ):
+            Sandbox().run(_make_spec())
+        assert caught.value.__cause__ is failure
+        mock_run.assert_called_once()
+        warn.assert_not_called()
+
+    def test_non_launch_command_never_retries_for_init(self) -> None:
+        """The shared subprocess boundary also handles commands unrelated to init."""
+        missing = subprocess.CalledProcessError(125, "podman", stderr=MISSING_PODMAN_INIT)
+        with (
+            patch("subprocess.run", side_effect=missing) as mock_run,
+            pytest.raises(SystemExit, match="lookup init binary"),
+        ):
+            Sandbox()._exec_podman(["podman", "cp", "-", "ctr:/"], input=b"archive")
+        mock_run.assert_called_once()
 
     def test_run_omits_hostname_by_default(self) -> None:
         """Without an explicit hostname, --hostname is absent (podman picks one)."""

@@ -12,12 +12,13 @@ covering both regimes managed launches can land in:
   — the degraded service a catatonit-less host gets.  The stop must
   still succeed, by burning the grace period and force-killing.
 
-Slots without catatonit skip the ``--init`` case and prove exactly the
-fallback their users would live with; slots with it prove both.
+Hosts without Podman's default init helper skip the ``--init`` case;
+the NixOS matrix slot requires its configured helper to work.
 """
 
 from __future__ import annotations
 
+import os
 import shutil
 import subprocess
 import time
@@ -27,7 +28,7 @@ from collections.abc import Callable, Iterator
 import pytest
 
 from terok_sandbox import PodmanRuntime
-from terok_sandbox.runtime.podman import find_init_binary
+from terok_sandbox.runtime.podman import init_binary_unavailable
 from tests.constants import PODMAN_BASE_IMAGE, PODMAN_PULL_TIMEOUT
 
 pytestmark = [
@@ -86,8 +87,7 @@ def launch_sleeper(podman_image: str) -> Iterator[Callable[..., str]]:
         # still have created the container, and teardown must reap it.
         names.append(name)
         argv = ["podman", "run", "-d", "--name", name]
-        if init:
-            argv.append("--init")
+        argv.append("--init" if init else "--init=false")
         argv += [podman_image, "sleep", "3600"]
         subprocess.run(argv, check=True, capture_output=True, timeout=LAUNCH_TIMEOUT)
         return name
@@ -99,9 +99,12 @@ def launch_sleeper(podman_image: str) -> Iterator[Callable[..., str]]:
 
 def test_stop_with_init_returns_before_grace(launch_sleeper: Callable[..., str]) -> None:
     """catatonit forwards SIGTERM: the stop ends well inside the grace period."""
-    if find_init_binary() is None:
-        pytest.skip("catatonit not on this host — the no-init test covers it")
-    name = launch_sleeper(init=True)
+    try:
+        name = launch_sleeper(init=True)
+    except subprocess.CalledProcessError as exc:
+        if init_binary_unavailable(exc) and os.environ.get("TEROK_SLOT") != "nixos":
+            pytest.skip("Podman's default init helper is unavailable — the no-init test covers it")
+        raise
     container = PodmanRuntime().container(name)
 
     start = time.monotonic()
