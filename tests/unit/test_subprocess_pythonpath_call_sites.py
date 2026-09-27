@@ -21,6 +21,8 @@ from __future__ import annotations
 import ast
 from pathlib import Path
 
+import pytest
+
 _SRC_ROOT = Path(__file__).resolve().parents[2] / "src" / "terok_sandbox"
 _SPAWN_CALLABLES = {
     ("subprocess", "run"),
@@ -42,18 +44,31 @@ def _is_module_run(call: ast.Call) -> bool:
     """
     if not call.args:
         return False
-    argv = call.args[0]
-    if not isinstance(argv, ast.List) or len(argv.elts) < 3:
+    argv = call.args[0].elts if isinstance(call.args[0], (ast.List, ast.Tuple)) else call.args
+    if len(argv) < 3:
         return False
-    first, second = argv.elts[0], argv.elts[1]
+    first = argv[0]
     is_sys_executable = (
         isinstance(first, ast.Attribute)
         and isinstance(first.value, ast.Name)
         and first.value.id == "sys"
         and first.attr == "executable"
     )
-    is_dash_m = isinstance(second, ast.Constant) and second.value == "-m"
+    is_dash_m = any(isinstance(arg, ast.Constant) and arg.value == "-m" for arg in argv[1:])
     return is_sys_executable and is_dash_m
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        "subprocess.run([sys.executable, '-m', 'terok_sandbox'])",
+        "subprocess.run([sys.executable, '-P', '-m', 'terok_sandbox'])",
+        "asyncio.create_subprocess_exec(sys.executable, '-P', '-m', 'terok_sandbox')",
+    ],
+)
+def test_recognizes_module_launch_shapes(source: str) -> None:
+    """Both subprocess argv and asyncio positional argv retain the import-path guard."""
+    assert _is_module_run(ast.parse(source).body[0].value)
 
 
 def _is_spawn_call(call: ast.Call) -> bool:

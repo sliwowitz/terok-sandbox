@@ -13,8 +13,8 @@ Isolation is the child's own job: the instant it starts it hardens
 itself ([`harden_self`][terok_util.harden_self]) and labels its own
 sockets for SELinux, all *before* it opens the credential store.  Nothing
 about that depends on how the process was spawned, so the launch here is
-a plain fork-exec — identical on every host, with nothing for the parent
-to configure.
+a plain fork-exec. The parent's package search path survives wrapper-based
+Python installations, but cwd imports remain excluded.
 """
 
 from __future__ import annotations
@@ -24,15 +24,10 @@ import sys
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
+from .._util._subprocess_env import child_process_env
+
 if TYPE_CHECKING:
     from pathlib import Path
-
-#: The argv that re-invokes this package on the running interpreter, so a
-#: child is found by ``-m`` regardless of how the parent was installed
-#: (editable, venv, system).  ``-P`` (PYTHONSAFEPATH) keeps the launch cwd
-#: off ``sys.path`` so a stray ``terok_sandbox.py`` there cannot shadow the
-#: installed package before the child even hardens itself.
-_SELF_ARGV: tuple[str, ...] = (sys.executable, "-P", "-m", "terok_sandbox")
 
 
 @dataclass(frozen=True)
@@ -52,12 +47,20 @@ async def launch_child(service: str, container_id: str, sidecar_path: Path) -> C
     """Fork+exec ``python -m terok_sandbox supervise-child <service> …``.
 
     The parent's one spawn primitive.  The child hardens itself and binds
-    its own socket, so there is nothing to configure beyond the argv; the
+    its own socket. The environment preserves the parent's package paths; the
     returned [`ChildHandle`][terok_sandbox.supervisor.launcher.ChildHandle]
     is what the supervisor waits on and, at shutdown, signals.
     """
     process = await asyncio.create_subprocess_exec(
-        *_SELF_ARGV, "supervise-child", service, container_id, str(sidecar_path)
+        sys.executable,
+        "-P",
+        "-m",
+        "terok_sandbox",
+        "supervise-child",
+        service,
+        container_id,
+        str(sidecar_path),
+        env=child_process_env(),
     )
     return ChildHandle(service=service, process=process)
 

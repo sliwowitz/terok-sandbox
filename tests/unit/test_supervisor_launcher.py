@@ -56,3 +56,25 @@ class TestLaunchChild:
         ]
         assert handle.service == "vault"
         assert handle.pid == 999
+
+    @pytest.mark.asyncio
+    async def test_parent_only_package_path_survives_reexec(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A wrapper-provided package survives reexec without trusting the launch cwd."""
+        library = tmp_path / "library"
+        package = library / "terok_sandbox"
+        package.mkdir(parents=True)
+        (package / "__init__.py").touch()
+        (package / "__main__.py").write_text(
+            "import pathlib, sys\npathlib.Path(sys.argv[-1]).write_text('trusted')\n"
+        )
+        cwd = tmp_path / "cwd"
+        cwd.mkdir()
+        (cwd / "terok_sandbox.py").write_text("raise RuntimeError('untrusted cwd')\n")
+        monkeypatch.chdir(cwd)
+        monkeypatch.setattr(sys, "path", [str(cwd), "", ".", str(library), *sys.path])
+        marker = tmp_path / "marker"
+        handle = await launch_child("vault", "abc123", marker)
+        assert await handle.process.wait() == 0
+        assert marker.read_text() == "trusted"

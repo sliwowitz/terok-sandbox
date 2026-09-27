@@ -34,6 +34,8 @@ from pathlib import Path
 from socketserver import ThreadingMixIn
 from typing import IO, Any, cast
 
+from terok_util import require_host_tool
+
 from .._util._selinux import socket_selinux_context
 
 _logger = logging.getLogger("terok-gate")
@@ -205,7 +207,11 @@ def git_http_backend() -> Path | None:
     """
     try:
         exec_path = subprocess.run(  # nosec B603 B607 — fixed argv, PATH lookup is the cross-distro contract
-            ["git", "--exec-path"], capture_output=True, text=True, check=False
+            ["git", "--exec-path"],
+            executable=require_host_tool("git"),
+            capture_output=True,
+            text=True,
+            check=False,
         ).stdout.strip()
     except OSError:
         return None
@@ -347,6 +353,7 @@ def _make_handler_class(
             try:
                 proc = subprocess.Popen(  # nosec B603 B607 — argv built from fixed verbs + repo-relative paths — binary PATH lookup is the cross-distro contract
                     ["git", "http-backend"],
+                    executable=require_host_tool("git"),
                     stdin=subprocess.PIPE,
                     stdout=subprocess.PIPE,
                     stderr=subprocess.PIPE,

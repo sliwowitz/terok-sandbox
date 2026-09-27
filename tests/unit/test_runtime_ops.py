@@ -21,7 +21,7 @@ from terok_sandbox.runtime.podman import (
     PodmanContainer,
     init_binary_unavailable,
 )
-from tests.constants import MISSING_PODMAN_INIT, MOCK_BASE
+from tests.constants import MISSING_PODMAN_INIT, MOCK_BASE, MOCK_HOST_BIN
 
 
 class TestExec:
@@ -38,6 +38,7 @@ class TestExec:
 
         mock_run.assert_called_once_with(
             ["podman", "exec", "mycontainer", "cat", "/etc/hostname"],
+            executable=str(MOCK_HOST_BIN / "podman"),
             capture_output=True,
             text=True,
             timeout=None,
@@ -98,14 +99,20 @@ class TestLoginCommand:
         container = PodmanRuntime().container("proj-cli-1")
         result = container.login_command()
 
-        assert result == ["podman", "exec", "-it", "proj-cli-1", *_DEFAULT_LOGIN_COMMAND]
+        assert result == [
+            str(MOCK_HOST_BIN / "podman"),
+            "exec",
+            "-it",
+            "proj-cli-1",
+            *_DEFAULT_LOGIN_COMMAND,
+        ]
 
     def test_custom_command(self) -> None:
         """Explicit command overrides the default."""
         container = PodmanRuntime().container("proj-cli-1")
         result = container.login_command(command=("bash",))
 
-        assert result == ["podman", "exec", "-it", "proj-cli-1", "bash"]
+        assert result == [str(MOCK_HOST_BIN / "podman"), "exec", "-it", "proj-cli-1", "bash"]
 
     def test_no_subprocess_call(self) -> None:
         """login_command is pure — it never touches subprocess."""
@@ -125,6 +132,7 @@ class TestContainerStart:
 
         mock_run.assert_called_once_with(
             ["podman", "start", "proj-cli-1"],
+            executable=str(MOCK_HOST_BIN / "podman"),
             check=False,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.PIPE,
@@ -220,6 +228,7 @@ class TestContainerStop:
 
         mock_popen.assert_called_once_with(
             ["podman", "stop", "--time", "10", "proj-cli-1"],
+            executable=str(MOCK_HOST_BIN / "podman"),
             stdout=subprocess.DEVNULL,
             stderr=subprocess.PIPE,
             text=True,

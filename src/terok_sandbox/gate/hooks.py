@@ -43,7 +43,11 @@ and behave as before.
 from __future__ import annotations
 
 import os
+import shlex
+import sys
 from pathlib import Path
+
+from terok_util import host_tools_source
 
 from terok_sandbox.gate.mirror import (
     _BACKUP_PREFIX,
@@ -60,8 +64,7 @@ HOOKS_DIRNAME = ".terok-hooks"
 #: every agent push — watch its mtime to react to pushes without polling.
 PUSH_MARKER_FILENAME = "terok-push-marker"
 
-_POST_RECEIVE = f'''#!/usr/bin/env python3
-# SPDX-FileCopyrightText: 2026 Jiri Vyskocil
+_POST_RECEIVE = f'''# SPDX-FileCopyrightText: 2026 Jiri Vyskocil
 # SPDX-License-Identifier: Apache-2.0
 """Gate post-receive hook: back up destructive agent updates, mark the push.
 
@@ -72,6 +75,9 @@ import subprocess
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from _host_tools import require_host_tool
 
 ZERO = "{_ZERO_SHA}"
 HEADS = "{_HEADS_PREFIX}"
@@ -84,6 +90,7 @@ def is_ancestor(old: str, new: str) -> bool:
     """True when *old*..*new* is a fast-forward."""
     res = subprocess.run(
         ["git", "merge-base", "--is-ancestor", old, new],
+        executable=require_host_tool("git"),
         capture_output=True,
     )
     return res.returncode == 0
@@ -93,7 +100,9 @@ def back_up(branch: str, old: str) -> str | None:
     """Pin *old* under a timestamped backup ref; return its name or None."""
     stamp = datetime.now(timezone.utc).strftime(STAMP)
     ref = BACKUPS + branch + "/" + stamp + "-" + old[:12]
-    res = subprocess.run(["git", "update-ref", ref, old], capture_output=True)
+    res = subprocess.run(
+        ["git", "update-ref", ref, old], executable=require_host_tool("git"), capture_output=True
+    )
     return ref if res.returncode == 0 else None
 
 
@@ -144,7 +153,13 @@ def install_hooks(hooks_dir: Path) -> None:
     installs are skipped so repeated server starts never churn mtimes.
     """
     hooks_dir.mkdir(parents=True, exist_ok=True)
-    for name, content in (("post-receive", _POST_RECEIVE),):
+    # A shell trampoline accepts interpreter paths containing whitespace;
+    # isolated Python ignores both the repository cwd and ambient PYTHONPATH.
+    bootstrap = f"#!/bin/sh\n'''exec' {shlex.quote(sys.executable)} -I \"$0\" \"$@\"\n' '''\n"
+    for name, content in (
+        ("_host_tools.py", host_tools_source()),
+        ("post-receive", bootstrap + _POST_RECEIVE),
+    ):
         target = hooks_dir / name
         try:
             if target.read_text(encoding="utf-8") == content:

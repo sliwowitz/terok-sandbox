@@ -14,6 +14,8 @@ from pathlib import Path
 
 import pytest
 
+from tests.constants import MOCK_HOST_BIN
+
 # Terok-specific env vars that override path resolution.  The autouse
 # isolation fixture unsets each so resolution falls back through the
 # tmp-rooted ``HOME`` / ``XDG_*`` chain — never to the operator's real
@@ -72,21 +74,14 @@ def _isolate_user_paths(
     monkeypatch.setattr("terok_util.paths._is_root", lambda: False)
 
 
-@pytest.fixture(autouse=True, scope="session")
-def _prime_podman_version_probe() -> None:
-    """Populate terok-util's cached podman-version probe once, up front.
+@pytest.fixture(autouse=True)
+def _pin_podman_version(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Model the oldest supported Podman without probing the unit-test host.
 
-    The probe shells out on first use; a test that patches
-    ``subprocess.run`` globally and happens to run first would both feed
-    the probe a mock and absorb the probe call into its own
-    call-counting assertions — an order-dependent failure.  One real
-    probe per session (the fallback answer is fine on podman-less CI)
-    makes every later lookup a cache hit.
+    Util tests own version detection. A real probe here would consume mocked
+    subprocess calls and make runtime tests depend on the host's tool profile.
     """
-    from terok_util.podman import _podman_version
-
-    _podman_version.cache_clear()
-    _podman_version()
+    monkeypatch.setattr("terok_util.podman._podman_version", lambda: (4, 8))
 
 
 @pytest.fixture(autouse=True)
@@ -95,6 +90,25 @@ def _pin_systemctl_path(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
         "terok_sandbox._util._systemctl.find_host_tool", lambda _: "/usr/bin/systemctl"
     )
+
+
+@pytest.fixture(autouse=True)
+def _pin_runtime_tool_paths(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Mocked runtime subprocesses do not require Podman installed on the test host.
+
+    Host-lookup regression tests restore the real resolver at the boundary
+    they exercise; gate tests continue to use their real git dependency.
+    """
+    for module in (
+        "sandbox",
+        "runtime.podman",
+        "runtime.gpu",
+        "runtime.krun_transport",
+        "supervisor.main",
+    ):
+        monkeypatch.setattr(
+            f"terok_sandbox.{module}.require_host_tool", lambda name: str(MOCK_HOST_BIN / name)
+        )
 
 
 @pytest.fixture(autouse=True)

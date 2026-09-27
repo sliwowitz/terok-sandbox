@@ -62,6 +62,8 @@ from dataclasses import dataclass
 from pathlib import Path  # noqa: TC003 — used in dataclass field type
 from typing import BinaryIO
 
+from terok_util import require_host_tool
+
 from .podman import _start_stdio_pumps
 from .protocol import Container, ExecResult
 
@@ -268,7 +270,7 @@ class TcpSSHTransport:
         """
         pty_flags = ["-tt"] if interactive else ["-o", "BatchMode=yes"]
         return [
-            self._ssh,
+            require_host_tool("ssh") if self._ssh == "ssh" else self._ssh,
             "-p",
             str(endpoint.port),
             "-i",
@@ -334,6 +336,7 @@ def podman_port_resolver(
         try:
             out = subprocess.check_output(  # nosec B603 B607 — argv built from fixed verbs + caller-controlled scope/container names — binary PATH lookup is the cross-distro contract
                 argv,
+                executable=require_host_tool("podman"),
                 text=True,
                 timeout=_RESOLVER_PORT_TIMEOUT_S,
             ).strip()

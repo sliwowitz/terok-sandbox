@@ -30,6 +30,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import BinaryIO, NoReturn
 
+from terok_util import require_host_tool
+
 from .._util import log_debug, log_warning
 from .protocol import (
     Container,
@@ -100,6 +102,7 @@ def _detect_rootless_network_mode() -> str:
     try:
         out = subprocess.run(  # nosec B603 B607 — argv built from fixed verbs + caller-controlled scope/container names — binary PATH lookup is the cross-distro contract
             ["podman", "info", "-f", "{{.Host.RootlessNetworkCmd}}"],
+            executable=require_host_tool("podman"),
             capture_output=True,
             text=True,
             timeout=10,
@@ -220,6 +223,7 @@ class PodmanContainer:
         try:
             out = subprocess.check_output(  # nosec B603 B607 — argv built from fixed verbs + caller-controlled scope/container names — binary PATH lookup is the cross-distro contract
                 ["podman", "inspect", "-f", "{{.State.Status}}", self.name],
+                executable=require_host_tool("podman"),
                 stderr=subprocess.DEVNULL,
                 text=True,
                 timeout=_PROBE_TIMEOUT,
@@ -234,6 +238,7 @@ class PodmanContainer:
         try:
             out = subprocess.check_output(  # nosec B603 B607 — argv built from fixed verbs + caller-controlled scope/container names — binary PATH lookup is the cross-distro contract
                 ["podman", "inspect", "-f", "{{.State.Running}}", self.name],
+                executable=require_host_tool("podman"),
                 stderr=subprocess.DEVNULL,
                 text=True,
                 timeout=_PROBE_TIMEOUT,
@@ -252,6 +257,7 @@ class PodmanContainer:
         try:
             out = subprocess.check_output(  # nosec B603 B607 — argv built from fixed verbs + caller-controlled scope/container names — binary PATH lookup is the cross-distro contract
                 ["podman", "inspect", "-f", "{{.State.StartedAt.Unix}}", self.name],
+                executable=require_host_tool("podman"),
                 stderr=subprocess.DEVNULL,
                 text=True,
                 timeout=_PROBE_TIMEOUT,
@@ -269,6 +275,7 @@ class PodmanContainer:
         try:
             out = subprocess.check_output(  # nosec B603 B607 — argv built from fixed verbs + caller-controlled scope/container names — binary PATH lookup is the cross-distro contract
                 ["podman", "inspect", "-f", "{{.Image}}", self.name],
+                executable=require_host_tool("podman"),
                 stderr=subprocess.DEVNULL,
                 text=True,
                 timeout=_PROBE_TIMEOUT,
@@ -295,6 +302,7 @@ class PodmanContainer:
                     "{{.SizeRw}}",
                     self.name,
                 ],
+                executable=require_host_tool("podman"),
                 stderr=subprocess.DEVNULL,
                 text=True,
                 timeout=60,
@@ -314,6 +322,7 @@ class PodmanContainer:
         try:
             out = subprocess.check_output(  # nosec B603 B607 — argv built from fixed verbs + caller-controlled scope/container names — binary PATH lookup is the cross-distro contract
                 ["podman", "inspect", "-f", "{{.Id}}", self.name],
+                executable=require_host_tool("podman"),
                 stderr=subprocess.DEVNULL,
                 text=True,
                 timeout=_PROBE_TIMEOUT,
@@ -336,6 +345,7 @@ class PodmanContainer:
         try:
             out = subprocess.check_output(  # nosec B603 B607 — argv built from fixed verbs + caller-controlled scope/container names — binary PATH lookup is the cross-distro contract
                 ["podman", "inspect", "-f", "{{json .Mounts}}", self.name],
+                executable=require_host_tool("podman"),
                 stderr=subprocess.DEVNULL,
                 text=True,
                 timeout=_PROBE_TIMEOUT,
@@ -361,6 +371,7 @@ class PodmanContainer:
         try:
             out = subprocess.check_output(  # nosec B603 B607 — argv built from fixed verbs + caller-controlled scope/container names — binary PATH lookup is the cross-distro contract
                 ["podman", "inspect", "-f", "{{json .Config.Env}}", self.name],
+                executable=require_host_tool("podman"),
                 stderr=subprocess.DEVNULL,
                 text=True,
                 timeout=_PROBE_TIMEOUT,
@@ -390,6 +401,7 @@ class PodmanContainer:
         try:
             proc = subprocess.run(  # nosec B603 B607 — argv built from fixed verbs + caller-controlled scope/container names — binary PATH lookup is the cross-distro contract
                 ["podman", "start", self.name],
+                executable=require_host_tool("podman"),
                 check=False,
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.PIPE,
@@ -428,6 +440,7 @@ class PodmanContainer:
         try:
             proc = subprocess.Popen(  # nosec B603 B607 — argv built from fixed verbs + caller-controlled scope/container names — binary PATH lookup is the cross-distro contract
                 ["podman", "stop", "--time", str(timeout), self.name],
+                executable=require_host_tool("podman"),
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.PIPE,
                 text=True,
@@ -505,6 +518,7 @@ class PodmanContainer:
         try:
             out = subprocess.check_output(  # nosec B603 B607 — argv built from fixed verbs + caller-controlled scope/container names — binary PATH lookup is the cross-distro contract
                 ["podman", "inspect", "-f", "{{.State.Status}}", self.name],
+                executable=require_host_tool("podman"),
                 stderr=subprocess.DEVNULL,
                 text=True,
                 timeout=_STOP_PROBE_TIMEOUT,
@@ -531,6 +545,7 @@ class PodmanContainer:
         try:
             proc = subprocess.run(  # nosec B603 B607 — argv built from fixed verbs + caller-controlled scope/container names — binary PATH lookup is the cross-distro contract
                 ["podman", "wait", self.name],
+                executable=require_host_tool("podman"),
                 check=False,
                 capture_output=True,
                 text=True,
@@ -561,6 +576,7 @@ class PodmanContainer:
         src_arg = f"{src}/." if src.is_dir() else str(src)
         subprocess.run(  # nosec B603 B607 — argv built from fixed verbs + caller-controlled scope/container names — binary PATH lookup is the cross-distro contract
             ["podman", "cp", src_arg, f"{self.name}:{dest}"],
+            executable=require_host_tool("podman"),
             check=True,
             capture_output=True,
         )
@@ -574,7 +590,13 @@ class PodmanContainer:
 
         Empty *command* uses the default tmux session.
         """
-        return ["podman", "exec", "-it", self.name, *(command or _DEFAULT_LOGIN_COMMAND)]
+        return [
+            require_host_tool("podman"),
+            "exec",
+            "-it",
+            self.name,
+            *(command or _DEFAULT_LOGIN_COMMAND),
+        ]
 
     def logs(self, *, follow: bool = False, tail: int | None = None) -> LogStream:
         """Return a context-managed iterator over decoded log lines."""
@@ -637,6 +659,7 @@ class PodmanImage:
         try:
             out = subprocess.check_output(  # nosec B603 B607 — argv built from fixed verbs + caller-controlled scope/container names — binary PATH lookup is the cross-distro contract
                 ["podman", "inspect", "-f", "{{.Id}}", self.ref],
+                executable=require_host_tool("podman"),
                 stderr=subprocess.DEVNULL,
                 text=True,
                 timeout=_PROBE_TIMEOUT,
@@ -670,6 +693,7 @@ class PodmanImage:
         try:
             result = subprocess.run(  # nosec B603 B607 — argv built from fixed verbs + caller-controlled scope/container names — binary PATH lookup is the cross-distro contract
                 ["podman", "image", "exists", self.ref],
+                executable=require_host_tool("podman"),
                 capture_output=True,
                 timeout=10,
             )
@@ -682,6 +706,7 @@ class PodmanImage:
         try:
             result = subprocess.run(  # nosec B603 B607 — argv built from fixed verbs + caller-controlled scope/container names — binary PATH lookup is the cross-distro contract
                 ["podman", "inspect", "--format", "{{json .Config.Labels}}", self.ref],
+                executable=require_host_tool("podman"),
                 capture_output=True,
                 text=True,
                 check=True,
@@ -712,6 +737,7 @@ class PodmanImage:
                     "{{.CreatedBy}}",
                     self.ref,
                 ],
+                executable=require_host_tool("podman"),
                 capture_output=True,
                 text=True,
                 timeout=30,
@@ -733,6 +759,7 @@ class PodmanImage:
         try:
             result = subprocess.run(  # nosec B603 B607 — argv built from fixed verbs + caller-controlled scope/container names — binary PATH lookup is the cross-distro contract
                 ["podman", "image", "rm", self.ref],
+                executable=require_host_tool("podman"),
                 capture_output=True,
                 timeout=30,
                 check=False,
@@ -762,6 +789,7 @@ class PodmanLogStream:
         cmd.append(container_name)
         self._proc = subprocess.Popen(  # noqa: S603 — cmd built above  # nosec B603 — argv is a fixed list controlled by this module
             cmd,
+            executable=require_host_tool("podman"),
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
         )
@@ -876,6 +904,7 @@ class PodmanEventStream:
         self._prefix = prefix
         self._proc = subprocess.Popen(  # noqa: S603  # nosec B603 B607 — fixed argv; podman PATH lookup is the cross-distro contract
             ["podman", "events", "--filter", "type=container", "--format", "{{json .}}"],
+            executable=require_host_tool("podman"),
             stdout=subprocess.PIPE,
             stderr=subprocess.DEVNULL,
         )
@@ -995,6 +1024,7 @@ class PodmanRuntime:
                     "{{.Names}}",
                     "--no-trunc",
                 ],
+                executable=require_host_tool("podman"),
                 stderr=subprocess.DEVNULL,
                 text=True,
                 timeout=_PROBE_TIMEOUT,
@@ -1018,6 +1048,7 @@ class PodmanRuntime:
         try:
             result = subprocess.run(  # nosec B603 — argv is a fixed list controlled by this module
                 cmd,
+                executable=require_host_tool("podman"),
                 capture_output=True,
                 text=True,
                 timeout=30,
@@ -1068,6 +1099,7 @@ class PodmanRuntime:
         )
         proc = subprocess.run(  # nosec B603 B607 — argv built from fixed verbs + caller-controlled scope/container names — binary PATH lookup is the cross-distro contract
             ["podman", "exec", container.name, *cmd],
+            executable=require_host_tool("podman"),
             capture_output=True,
             text=True,
             timeout=timeout,
@@ -1115,6 +1147,7 @@ class PodmanRuntime:
 
         proc = subprocess.Popen(  # noqa: S603 — argv built above  # nosec B603 — argv is a fixed list controlled by this module
             argv,
+            executable=require_host_tool("podman"),
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE if stderr is not None else subprocess.DEVNULL,
@@ -1153,6 +1186,7 @@ class PodmanRuntime:
                 log_debug(f"force_remove: podman rm -f {name} (start)")
                 proc = subprocess.run(  # nosec B603 B607 — argv built from fixed verbs + caller-controlled scope/container names — binary PATH lookup is the cross-distro contract
                     ["podman", "rm", "-f", name],
+                    executable=require_host_tool("podman"),
                     check=False,
                     stdout=subprocess.DEVNULL,
                     stderr=subprocess.PIPE,
@@ -1226,6 +1260,7 @@ class PodmanRuntime:
                     "--format",
                     "json",
                 ],
+                executable=require_host_tool("podman"),
                 stderr=subprocess.PIPE,
                 text=True,
                 timeout=_PROBE_TIMEOUT,
@@ -1298,6 +1333,7 @@ class PodmanRuntime:
                     "{{.Names}}\t{{.Size}}",
                     "--no-trunc",
                 ],
+                executable=require_host_tool("podman"),
                 stderr=subprocess.DEVNULL,
                 text=True,
                 timeout=120,
@@ -1493,6 +1529,7 @@ def _stream_initial_logs(
         try:
             proc = subprocess.Popen(  # nosec B603 B607 — argv built from fixed verbs + caller-controlled scope/container names — binary PATH lookup is the cross-distro contract
                 ["podman", "logs", "-f", container_name],
+                executable=require_host_tool("podman"),
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
             )

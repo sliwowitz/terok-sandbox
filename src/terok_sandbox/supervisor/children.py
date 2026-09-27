@@ -170,7 +170,6 @@ async def _run_gate(cfg: SidecarConfig, paths: SupervisorPaths, stop: asyncio.Ev
     per-container loopback port.  The parent only launches this child
     when the sidecar carried both ``gate_base_path`` and ``gate_token``.
     """
-    from terok_sandbox.gate.hooks import install_hooks
     from terok_sandbox.gate.server import GateServer
 
     if not cfg.gate_base_path or not cfg.gate_token:
@@ -183,7 +182,6 @@ async def _run_gate(cfg: SidecarConfig, paths: SupervisorPaths, stop: asyncio.Ev
     gate_home = gate_runtime / _GATE_HOME_DIRNAME
     gate_home.mkdir(mode=0o700, parents=True, exist_ok=True)
     hooks_path = gate_runtime / _GATE_HOOKS_DIRNAME
-    install_hooks(hooks_path)
     if cfg.ipc_mode == "tcp":
         if not cfg.gate_port:
             raise RuntimeError(f"sidecar ipc_mode='tcp' but gate_port is {cfg.gate_port!r}")
@@ -365,6 +363,12 @@ def run_child(service: str, container_id: str, sidecar_path: Path) -> int:
     )
     _ensure_socket_dirs(service, paths)
     _ensure_policy_dirs(service, cfg)
+    if service == "gate":
+        # Read bundled hook sources before confinement hides editable
+        # dependency trees; only this gate's private runtime lane is written.
+        from terok_sandbox.gate.hooks import install_hooks
+
+        install_hooks(paths.gate_socket.parent / _GATE_HOOKS_DIRNAME)
 
     if not cfg.allow_debugger and service != "verdict":
         # Pin filesystem path access to this service's lane.  Verdict is
