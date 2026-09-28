@@ -89,7 +89,11 @@ def launch_sleeper(podman_image: str) -> Iterator[Callable[..., str]]:
         argv = ["podman", "run", "-d", "--name", name]
         argv.append("--init" if init else "--init=false")
         argv += [podman_image, "sleep", "3600"]
-        subprocess.run(argv, check=True, capture_output=True, timeout=LAUNCH_TIMEOUT)
+        try:
+            subprocess.run(argv, check=True, capture_output=True, timeout=LAUNCH_TIMEOUT)
+        except subprocess.CalledProcessError as exc:
+            exc.add_note(exc.stderr.decode(errors="replace"))
+            raise
         return name
 
     yield _launch
