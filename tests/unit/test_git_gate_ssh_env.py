@@ -17,6 +17,7 @@ leak in and no interactive prompt can ever leak out — asserted below as
 
 from __future__ import annotations
 
+import shlex
 import socket
 from contextlib import contextmanager
 from pathlib import Path
@@ -75,8 +76,14 @@ def _make_gate(scope: str = "proj", **overrides: object) -> GitGate:
 class TestVaultPath:
     """Verify the default (ephemeral-signer) branch."""
 
-    def test_starts_signer_and_pins_ssh_options(self, tmp_path: Path) -> None:
+    def test_starts_signer_and_pins_ssh_options(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         """When the DB has keys, ``_ssh_env`` binds a signer and pins OpenSSH at it."""
+        ssh = tmp_path / "ssh"
+        ssh.write_text("#!/bin/sh\nexit 0\n")
+        ssh.chmod(0o755)
+        monkeypatch.setenv("PATH", str(tmp_path))
         sock_path = tmp_path / "agent.sock"
         bound_sock = _bind_real_unix_socket(sock_path)
 
@@ -107,6 +114,7 @@ class TestVaultPath:
         assert env["SSH_AUTH_SOCK"] == str(sock_path)
         assert env2["SSH_AUTH_SOCK"] == str(sock_path)
         cmd = env["GIT_SSH_COMMAND"]
+        assert shlex.split(cmd)[0] == str(ssh)
         # Ephemeral signer is the pinned identity source.
         assert f"IdentityAgent={sock_path}" in cmd
         assert "IdentityFile=none" in cmd
