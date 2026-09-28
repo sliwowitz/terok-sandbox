@@ -41,6 +41,8 @@ import shutil
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from terok_util import require_host_tool
+
 from .children import _install_signal_handlers
 from .launcher import launch_child
 from .sidecar import SupervisorPaths, load_sidecar, wired_services
@@ -269,7 +271,7 @@ async def _wait_for_container(container_id: str, *, retry: bool = True) -> int:
     failures = 0
     while True:
         proc = await asyncio.create_subprocess_exec(
-            "podman",
+            require_host_tool("podman"),
             "wait",
             container_id,
             stdout=asyncio.subprocess.PIPE,

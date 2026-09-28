@@ -14,6 +14,9 @@ from pathlib import Path
 MOCK_BASE = Path("/tmp/terok-testing")
 """Root for synthetic filesystem paths used by mocked tests."""
 
+MOCK_HOST_BIN = MOCK_BASE / "bin"
+"""Synthetic host tools selected for mocked runtime subprocesses."""
+
 MOCK_TASK_DIR = MOCK_BASE / "tasks" / "42"
 """Fake per-task directory used by shield adapter tests."""
 

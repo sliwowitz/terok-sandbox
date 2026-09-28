@@ -478,13 +478,13 @@ def _unlink_legacy_runtime_sockets() -> None:
 
 
 def _unlink_legacy_xdg_data_files() -> None:
-    """Remove pre-paths.root shield script copies under ``$XDG_DATA_HOME``.
+    """Remove the old XDG reader copy only when Shield has moved elsewhere.
 
     Master-branch terok-shield wrote ``nflog-reader.py`` to
     ``$XDG_DATA_HOME/terok/shield/`` without honouring ``paths.root``.
     The current installer puts it under
     [`namespace_state_dir("shield")`][terok_util.paths.namespace_state_dir];
-    this sweep removes the orphaned copy so a single
+    this sweep removes an orphaned copy so a single
     ``terok-sandbox setup`` converges on the new layout.
 
     Only the supervisor's specific files are unlinked — anything else
@@ -495,6 +495,8 @@ def _unlink_legacy_xdg_data_files() -> None:
 
     data_home = os.environ.get("XDG_DATA_HOME") or os.path.expanduser("~/.local/share")
     legacy_shield_root = Path(data_home) / "terok" / "shield"
+    if legacy_shield_root.resolve() == namespace_state_dir("shield").resolve():
+        return
     if legacy_shield_root.is_dir():
         for stale in ("nflog-reader.py",):
             try:

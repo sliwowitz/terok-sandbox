@@ -34,7 +34,7 @@ from contextlib import nullcontext
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
-from terok_util import find_host_tool, require_no_downgrade, setup_lock
+from terok_util import find_host_tool, require_host_tool, require_no_downgrade, setup_lock
 
 from ._util._apparmor import (
     AppArmorStatus,
@@ -196,7 +196,11 @@ def _sudo_run(script_args: tuple[str, ...]) -> int:
     sudo = find_host_tool("sudo")
     if sudo is None:
         raise SystemExit("sudo not found on PATH. Run the command above as root instead.")
-    return subprocess.run([sudo, "bash", *script_args], check=False).returncode  # nosec B603
+    try:
+        bash = require_host_tool("bash")
+    except FileNotFoundError:
+        raise SystemExit("bash not found on PATH. Install bash and rerun setup.") from None
+    return subprocess.run([sudo, bash, *script_args], check=False).returncode  # nosec B603
 
 
 def _run_component(comp: _Component, *, show_only: bool) -> int:

@@ -56,6 +56,8 @@ import sys
 from itertools import batched
 from pathlib import Path
 
+from terok_util import require_host_tool
+
 from ..config_schema import (
     GPU_VENDORS,
     GpuGrant,
@@ -589,6 +591,7 @@ def _cdi_spec_paths() -> list[Path]:
     try:
         proc = subprocess.run(  # nosec B603 B607 — podman CLI invocation matches existing pattern in this module
             ["podman", "info", "--format", "{{json .Host.CDISpecs}}"],
+            executable=require_host_tool("podman"),
             capture_output=True,
             text=True,
             timeout=5,

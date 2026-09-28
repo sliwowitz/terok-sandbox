@@ -23,7 +23,7 @@ from pathlib import Path, PurePosixPath
 from types import MappingProxyType
 from typing import TYPE_CHECKING
 
-from terok_util import podman_userns_args, require_setup
+from terok_util import podman_userns_args, require_host_tool, require_setup
 
 from ._util import warn_user
 from .config import SandboxConfig
@@ -763,6 +763,7 @@ class Sandbox:
         if input is not None:
             kwargs["input"] = input
         try:
+            kwargs["executable"] = require_host_tool("podman")
             try:
                 subprocess.run(cmd, **kwargs)  # nosec B603 — managed podman argv
             except subprocess.CalledProcessError as exc:

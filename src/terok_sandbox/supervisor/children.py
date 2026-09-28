@@ -47,7 +47,7 @@ from dataclasses import replace
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from terok_util import confine_filesystem, harden_self
+from terok_util import confine_filesystem, find_host_tool, harden_self
 
 from .sidecar import SERVICE_NAMES as _SERVICE_NAMES, SupervisorPaths, load_sidecar
 
@@ -78,11 +78,19 @@ _PR_SET_PDEATHSIG = 1
 #: omits runtime trees such as ``/run``: each service receives only its own
 #: explicit runtime lane from ``_writable_paths``.
 _SYSTEM_READABLE_ROOTS: tuple[Path, ...] = (
-    *(Path(p) for p in ("/usr", "/lib", "/lib64", "/bin", "/sbin", "/etc", "/proc", "/dev")),
+    *(
+        Path(p)
+        for p in ("/usr", "/lib", "/lib64", "/bin", "/sbin", "/etc", "/proc", "/dev", "/nix/store")
+    ),
     Path(sys.prefix),
     Path(sys.base_prefix),
+    Path(sys.executable).resolve(),
     Path(__file__).resolve().parents[2],
 )
+
+#: Git's HTTP service helpers. Only these executable files are granted,
+#: never the entire operator-selected GIT_EXEC_PATH directory.
+_GATE_GIT_HELPERS = ("git", "git-http-backend", "git-upload-pack", "git-receive-pack")
 
 #: Git opens this device read-write while serving pushes.  Passing the
 #: device itself lets terok-util install an exact-file rule rather than a
@@ -170,7 +178,6 @@ async def _run_gate(cfg: SidecarConfig, paths: SupervisorPaths, stop: asyncio.Ev
     per-container loopback port.  The parent only launches this child
     when the sidecar carried both ``gate_base_path`` and ``gate_token``.
     """
-    from terok_sandbox.gate.hooks import install_hooks
     from terok_sandbox.gate.server import GateServer
 
     if not cfg.gate_base_path or not cfg.gate_token:
@@ -183,7 +190,6 @@ async def _run_gate(cfg: SidecarConfig, paths: SupervisorPaths, stop: asyncio.Ev
     gate_home = gate_runtime / _GATE_HOME_DIRNAME
     gate_home.mkdir(mode=0o700, parents=True, exist_ok=True)
     hooks_path = gate_runtime / _GATE_HOOKS_DIRNAME
-    install_hooks(hooks_path)
     if cfg.ipc_mode == "tcp":
         if not cfg.gate_port:
             raise RuntimeError(f"sidecar ipc_mode='tcp' but gate_port is {cfg.gate_port!r}")
@@ -365,6 +371,12 @@ def run_child(service: str, container_id: str, sidecar_path: Path) -> int:
     )
     _ensure_socket_dirs(service, paths)
     _ensure_policy_dirs(service, cfg)
+    if service == "gate":
+        # Read bundled hook sources before confinement hides editable
+        # dependency trees; only this gate's private runtime lane is written.
+        from terok_sandbox.gate.hooks import install_hooks
+
+        install_hooks(paths.gate_socket.parent / _GATE_HOOKS_DIRNAME)
 
     if not cfg.allow_debugger and service != "verdict":
         # Pin filesystem path access to this service's lane.  Verdict is
@@ -468,14 +480,26 @@ def _resolver_config_target() -> Path | None:
 def _readable_paths(service: str, cfg: SidecarConfig) -> tuple[Path, ...]:
     """Return service-specific exact files needed after confinement.
 
-    Vault is the only child that dials out: it reads its route table and
-    the resolver configuration behind ``/etc/resolv.conf``.
+    Vault reads its routes and resolver configuration. Gate executes the
+    operator-selected Git and its HTTP service helpers, including symlink
+    targets outside the system software roots.
     """
     readable: list[Path] = []
     if service == "vault":
         readable.append(_routes_path(cfg))
         if resolver := _resolver_config_target():
             readable.append(resolver)
+    elif service == "gate":
+        from terok_sandbox.gate.server import git_http_backend
+
+        if git := find_host_tool("git"):
+            readable.append(Path(git).resolve())
+            if (backend := git_http_backend()) and backend.is_absolute():
+                readable.extend(
+                    helper.resolve()
+                    for name in _GATE_GIT_HELPERS
+                    if (helper := backend.parent / name).is_file()
+                )
     return tuple(readable)
 
 

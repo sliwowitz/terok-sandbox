@@ -9,7 +9,7 @@ import subprocess  # nosec B404 — doctor probes shell out via subprocess.run �
 import sys
 from typing import TYPE_CHECKING
 
-from terok_util import LazyHandler
+from terok_util import LazyHandler, require_host_tool
 
 from ._types import CommandDef
 
@@ -67,6 +67,7 @@ def _handle_doctor(*, cfg: SandboxConfig | None = None) -> None:
             try:
                 result = subprocess.run(  # noqa: S603  # nosec B603 — argv is a fixed list controlled by this module — argv is a fixed list controlled by this module
                     check.probe_cmd,
+                    executable=require_host_tool(check.probe_cmd[0]),
                     capture_output=True,
                     text=True,
                     timeout=5,

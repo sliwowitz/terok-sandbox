@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import stat
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -122,6 +123,53 @@ class TestInstallHooks:
         before = (hook.stat().st_mtime_ns, hook.read_text())
         install_hooks(hooks_dir)
         assert (hook.stat().st_mtime_ns, hook.read_text()) == before
+
+    def test_bootstrap_does_not_need_python_on_path(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The standalone hook uses the bound interpreter, even with spaces in its path."""
+        python = tmp_path / "python with spaces"
+        python.symlink_to(sys.executable)
+        monkeypatch.setattr("terok_sandbox.gate.hooks.sys.executable", str(python))
+        hooks_dir = hooks_dir_for(tmp_path)
+        install_hooks(hooks_dir)
+        (tmp_path / "pathlib.py").write_text("raise RuntimeError('untrusted cwd')\n")
+        result = subprocess.run(
+            [str(hooks_dir / "post-receive")],
+            input="",
+            text=True,
+            capture_output=True,
+            env={"PATH": "", "PYTHONPATH": str(tmp_path)},
+            cwd=tmp_path,
+            timeout=10,
+            check=True,
+        )
+        assert result.stderr == ""
+        assert (tmp_path / PUSH_MARKER_FILENAME).is_file()
+
+    def test_hook_resolves_git_afresh_from_each_launch_path(self, tmp_path: Path) -> None:
+        """An installed hook follows the caller's tool profile, never the repository cwd."""
+        hooks_dir = hooks_dir_for(tmp_path)
+        install_hooks(hooks_dir)
+        (tmp_path / "git").write_text("#!/bin/sh\nexit 99\n")
+        (tmp_path / "git").chmod(0o755)
+        for profile in ("first", "second"):
+            bindir = tmp_path / profile
+            bindir.mkdir()
+            git = bindir / "git"
+            git.write_text(f"#!/bin/sh\nprintf '{profile}' > selected-tool\n")
+            git.chmod(0o755)
+            subprocess.run(
+                [str(hooks_dir / "post-receive")],
+                input=f"{'1' * 40} {'0' * 40} refs/heads/main\n",
+                text=True,
+                capture_output=True,
+                env={"PATH": f":.:relative:{bindir}"},
+                cwd=tmp_path,
+                timeout=10,
+                check=True,
+            )
+            assert (tmp_path / "selected-tool").read_text() == profile
 
 
 # ---------------------------------------------------------------------------

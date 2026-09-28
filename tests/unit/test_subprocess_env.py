@@ -55,6 +55,7 @@ def _subprocess_can_import(env: dict[str, str]) -> tuple[int, str]:
     result = subprocess.run(
         [
             sys.executable,
+            "-P",
             "-c",
             f"import {_STUB_MODULE_NAME}; print({_STUB_MODULE_NAME}.VALUE)",
         ],
@@ -96,20 +97,37 @@ def test_child_process_env_fixes_wrapped_python_import(
     )
 
 
-def test_child_process_env_threads_sys_path_as_pythonpath() -> None:
-    """The child env carries the parent's ``sys.path`` as ``PYTHONPATH``."""
-    import os
-
+def test_child_process_env_threads_safe_sys_path_as_pythonpath(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Empty, relative, cwd and symlink-to-cwd paths never undo the child's -P."""
+    cwd = tmp_path / "cwd"
+    cwd.mkdir()
+    alias = tmp_path / "cwd-alias"
+    alias.symlink_to(cwd, target_is_directory=True)
+    library = tmp_path / "library"
+    monkeypatch.chdir(cwd)
+    monkeypatch.setattr(sys, "path", ["", ".", "relative", str(cwd), str(alias), str(library)])
     env = child_process_env()
-    assert env["PYTHONPATH"] == os.pathsep.join(sys.path)
+    assert env["PYTHONPATH"] == str(library)
     # And it still inherits the parent environment.
     assert "PATH" in env
 
 
 def test_child_process_env_pythonpath_wins_over_overrides() -> None:
     """An ambient/override ``PYTHONPATH`` can never shadow the parent's real path."""
-    import os
-
     env = child_process_env({"FOO": "bar", "PYTHONPATH": "ambient-junk"})
     assert env["FOO"] == "bar"
-    assert env["PYTHONPATH"] == os.pathsep.join(sys.path)
+    assert env["PYTHONPATH"] == child_process_env()["PYTHONPATH"]
+
+
+def test_cwd_module_cannot_shadow_child_imports(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The actual isolated child does not import a module from its launch cwd."""
+    (tmp_path / f"{_STUB_MODULE_NAME}.py").write_text("VALUE = 'hostile cwd'\n")
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.syspath_prepend(str(tmp_path))
+    monkeypatch.setenv("PYTHONPATH", str(tmp_path))
+    rc, _ = _subprocess_can_import(child_process_env())
+    assert rc != 0
