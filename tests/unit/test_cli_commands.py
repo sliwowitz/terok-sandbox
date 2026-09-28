@@ -178,24 +178,25 @@ class TestShieldCLI:
             _handle_shield_setup()
         install.assert_called_once_with()
 
-    def test_shield_status_runs(self) -> None:
-        """``shield status`` resolves through shield's own registry handler.
-
-        Sandbox no longer hand-rolls a separate status function — the
-        verb is consumed from terok-shield's COMMANDS via the
-        CommandTree.  Mock at the Shield instance level so the
-        sandbox-wrapped path exercises the same code shield's
-        standalone CLI runs.
-        """
+    def test_shield_status_runs(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """The real registry handler renders status without requiring host tools."""
         from terok_shield import EnvironmentCheck
 
+        monkeypatch.setenv("PATH", "")
         mock_env = EnvironmentCheck(ok=True, hooks="per-container", health="ok")
         mock_cfg = {"mode": "hook", "profiles": ["dev-standard"], "audit_enabled": True}
         with (
-            patch("terok_shield.Shield.status", return_value=mock_cfg),
-            patch("terok_shield.Shield.check_environment", return_value=mock_env),
+            patch("terok_sandbox.commands.shield._shield_build_config") as build_config,
+            patch("terok_sandbox.commands.shield.Shield", autospec=True) as shield_factory,
         ):
+            shield = shield_factory.return_value
+            shield.status.return_value = mock_cfg
+            shield.check_environment.return_value = mock_env
             out, _, rc = _run_cli("shield", "status")
+        build_config.assert_called_once_with(None)
+        shield_factory.assert_called_once_with(build_config.return_value)
+        shield.status.assert_called_once_with()
+        shield.check_environment.assert_called_once_with()
         assert rc == 0
         assert "hook" in out
         assert "dev-standard" in out
