@@ -17,6 +17,7 @@ import time
 import types
 from pathlib import Path
 
+import keyring
 import pytest
 
 from terok_sandbox._util._placement import SupervisorPlacement
@@ -40,10 +41,11 @@ _REAL_LOAD = encryption.load_passphrase_from_keyring
 class TestKeyringReadNeverBlocks:
     """`load_passphrase_from_keyring` must return, whatever the backend does."""
 
-    def test_blocked_read_is_skipped_without_touching_the_backend(
+    def test_blocked_interactive_read_is_skipped_without_touching_the_backend(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """A read the probe marks blocked returns None and never imports keyring."""
+        """An interactive read the probe marks blocked never reaches the backend."""
+        monkeypatch.setenv("DISPLAY", ":0")
         monkeypatch.setattr(
             encryption, "os_keyring_read_blocked", lambda **_kw: "OS keyring locked"
         )
@@ -55,7 +57,7 @@ class TestKeyringReadNeverBlocks:
         forbidden.get_password = _explode  # type: ignore[attr-defined]
         monkeypatch.setitem(sys.modules, "keyring", forbidden)
 
-        assert _REAL_LOAD() is None
+        assert _REAL_LOAD(allow_prompt=True) is None
 
     def test_wedged_backend_times_out_instead_of_freezing(
         self, monkeypatch: pytest.MonkeyPatch
@@ -71,7 +73,7 @@ class TestKeyringReadNeverBlocks:
             return None
 
         stuck.get_password = _hang  # type: ignore[attr-defined]
-        monkeypatch.setitem(sys.modules, "keyring", stuck)
+        monkeypatch.setattr(keyring, "get_keyring", lambda: stuck)
 
         try:
             started = time.monotonic()
@@ -94,7 +96,7 @@ class TestKeyringReadNeverBlocks:
             return None
 
         stuck.get_password = _hang  # type: ignore[attr-defined]
-        monkeypatch.setitem(sys.modules, "keyring", stuck)
+        monkeypatch.setattr(keyring, "get_keyring", lambda: stuck)
 
         try:
             assert _REAL_LOAD() is None  # times out; the call occupies the worker
@@ -108,7 +110,7 @@ class TestKeyringReadNeverBlocks:
         monkeypatch.setattr(encryption, "os_keyring_read_blocked", lambda **_kw: None)
         healthy = types.ModuleType("keyring")
         healthy.get_password = lambda *_args: "the-passphrase"  # type: ignore[attr-defined]
-        monkeypatch.setitem(sys.modules, "keyring", healthy)
+        monkeypatch.setattr(keyring, "get_keyring", lambda: healthy)
 
         assert _REAL_LOAD() == "the-passphrase"
 
@@ -294,7 +296,7 @@ class TestLockedCollectionPromptPolicy:
         connection = types.SimpleNamespace(close=lambda: None)
         collection = types.SimpleNamespace(is_locked=lambda: True)
         fake.dbus_init = lambda: connection  # type: ignore[attr-defined]
-        fake.get_default_collection = lambda _c: collection  # type: ignore[attr-defined]
+        fake.Collection = lambda _c: collection  # type: ignore[attr-defined]
         monkeypatch.setitem(sys.modules, "secretstorage", fake)
 
     def test_background_read_skips_the_locked_collection(
@@ -311,7 +313,7 @@ class TestLockedCollectionPromptPolicy:
         monkeypatch.setenv("DISPLAY", ":0")
         assert encryption.os_keyring_read_blocked(allow_prompt=True) is None
         # The read reaches the backend — the prompt is the backend's business.
-        monkeypatch.setattr(keyring, "get_password", lambda *_a: "unlocked-by-dialog")
+        monkeypatch.setattr(keyring.get_keyring(), "get_password", lambda *_a: "unlocked-by-dialog")
         assert _REAL_LOAD(allow_prompt=True) == "unlocked-by-dialog"
 
     def test_interactive_read_without_a_display_skips(

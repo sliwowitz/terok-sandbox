@@ -27,8 +27,7 @@ Schema declarations and forward migrations live in
 — this module is the data-access layer only.
 
 The on-disk file is always SQLCipher-encrypted; the passphrase
-resolution chain (keyring → ``credentials.passphrase`` config field)
-and the SQLCipher open helpers live in
+resolution chain and the SQLCipher open helpers live in
 [`terok_sandbox.vault.store.encryption`][terok_sandbox.vault.store.encryption].
 """
 
@@ -853,8 +852,8 @@ def open_credential_db(
     """Open the credential DB, resolving the passphrase via the runtime chain.
 
     Walks: *systemd_creds_file* (sealed credential decrypted via
-    ``systemd-creds(1)``) → OS keyring (when *use_keyring*) → the kernel
-    keyring (volatile unlock cache) → *passphrase_command*
+    ``systemd-creds(1)``) → desktop keyring (when *use_keyring*) → the
+    session cache (kernel keyring or tmpfs file) → *passphrase_command*
     (operator-supplied helper, e.g. ``pass show …`` / ``op read …``) →
     (when *prompt_on_tty* and a TTY is attached) interactive prompt.
     CLI consumers pass ``prompt_on_tty=True``; daemons leave it

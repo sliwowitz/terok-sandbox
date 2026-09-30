@@ -23,7 +23,7 @@ phase writes before re-keying.
 from __future__ import annotations
 
 import sys
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -41,11 +41,11 @@ _NON_TTY_TIER_HINT = """\
 
   systemd-creds is unavailable on this host (needs systemd ≥ 257), so
   setup would otherwise fall through to the kernel-keyring cache — a
-  fresh random passphrase you would never see, lost at logout.  Pick a
+  fresh random passphrase you would never see, lost on reboot.  Pick a
   tier explicitly:
 
-    --passphrase-tier keyring          (recommended on a single-user host)
-    --passphrase-tier kernel-keyring   (re-run `vault unlock` after each logout)
+    --passphrase-tier keyring          (desktop keyring; saved across reboots)
+    --passphrase-tier kernel-keyring   (temporary cache; re-unlock after reboot)
 
   Or install systemd ≥ 257 (Fedora ≥ 42, Debian ≥ 13) and re-run `{setup}`
   so the systemd-creds auto-tier becomes available.  For a headless
@@ -72,11 +72,11 @@ Choice [k]:"""
 _CHOOSER_OPTIONS: dict[PassphraseTier, tuple[str, str]] = {
     PassphraseTier.KEYRING: (
         "k",
-        "keyring — your login keyring (recommended; auto-unlocks at login)",
+        "desktop keyring — saved across reboots (recommended)",
     ),
     PassphraseTier.KERNEL_KEYRING: (
         "n",
-        "kernel keyring — RAM-only cache; re-unlock after logout",
+        "kernel keyring — temporary cache (session-file fallback); lost on reboot",
     ),
 }
 _DEFAULT_TIER = PassphraseTier.KEYRING
@@ -93,7 +93,7 @@ class TierProvisionResult:
     once they confirm it is saved off-host.
     """
 
-    passphrase: str
+    passphrase: str = field(repr=False)
     """The value now landed on the tier — mint or caller-supplied."""
 
     source: PassphraseTier
@@ -137,7 +137,7 @@ def provision_passphrase_tier(
     [`PROVISIONABLE_TIERS`][terok_sandbox.vault.store.tiers.PROVISIONABLE_TIERS]
     or an explicit empty passphrase (SQLCipher reads ``""`` as "no
     encryption"), and [`RuntimeError`][RuntimeError] when the chosen
-    backend (systemd-creds, OS keyring) is unreachable or an initial
+    backend (systemd-creds, desktop keyring) is unreachable or an initial
     passphrase is already provisioned.
     """
     from ..config import SandboxConfig
@@ -191,7 +191,8 @@ def provision_passphrase_tier(
     if tier is PassphraseTier.KEYRING:
         if not store_passphrase_in_keyring(passphrase):
             raise RuntimeError(
-                "OS keyring is unreachable or denied; choose a different storage mode"
+                "could not store and verify the passphrase in the desktop keyring;"
+                " choose a different storage mode"
             )
         _persist_mode_choice(PassphraseTier.KEYRING)
         return TierProvisionResult(passphrase, PassphraseTier.KEYRING, generated)
@@ -301,7 +302,7 @@ def plan_provisioning(cfg: SandboxConfig | None = None) -> ProvisioningPlan:
     # than hide them or fail after the pick.
     unavailable: dict[PassphraseTier, str] = {}
     if not keyring_backend_available():
-        unavailable[PassphraseTier.KEYRING] = "no OS keyring backend is reachable on this host"
+        unavailable[PassphraseTier.KEYRING] = "no desktop keyring backend is reachable on this host"
     if (kernel_reason := session_cache.unavailable_reason()) is not None:
         unavailable[PassphraseTier.KERNEL_KEYRING] = kernel_reason
     return ProvisioningPlan(
@@ -340,7 +341,7 @@ def _handle_credentials_encrypt_db(
     4. Interactive chooser on a TTY; otherwise hard-fail with an
        actionable hint.  Earlier releases silently fell through to
        a volatile tier here, which generates a fresh passphrase that
-       the operator never sees and that evaporates at logout.
+       the operator never sees and that is lost on reboot.
 
     *echo_passphrase* mirrors the announce path: when ``True``, any
     auto-generated passphrase is also printed to stdout so
@@ -381,7 +382,7 @@ def _handle_credentials_encrypt_db(
         passphrase_tier=passphrase_tier,
         echo_passphrase=echo_passphrase,
     )
-    print(f"  passphrase source: {source}")
+    print(f"  passphrase source: {source.display_name if source is not None else 'none'}")
 
     if auto_generated:
         _maybe_acknowledge_recovery(cfg, echo_to_stdout=echo_passphrase)
@@ -535,7 +536,7 @@ def _ask_passphrase_mode(
     before us in both of those cases.  Earlier releases auto-picked a
     volatile tier on non-TTY to keep installs from hanging; the
     side-effect was a silent fresh passphrase that the operator never
-    saw, lost at logout.  That convenience-vs-data-loss trade is wrong,
+    saw, lost on reboot.  That convenience-vs-data-loss trade is wrong,
     so we now fail closed with an actionable hint.
 
     Every tier in *choices* is listed; those in *unavailable* are shown
@@ -630,7 +631,10 @@ def _provision_passphrase(
         if store_passphrase_in_keyring(new):
             _announce_generated_passphrase(new, echo_to_stdout=echo_passphrase)
             return new, PassphraseTier.KEYRING, True
-        raise RuntimeError("OS keyring is unreachable or denied; choose a different storage mode")
+        raise RuntimeError(
+            "could not store and verify the passphrase in the desktop keyring;"
+            " choose a different storage mode"
+        )
 
     raise ValueError(f"unknown mode: {mode!r}")
 
@@ -715,12 +719,16 @@ def _post_setup_recovery_hint(cfg: SandboxConfig | None = None) -> None:
 
 
 def _persist_mode_choice(mode: PassphraseTier) -> None:
-    """Write the chosen mode into config.yml so the chain re-resolves next time.
+    """Persist and verify the chosen mode before reporting provisioning success.
 
     Kernel-keyring mode needs no change — the cached key is
     self-describing.  ``use_keyring`` is written even though it defaults
-    on, so an explicit ``use_keyring: false`` in the user config can't
+    on, so an explicit ``use_keyring: false`` in configuration can't
     silently disable the tier the operator just chose.
+
+    Raises:
+        RuntimeError: The configuration could not be written or verified.
+            Parser diagnostics are omitted because they can contain secrets.
     """
     from .. import config as _config
     from .._yaml import update_section as _yaml_update_section
@@ -728,14 +736,16 @@ def _persist_mode_choice(mode: PassphraseTier) -> None:
 
     if mode is not PassphraseTier.KEYRING:
         return
-    user_config = next((p for label, p in config_file_paths() if label == "user"), None)
-    if user_config is None:
-        return
-    _yaml_update_section(user_config, "credentials", {"use_keyring": True})
-    # The chain reads through ``_credentials_section``'s lru_cache;
-    # without invalidation the same process keeps seeing the
-    # pre-setup state.
-    _config._credentials_section.cache_clear()
+    _, config_path = config_file_paths()[-1]
+    try:
+        _yaml_update_section(config_path, "credentials", {"use_keyring": True})
+        if not _config.credentials_use_keyring():
+            raise RuntimeError("desktop keyring is still disabled")
+    except Exception as exc:  # noqa: BLE001 — YAML diagnostics can contain secret values
+        raise RuntimeError(
+            "could not enable the desktop keyring in configuration"
+            f" ({type(exc).__name__}); check config.yml before retrying"
+        ) from None
 
 
 def _back_up_plaintext_db(db_path: Path) -> Path:

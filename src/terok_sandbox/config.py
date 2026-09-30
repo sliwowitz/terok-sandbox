@@ -12,6 +12,8 @@ orchestration layer constructs it from [`core.config`][terok.lib.core.config] va
 from __future__ import annotations
 
 import functools
+import os
+import stat
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -83,22 +85,47 @@ def _default_services_mode() -> ServicesMode:
     return services_mode()
 
 
-@functools.lru_cache(maxsize=1)
 def _credentials_section() -> RawCredentialsSection:
-    """Return a validated ``RawCredentialsSection`` from the layered config.
+    """Read the current passphrase-source policy without process-lifetime caches.
 
-    Cached so the two field readers below share one pydantic pass per
-    process — the per-scope-bind path re-resolves the chain on every
-    bind, and without the cache each resolution would cost two
-    validations.
+    Another process can change the policy while the TUI is running.
+    Unreadable or invalid configuration must not silently enable a
+    passphrase source that the operator disabled.
+
+    Raises:
+        RuntimeError: Configuration cannot be read or validated. The message
+            excludes parser diagnostics, which can contain secret values.
     """
-    from .config_schema import RawCredentialsSection
+    from ruamel.yaml.error import YAMLError
+    from terok_util import ConfigStack
+    from terok_util.config_stack import load_yaml_scope
 
-    return _validate_section(RawCredentialsSection, "credentials")
+    from .config_schema import RawCredentialsSection
+    from .paths import config_file_paths
+
+    try:
+        stack = ConfigStack()
+        for label, path in config_file_paths():
+            if path == Path(os.devnull):
+                # The CLI's --raw mode explicitly requests schema defaults.
+                continue
+            try:
+                mode = path.stat().st_mode
+            except FileNotFoundError:
+                continue
+            if not stat.S_ISREG(mode):
+                raise ValueError("Configuration must be a regular file")
+            stack.push(load_yaml_scope(label, path))
+        return RawCredentialsSection.model_validate(stack.resolve().get("credentials", {}))
+    except (OSError, ValueError, YAMLError):
+        raise RuntimeError(
+            "Cannot read or validate credentials configuration; "
+            "check config.yml before accessing passphrase sources."
+        ) from None
 
 
 def credentials_use_keyring() -> bool:
-    """Resolve the ``credentials.use_keyring`` opt-in flag through the schema."""
+    """Read the current desktop-keyring policy from ``credentials.use_keyring``."""
     return _credentials_section().use_keyring
 
 
@@ -303,9 +330,9 @@ class SandboxConfig:
     """
 
     credentials_use_keyring: bool = field(default_factory=_default_credentials_use_keyring)
-    """Switch for the OS keyring tier in the passphrase resolution chain.
+    """Switch for the desktop keyring tier in the passphrase resolution chain.
 
-    On by default — an empty keyring simply doesn't resolve, so the
+    On by default — an empty desktop keyring simply doesn't resolve, so the
     tier costs nothing until something lands a value there.  Operators
     who want the chain to stay away from Secret Service entirely (its
     ACLs are per-collection, not per-item, so authorising terok against
@@ -495,7 +522,7 @@ class SandboxConfig:
         Idempotent, and it must be re-callable: the directory is gone for
         two routine reasons by the time a stopped container restarts — it
         lives under ``runtime_dir`` (``$XDG_RUNTIME_DIR``), a tmpfs the OS
-        clears on logout/reboot, and the per-container supervisor
+        clears on reboot, and the per-container supervisor
         ``rmtree``s it on every stop.  ``podman start`` re-binds the
         ``/run/terok`` mount from this exact source, so it must exist
         first.  A plain stop/start survives because podman recreates the

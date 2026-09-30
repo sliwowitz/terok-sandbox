@@ -76,7 +76,7 @@ class SidecarConfig:
     ``None`` derives ``vault.passphrase.cred`` beside ``db_path``.
     """
     credentials_use_keyring: bool = False
-    """Whether the pre-confinement passphrase walk may consult the OS keyring."""
+    """Whether the pre-confinement passphrase walk may consult the desktop keyring."""
     credentials_passphrase_command: str | None = None
     """Optional helper the child executes before installing Landlock."""
     scope_id: str | None = None

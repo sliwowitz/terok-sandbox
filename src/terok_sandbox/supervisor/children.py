@@ -427,7 +427,7 @@ def _resolve_service_passphrase(service: str, cfg: SidecarConfig) -> str | None:
             passphrase_command=cfg.credentials_passphrase_command,
         )
     finally:
-        # The OS-keyring tier reads on a worker thread; the Landlock
+        # The desktop-keyring tier reads on a worker thread; the Landlock
         # confinement that follows needs this process single-threaded.
         retire_keyring_worker()
     if passphrase is None:

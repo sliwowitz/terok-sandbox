@@ -3,7 +3,7 @@
 
 """Passphrase plumbing and SQLCipher helpers for at-rest credential encryption.
 
-Walks the five-tier resolution chain — systemd-creds → OS keyring →
+Walks the five-tier resolution chain — systemd-creds → desktop keyring →
 kernel keyring → ``passphrase_command`` helper → interactive prompt —
 and exposes the SQLCipher open / rekey / migrate primitives the rest
 of the package builds on.  The tier vocabulary lives in
@@ -26,7 +26,9 @@ import sqlite3
 import subprocess  # nosec B404 — operator-supplied passphrase_command helper — operator-supplied passphrase_command helper + systemd-creds
 import sys
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import closing, contextmanager
 from dataclasses import dataclass
+from functools import partial
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -34,10 +36,13 @@ from . import session_cache as _session_cache, systemd_creds as _systemd_creds
 from .tiers import PassphraseTier
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
+    from collections.abc import Callable, Iterator
+
+    from keyring.backend import KeyringBackend
 
 KEYRING_SERVICE = "terok-sandbox"
 KEYRING_USERNAME = "credentials-db"
+_SECRET_SERVICE_NO_PROMPT = "/"  # nosec B105 — D-Bus null object path, not a secret
 
 #: ``token_urlsafe(32)`` ≈ 43 chars of URL-safe Base64 — 256 bits of
 #: entropy from a 62-char alphabet plus ``-``/``_``, both shell-safe.
@@ -123,7 +128,7 @@ def resolve_passphrase_with_source(
         if sealed_pw:
             return sealed_pw, PassphraseTier.SYSTEMD_CREDS
         # Fail closed: silently falling through would demote a
-        # machine-bound tier to keyring / plaintext-on-disk without
+        # machine-bound tier to desktop keyring / plaintext-on-disk without
         # the operator's knowledge.
         raise WrongPassphraseError(
             f"sealed systemd-creds credential present at {systemd_creds_file}"
@@ -134,7 +139,7 @@ def resolve_passphrase_with_source(
         if keyring_pw:
             return keyring_pw, PassphraseTier.KEYRING
     # Volatile unlock cache, below the zero-friction durable tiers and
-    # above the helper: fail-*open* like the OS keyring above it — an
+    # above the helper: fail-*open* like the desktop keyring above it — an
     # absent or expired key falls through rather than masking the
     # durable ``passphrase_command`` beneath.  Read via the module
     # namespace so tests can monkeypatch the session cache away.
@@ -172,9 +177,9 @@ def resolve_passphrase(
 
     1. *systemd_creds_file* — sealed credential decrypted via
        ``systemd-creds(1)``.  Machine-bound (TPM2 or host key), survives
-       reboot, no OS keyring required.  See
+       reboot, no desktop keyring required.  See
        [`terok_sandbox.vault.store.systemd_creds`][terok_sandbox.vault.store.systemd_creds].
-    2. OS keyring — only when *use_keyring* is true; off by default because
+    2. Desktop keyring — only when *use_keyring* is true; off by default because
        Linux Secret Service grants access per-collection, not per-item.
     3. Session cache — the volatile unlock cache
        ([`terok_sandbox.vault.store.session_cache`][terok_sandbox.vault.store.session_cache]):
@@ -236,7 +241,7 @@ def probe_passphrase_chain(
     secret: the sealed systemd-creds credential is never unsealed and
     the ``passphrase_command`` is never executed (both can be slow or
     have side effects), so their mere configuration counts as present.
-    The keyring and kernel-keyring tiers are cheap to read, so those are
+    The desktop-keyring and kernel-keyring tiers are cheap to read, so those are
     probed for real.  Tiers appear in resolution order; the first
     ``present`` one is the tier that would unlock the vault.  The
     interactive ``prompt`` tier is omitted — it stores nothing, so it
@@ -256,7 +261,7 @@ def probe_passphrase_chain(
             # Truthy, not ``is not None``: an empty string is the resolver's
             # "no passphrase" sentinel, so status must treat it as absent too.
             use_keyring and bool(load_passphrase_from_keyring()),
-            "OS keyring" if use_keyring else "use_keyring off",
+            "desktop keyring" if use_keyring else "use_keyring off",
         ),
         TierPresence(
             PassphraseTier.KERNEL_KEYRING,
@@ -302,13 +307,13 @@ def _systemd_creds_detail(path: Path | None) -> str:
 # ── Tier primitives ─────────────────────────────────────────────────
 
 
-#: Ceiling on one OS-keyring read.  A healthy backend answers in
+#: Ceiling on one desktop-keyring read.  A healthy backend answers in
 #: milliseconds.  Only a wedged D-Bus round-trip comes near this limit.
 _KEYRING_READ_TIMEOUT_S = 3.0
 
 
 def load_passphrase_from_keyring(*, allow_prompt: bool = False) -> str | None:
-    """Return the keyring-stored passphrase, or ``None`` when a read cannot succeed.
+    """Return the desktop-keyring passphrase, or ``None`` when a read cannot succeed.
 
     A read from a locked Secret Service collection triggers the
     desktop's unlock dialog and waits for the answer.  That wait is
@@ -321,10 +326,15 @@ def load_passphrase_from_keyring(*, allow_prompt: bool = False) -> str | None:
     tier instead of freezing its caller.
     """
 
+    interactive = allow_prompt and _graphical_session_present()
+
     def _read() -> str | None:
         import keyring  # noqa: PLC0415
 
-        return keyring.get_password(KEYRING_SERVICE, KEYRING_USERNAME)
+        backend = keyring.get_keyring()
+        if interactive:
+            return backend.get_password(KEYRING_SERVICE, KEYRING_USERNAME)
+        return _read_keyring_backend(backend)
 
     # The probe is always bounded — ``dbus_init`` can block exactly like
     # the read, and a wedged D-Bus must not block any caller.  Only the
@@ -332,49 +342,139 @@ def load_passphrase_from_keyring(*, allow_prompt: bool = False) -> str | None:
     # wait on the operator, and a timeout would cancel a dialog they
     # are looking at.
     try:
+        if not interactive:
+            return _call_with_timeout(_read, _KEYRING_READ_TIMEOUT_S)
         blocked = _call_with_timeout(
-            lambda: os_keyring_read_blocked(allow_prompt=allow_prompt),
+            lambda: os_keyring_read_blocked(allow_prompt=True),
             _KEYRING_READ_TIMEOUT_S,
         )
         if blocked is not None:
             return None
-        return _read() if allow_prompt else _call_with_timeout(_read, _KEYRING_READ_TIMEOUT_S)
+        return _read()
     except Exception:  # noqa: BLE001 — timeout or backend error: the tier degrades
         return None
 
 
 def os_keyring_read_blocked(*, allow_prompt: bool = False) -> str | None:
-    """Explain why an OS-keyring read would block or fail, or ``None`` when safe.
+    """Explain why a desktop-keyring read would block or fail, or ``None`` when safe.
 
-    Only the Secret Service backend can block: a read from a locked
-    collection triggers a D-Bus unlock prompt, and the prompt waits for
-    a desktop dialog.  This probe reads the lock state without a
-    prompt.  A locked collection does not block an *allow_prompt* read
-    when a graphical session is present — the operator answers the
+    A Secret Service read from a locked collection can trigger a D-Bus
+    unlock prompt that waits for a desktop dialog.  This probe reads the
+    lock state without a prompt.  A locked collection does not block an
+    *allow_prompt* read when a graphical session is present — the operator answers the
     dialog.  A probe error (no D-Bus session, no Secret Service daemon)
-    also makes the tier unusable and returns a reason.  Non-D-Bus
-    backends never prompt, so they pass.
+    also makes the tier unusable and returns a reason.  The generic
+    libsecret backend cannot disable implicit unlocking, so background
+    reads reject it.  Other configured backends retain their own semantics.
     """
     try:
         import keyring  # noqa: PLC0415
         from keyring.backends.SecretService import Keyring as _SecretService  # noqa: PLC0415
 
-        if not isinstance(keyring.get_keyring(), _SecretService):
-            return None
-        import secretstorage  # noqa: PLC0415
-
-        connection = secretstorage.dbus_init()
-        try:
-            collection = secretstorage.get_default_collection(connection)
-            if collection.is_locked():
-                if allow_prompt and _graphical_session_present():
-                    return None
-                return "OS keyring locked (unlock it in a desktop session, or use another tier)"
-        finally:
-            connection.close()
+        for backend in _keyring_backends(keyring.get_keyring()):
+            if not (allow_prompt and _graphical_session_present()):
+                _reject_implicit_unlock_backend(backend)
+            if isinstance(backend, _SecretService):
+                with _secret_service_collection(backend) as collection:
+                    if (
+                        collection is not None
+                        and collection.is_locked()
+                        and not (allow_prompt and _graphical_session_present())
+                    ):
+                        return (
+                            "desktop keyring locked "
+                            "(unlock it in a desktop session, or use another tier)"
+                        )
     except Exception as exc:  # noqa: BLE001
-        return f"OS keyring unreachable ({type(exc).__name__})"
+        return f"desktop keyring unreachable ({type(exc).__name__})"
     return None
+
+
+def _keyring_backends(backend: KeyringBackend) -> Iterator[KeyringBackend]:
+    """Yield concrete backends in the selected desktop keyring's resolution order."""
+    from keyring.backends.chainer import ChainerBackend  # noqa: PLC0415
+
+    if isinstance(backend, ChainerBackend):
+        for member in backend.backends:
+            yield from _keyring_backends(member)
+    else:
+        yield backend
+
+
+@contextmanager
+def _secret_service_collection(backend: KeyringBackend) -> Iterator[Any]:
+    """Open the configured collection, or yield ``None`` if it does not exist.
+
+    ``get_default_collection`` creates a missing collection and may prompt.
+    Constructing ``Collection`` directly instead fails without side effects.
+    """
+    import secretstorage  # noqa: PLC0415
+
+    with closing(secretstorage.dbus_init()) as connection:
+        try:
+            if hasattr(backend, "preferred_collection"):
+                collection = secretstorage.Collection(connection, backend.preferred_collection)
+            else:
+                collection = secretstorage.Collection(connection)
+        except secretstorage.exceptions.ItemNotFoundException:
+            collection = None
+        yield collection
+
+
+def _read_keyring_backend(backend: KeyringBackend) -> str | None:
+    """Read without Secret Service unlock prompts; propagate failures, not false absence.
+
+    The generic Secret Service getter unlocks both collections and items.
+    A prior lock probe cannot prevent a later lock race, so background reads
+    use SecretStorage's non-unlocking primitives on the same credential query.
+    """
+    from keyring.backends.SecretService import Keyring as _SecretService  # noqa: PLC0415
+
+    for member in _keyring_backends(backend):
+        _reject_implicit_unlock_backend(member)
+        if isinstance(member, _SecretService):
+            with _secret_service_collection(member) as collection:
+                if collection is None:
+                    continue
+                collection.ensure_not_locked()
+                for item in collection.search_items(
+                    member._query(KEYRING_SERVICE, KEYRING_USERNAME)
+                ):
+                    return item.get_secret().decode("utf-8")
+        elif (passphrase := member.get_password(KEYRING_SERVICE, KEYRING_USERNAME)) is not None:
+            return passphrase
+    return None
+
+
+def _delete_keyring_backend(backend: KeyringBackend) -> str | None:
+    """Delete without Secret Service prompts, or explain why confirmation is needed.
+
+    SecretStorage's public ``Item.delete`` executes returned prompts.  Its
+    transport is used here only to omit that interactive step; an unexecuted
+    confirmation request cannot establish deletion and must report failure.
+    """
+    from keyring.backends.SecretService import Keyring as _SecretService  # noqa: PLC0415
+    from keyring.errors import PasswordDeleteError  # noqa: PLC0415
+
+    if not isinstance(backend, _SecretService):
+        backend.delete_password(KEYRING_SERVICE, KEYRING_USERNAME)
+        return None
+    with _secret_service_collection(backend) as collection:
+        if collection is not None:
+            collection.ensure_not_locked()
+            for item in collection.search_items(backend._query(KEYRING_SERVICE, KEYRING_USERNAME)):
+                item.ensure_not_locked()
+                (prompt,) = item._item.call("Delete", "")
+                if prompt != _SECRET_SERVICE_NO_PROMPT:
+                    return "desktop keyring requires deletion confirmation"
+                return None
+    raise PasswordDeleteError("No such password")
+
+
+def _reject_implicit_unlock_backend(backend: KeyringBackend) -> None:
+    """Reject native libsecret reads that cannot suppress implicit unlock prompts."""
+    if any(cls.__module__ == "keyring.backends.libsecret" for cls in type(backend).__mro__):
+        raise RuntimeError("the libsecret backend does not support promptless access")
 
 
 def _graphical_session_present() -> bool:
@@ -382,7 +482,7 @@ def _graphical_session_present() -> bool:
     return bool(os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY"))
 
 
-#: One worker serializes every bounded OS-keyring access.  A wedged
+#: One worker serializes every bounded desktop-keyring access.  A wedged
 #: call occupies the single slot; later calls wait in the queue for at
 #: most their own timeout and then cancel out of it, so the process
 #: never accumulates threads against one wedged backend.  Created on
@@ -394,20 +494,20 @@ _keyring_worker_wedged = False
 
 
 def _keyring_worker() -> ThreadPoolExecutor:
-    """The shared keyring worker, started on first use.
+    """The shared desktop-keyring worker, started on first use.
 
     A fresh worker holds no wedged call: the wedge belongs to the executor
     that was retired around it, so the flag clears with the new one.
     """
     global _keyring_executor, _keyring_worker_wedged
     if _keyring_executor is None:
-        _keyring_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="os-keyring")
+        _keyring_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="desktop-keyring")
         _keyring_worker_wedged = False
     return _keyring_executor
 
 
 def retire_keyring_worker() -> None:
-    """Join the keyring worker so the process is single-threaded again.
+    """Join the desktop-keyring worker so the process is single-threaded again.
 
     A process that confines itself after its passphrase chain needs
     this: Landlock below ABI 8 restricts one thread, and the helper
@@ -423,7 +523,7 @@ def retire_keyring_worker() -> None:
 
 
 def _call_with_timeout(fn: Callable[[], str | None], timeout: float) -> str | None:
-    """Run *fn* on the shared keyring worker; raise ``TimeoutError`` past *timeout*.
+    """Run *fn* on the shared desktop-keyring worker; raise ``TimeoutError`` past *timeout*.
 
     The caller abandons an overrun call instead of killing it, because
     Python has no safe thread kill.  *fn* must therefore be a read with
@@ -439,15 +539,15 @@ def _call_with_timeout(fn: Callable[[], str | None], timeout: float) -> str | No
         # the single slot it already occupies.
         future.cancel()
         _keyring_worker_wedged = True
-        _logger.warning("OS keyring access exceeded %.0fs; skipping the tier", timeout)
+        _logger.warning("Desktop keyring access exceeded %.0fs; skipping the tier", timeout)
         raise
 
 
 def keyring_backend_available() -> bool:
-    """Return ``True`` iff a usable OS keyring backend is reachable.
+    """Return ``True`` iff a usable desktop keyring backend is reachable.
 
     Availability probe for setup frontends (the TUI tier chooser)
-    deciding whether to *offer* the keyring tier at all.  A probe, not
+    deciding whether to *offer* the desktop-keyring tier at all.  A probe, not
     a guarantee — the definitive answer stays with
     [`store_passphrase_in_keyring`][terok_sandbox.vault.store.encryption.store_passphrase_in_keyring]'s
     return value at provisioning time.  The ``fail`` and ``null``
@@ -457,54 +557,91 @@ def keyring_backend_available() -> bool:
         import keyring  # noqa: PLC0415
         from keyring.backends import fail, null  # noqa: PLC0415
 
-        return not isinstance(keyring.get_keyring(), (fail.Keyring, null.Keyring))
+        for backend in _keyring_backends(keyring.get_keyring()):
+            if not isinstance(backend, (fail.Keyring, null.Keyring)):
+                _reject_implicit_unlock_backend(backend)
+                return True
+        return False
     except Exception:  # noqa: BLE001
         return False
 
 
 def store_passphrase_in_keyring(passphrase: str) -> bool:
-    """Persist *passphrase* in the OS keyring; return ``True`` on success.
+    """Persist *passphrase* in the desktop keyring and verify promptless retrieval.
+
+    ``True`` requires the same backend to return the exact value within
+    the read timeout.  ``False`` does not prove that nothing was written:
+    callers must preserve their source until verification succeeds.
 
     Refuses to store an empty value — SQLCipher interprets it as
-    "no encryption", and a later resolve hit on a blank keyring entry
+    "no encryption", and a later resolve hit on a blank desktop-keyring entry
     would silently open the DB plaintext.
     """
     if not passphrase:
-        raise ValueError("refusing to store an empty passphrase in the keyring")
+        raise ValueError("refusing to store an empty passphrase in the desktop keyring")
     try:
         import keyring  # noqa: PLC0415
 
-        keyring.set_password(KEYRING_SERVICE, KEYRING_USERNAME, passphrase)
-        return True
+        selected = keyring.get_keyring()
+        for backend in _keyring_backends(selected):
+            _reject_implicit_unlock_backend(backend)
+            try:
+                backend.set_password(KEYRING_SERVICE, KEYRING_USERNAME, passphrase)
+            except NotImplementedError:
+                continue
+            stored = _call_with_timeout(
+                partial(_read_keyring_backend, backend), _KEYRING_READ_TIMEOUT_S
+            )
+            if stored is None or not secrets.compare_digest(
+                stored.encode("utf-8"), passphrase.encode("utf-8")
+            ):
+                return False
+            if selected is backend:
+                return True
+            resolved = _call_with_timeout(
+                lambda: _read_keyring_backend(selected), _KEYRING_READ_TIMEOUT_S
+            )
+            return resolved is not None and secrets.compare_digest(
+                resolved.encode("utf-8"), passphrase.encode("utf-8")
+            )
+        return False
     except Exception:  # noqa: BLE001
         return False
 
 
 def forget_passphrase_in_keyring() -> str | None:
-    """Remove the keyring entry; return ``None`` when it is gone, else why it may survive.
+    """Remove the desktop-keyring entry; return ``None`` only after verified absence.
 
     "Gone" covers a successful delete and an entry that never existed —
-    the caller's goal is absence, not the delete call.  A locked keyring
+    the caller's goal is absence, not the delete call.  A locked desktop keyring
     cannot prove absence and never prompts here, so it returns its
     reason; so does a backend that rejects the delete while the entry
     still reads back.  Callers render the reason instead of guessing.
     """
-    if (blocked := os_keyring_read_blocked()) is not None:
-        return blocked
     try:
         import keyring  # noqa: PLC0415
         from keyring.errors import PasswordDeleteError  # noqa: PLC0415
 
-        try:
-            keyring.delete_password(KEYRING_SERVICE, KEYRING_USERNAME)
-        except PasswordDeleteError:
-            # Most backends raise this for a missing entry; only a
-            # residual entry after it means the backend refused.
-            if load_passphrase_from_keyring() is not None:
-                return "the backend rejected the delete"
-        return None
+        if (
+            blocked := _call_with_timeout(os_keyring_read_blocked, _KEYRING_READ_TIMEOUT_S)
+        ) is not None:
+            return blocked
+        selected = keyring.get_keyring()
+        for backend in _keyring_backends(selected):
+            try:
+                if (reason := _delete_keyring_backend(backend)) is not None:
+                    return reason
+            except NotImplementedError:
+                continue
+            except PasswordDeleteError:
+                pass
+            break
+        remaining = _call_with_timeout(
+            lambda: _read_keyring_backend(selected), _KEYRING_READ_TIMEOUT_S
+        )
+        return None if remaining is None else "the backend did not remove the passphrase"
     except Exception as exc:  # noqa: BLE001
-        return f"OS keyring unreachable ({type(exc).__name__})"
+        return f"desktop keyring unreachable ({type(exc).__name__})"
 
 
 def load_passphrase_from_command(
@@ -515,12 +652,10 @@ def load_passphrase_from_command(
     Same shape as the other tier primitives
     ([`load_passphrase_from_keyring`][terok_sandbox.vault.store.encryption.load_passphrase_from_keyring]):
     silent on every failure path so the resolver can decide whether
-    ``None`` means "skip this tier" or "fail closed".  Diagnostic
-    detail (parse error, exec failure, non-zero exit, helper stderr,
-    timeout) is logged at WARNING so operators can triage their helper
-    from the invoking command's output (or the per-container supervisor
-    log under ``<state_root>/logs/``) without us crashing the chain
-    walk.
+    ``None`` means "skip this tier" or "fail closed". Warnings report
+    only the failure stage, exception type, exit code, or timeout.
+    Command text, helper output, and exception messages may contain
+    secrets and never enter the log.
 
     Same vocabulary as ``git config credential.helper``, ssh pinentry,
     ``BORG_PASSCOMMAND``: one field plugs any credential backend into
@@ -532,7 +667,7 @@ def load_passphrase_from_command(
     try:
         argv = shlex.split(command)
     except ValueError as exc:
-        _logger.warning("passphrase_command shlex parse failed: %s", exc)
+        _logger.warning("passphrase_command shlex parse failed (%s)", type(exc).__name__)
         return None
     if not argv:
         return None
@@ -541,18 +676,16 @@ def load_passphrase_from_command(
             argv, capture_output=True, text=True, timeout=timeout, check=False
         )
     except OSError as exc:
-        _logger.warning("passphrase_command %r failed to spawn: %s", argv[0], exc)
+        _logger.warning("passphrase_command failed to spawn (%s)", type(exc).__name__)
+        return None
+    except UnicodeError as exc:
+        _logger.warning("passphrase_command text conversion failed (%s)", type(exc).__name__)
         return None
     except subprocess.TimeoutExpired:
-        _logger.warning("passphrase_command %r timed out after %.0fs", argv[0], timeout)
+        _logger.warning("passphrase_command timed out after %.0fs", timeout)
         return None
     if result.returncode != 0:
-        _logger.warning(
-            "passphrase_command %r exited %d: %s",
-            argv[0],
-            result.returncode,
-            result.stderr.strip() or "(no stderr)",
-        )
+        _logger.warning("passphrase_command exited %d", result.returncode)
         return None
     # rstrip only the line ending the helper appends — leading/trailing
     # whitespace inside the passphrase is legitimate secret material and
@@ -648,7 +781,7 @@ def prompt_passphrase(*, confirm: bool = False) -> str:
         from prompt_toolkit import prompt as ptk_prompt  # noqa: PLC0415
 
         try:
-            passphrase = ptk_prompt("credentials.db passphrase: ", is_password=True).strip()
+            passphrase = ptk_prompt("credentials.db passphrase: ", is_password=True)
         except (KeyboardInterrupt, EOFError):
             raise SystemExit("passphrase entry cancelled.") from None
     else:
@@ -672,10 +805,10 @@ def prompt_new_passphrase() -> str | None:
     from prompt_toolkit import prompt as ptk_prompt  # noqa: PLC0415
 
     try:
-        passphrase = ptk_prompt("credentials.db passphrase: ", is_password=True).strip()
+        passphrase = ptk_prompt("credentials.db passphrase: ", is_password=True)
         if not passphrase:
             return None
-        again = ptk_prompt("confirm passphrase:        ", is_password=True).strip()
+        again = ptk_prompt("confirm passphrase:        ", is_password=True)
         if passphrase != again:
             raise ValueError("passphrases do not match")
         return passphrase
