@@ -16,27 +16,27 @@ import pytest
 from terok_util import read_config_section
 
 from terok_sandbox import config
-from terok_sandbox.commands import handle_vault_to_keyring
+from terok_sandbox.commands import handle_vault_to_desktop_keyring
 from terok_sandbox.commands.credentials import TierProvisionResult
 from terok_sandbox.commands.vault import PassphraseChangeResult
 from terok_sandbox.vault.store import encryption, kernel_keyring, session_cache, session_file
 from terok_sandbox.vault.store.db import CredentialDB
 from terok_sandbox.vault.store.encryption import (
-    KEYRING_SERVICE,
-    KEYRING_USERNAME,
-    load_passphrase_from_keyring,
-    store_passphrase_in_keyring,
+    DESKTOP_KEYRING_SERVICE,
+    DESKTOP_KEYRING_USERNAME,
+    load_passphrase_from_desktop_keyring,
+    store_passphrase_in_desktop_keyring,
 )
 from terok_sandbox.vault.store.recovery import acknowledge
 from terok_sandbox.vault.store.status import VaultState, VaultStatus
 from terok_sandbox.vault.store.tiers import PassphraseTier
 
 _PASSPHRASE = "dummy-transfer-pässphrase"
-_REAL_CREDENTIALS_USE_KEYRING = config.credentials_use_keyring
-_DISABLED_CONFIG = "credentials:\n  use_keyring: false\n"
+_REAL_CREDENTIALS_USE_DESKTOP_KEYRING = config.credentials_use_desktop_keyring
+_DISABLED_CONFIG = "credentials:\n  use_desktop_keyring: false\n"
 
 
-class _FileKeyring:
+class _FileDesktopKeyring:
     """A fake desktop keyring shared between processes through a temporary file."""
 
     def __init__(self, path: Path) -> None:
@@ -46,7 +46,7 @@ class _FileKeyring:
 
     def get_password(self, service: str, username: str) -> str | None:
         """Read the dummy secret or simulate a backend's faulty readback."""
-        assert (service, username) == (KEYRING_SERVICE, KEYRING_USERNAME)
+        assert (service, username) == (DESKTOP_KEYRING_SERVICE, DESKTOP_KEYRING_USERNAME)
         match self.readback:
             case "absent":
                 return None
@@ -59,7 +59,7 @@ class _FileKeyring:
 
     def set_password(self, service: str, username: str, passphrase: str) -> None:
         """Accept a write independently of whether later reads work."""
-        assert (service, username) == (KEYRING_SERVICE, KEYRING_USERNAME)
+        assert (service, username) == (DESKTOP_KEYRING_SERVICE, DESKTOP_KEYRING_USERNAME)
         self.path.write_text(passphrase)
         self.writes += 1
 
@@ -71,7 +71,7 @@ class _TransferHarness:
     root: Path
     config_file: Path
     kernel_file: Path
-    desktop: _FileKeyring
+    desktop: _FileDesktopKeyring
 
 
 @pytest.fixture
@@ -86,13 +86,13 @@ def transfer(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[_Trans
     db.close()
     acknowledge(cfg.vault_recovery_marker_file)
     yield harness
-    encryption.retire_keyring_worker()
+    encryption.retire_desktop_keyring_worker()
 
 
 @pytest.mark.parametrize(
     "result",
     [
-        TierProvisionResult(_PASSPHRASE, PassphraseTier.KEYRING, generated=True),
+        TierProvisionResult(_PASSPHRASE, PassphraseTier.DESKTOP_KEYRING, generated=True),
         PassphraseChangeResult(_PASSPHRASE, generated=True, rekeyed=True, rewrites=()),
     ],
     ids=["provision-result", "change-result"],
@@ -110,19 +110,19 @@ def test_passphrase_results_do_not_expose_secrets_in_representations(
 
 def test_child_transfer_refreshes_running_parent_status(transfer: _TransferHarness) -> None:
     """A child transfer leaves the already-running parent unlocked through the desktop keyring."""
-    assert read_config_section("credentials")["use_keyring"] == "False"
+    assert read_config_section("credentials")["use_desktop_keyring"] == "False"
     original = config.SandboxConfig()
-    assert original.credentials_use_keyring is False
+    assert original.credentials_use_desktop_keyring is False
     before = VaultStatus.load(original)
     assert before.state is VaultState.UNLOCKED
-    assert before.source is PassphraseTier.KERNEL_KEYRING
+    assert before.source is PassphraseTier.SESSION_CACHE
 
     completed = subprocess.run(
         [
             sys.executable,
             "-c",
             "from pathlib import Path; import sys; "
-            "from tests.unit.test_vault_keyring_transfer import _run_child_transfer; "
+            "from tests.unit.test_vault_desktop_keyring_transfer import _run_child_transfer; "
             "_run_child_transfer(Path(sys.argv[1]))",
             str(transfer.root),
         ],
@@ -136,12 +136,12 @@ def test_child_transfer_refreshes_running_parent_status(transfer: _TransferHarne
     assert _PASSPHRASE not in completed.stdout + completed.stderr
     assert not transfer.kernel_file.exists()
     assert transfer.desktop.path.read_text() == _PASSPHRASE
-    assert "use_keyring: true" in transfer.config_file.read_text()
+    assert "use_desktop_keyring: true" in transfer.config_file.read_text()
     after = VaultStatus.load()
     assert after.state is VaultState.UNLOCKED
-    assert after.source is PassphraseTier.KEYRING
+    assert after.source is PassphraseTier.DESKTOP_KEYRING
     assert after.providers == ("test-provider",)
-    assert not next(row for row in after.chain if row.tier is PassphraseTier.KERNEL_KEYRING).present
+    assert not next(row for row in after.chain if row.tier is PassphraseTier.SESSION_CACHE).present
 
 
 @pytest.mark.parametrize("readback", ["absent", "wrong", "error"])
@@ -155,12 +155,12 @@ def test_failed_desktop_readback_preserves_source_and_policy(
     transfer.desktop.readback = readback
 
     with pytest.raises(SystemExit, match="could not store and verify") as error:
-        handle_vault_to_keyring()
+        handle_vault_to_desktop_keyring()
 
     assert transfer.desktop.writes == 1
     assert transfer.kernel_file.read_text() == _PASSPHRASE
     assert transfer.config_file.read_text() == _DISABLED_CONFIG
-    assert VaultStatus.load().source is PassphraseTier.KERNEL_KEYRING
+    assert VaultStatus.load().source is PassphraseTier.SESSION_CACHE
     captured = capsys.readouterr()
     assert "stored and verified" not in captured.out
     assert _PASSPHRASE not in captured.out + captured.err + caplog.text + str(error.value)
@@ -177,7 +177,7 @@ def test_wrong_prompted_passphrase_never_reaches_destination(
     monkeypatch.setattr(encryption, "prompt_passphrase", lambda: "mistyped-dummy-passphrase")
 
     with pytest.raises(SystemExit, match="does not open the encrypted vault"):
-        handle_vault_to_keyring()
+        handle_vault_to_desktop_keyring()
 
     assert transfer.desktop.writes == 0
     assert not transfer.desktop.path.exists()
@@ -203,10 +203,10 @@ def test_config_failure_keeps_working_source(
 
         monkeypatch.setattr("terok_sandbox._yaml.update_section", deny_write)
     else:
-        monkeypatch.setattr(config, "credentials_use_keyring", lambda: False)
+        monkeypatch.setattr(config, "credentials_use_desktop_keyring", lambda: False)
 
     with pytest.raises(SystemExit, match="could not enable it in configuration") as error:
-        handle_vault_to_keyring(cfg=cfg)
+        handle_vault_to_desktop_keyring(cfg=cfg)
 
     assert transfer.desktop.path.read_text() == _PASSPHRASE
     assert transfer.kernel_file.read_text() == _PASSPHRASE
@@ -238,7 +238,7 @@ def test_sealed_cleanup_failure_preserves_kernel_cache(
 
     monkeypatch.setattr(Path, "unlink", reject_sealed_unlink)
     with pytest.raises(SystemExit, match="could not remove the sealed source") as error:
-        handle_vault_to_keyring(cfg=cfg)
+        handle_vault_to_desktop_keyring(cfg=cfg)
 
     assert sealed.exists()
     assert transfer.kernel_file.read_text() == _PASSPHRASE
@@ -252,7 +252,7 @@ def _install_fake_stores(root: Path, monkeypatch: pytest.MonkeyPatch) -> _Transf
     """Install identical, filesystem-isolated stores in the parent or transfer subprocess."""
     config_file = root / "config.yml"
     kernel_file = root / "fake-kernel-secret"
-    desktop = _FileKeyring(root / "fake-desktop-secret")
+    desktop = _FileDesktopKeyring(root / "fake-desktop-secret")
     for name, relative in (
         ("TEROK_CONFIG_FILE", "config.yml"),
         ("TEROK_VAULT_DIR", "vault"),
@@ -261,9 +261,15 @@ def _install_fake_stores(root: Path, monkeypatch: pytest.MonkeyPatch) -> _Transf
         ("TEROK_SANDBOX_CONFIG_DIR", "sandbox-config"),
     ):
         monkeypatch.setenv(name, str(root / relative))
-    monkeypatch.setattr(config, "credentials_use_keyring", _REAL_CREDENTIALS_USE_KEYRING)
-    monkeypatch.setattr(encryption, "load_passphrase_from_keyring", load_passphrase_from_keyring)
-    monkeypatch.setattr(encryption, "store_passphrase_in_keyring", store_passphrase_in_keyring)
+    monkeypatch.setattr(
+        config, "credentials_use_desktop_keyring", _REAL_CREDENTIALS_USE_DESKTOP_KEYRING
+    )
+    monkeypatch.setattr(
+        encryption, "load_passphrase_from_desktop_keyring", load_passphrase_from_desktop_keyring
+    )
+    monkeypatch.setattr(
+        encryption, "store_passphrase_in_desktop_keyring", store_passphrase_in_desktop_keyring
+    )
     monkeypatch.setattr(keyring, "get_keyring", lambda: desktop)
     monkeypatch.setattr(session_cache, "_backend", lambda: kernel_keyring)
     monkeypatch.setattr(kernel_keyring, "load", lambda _db: _read_file(kernel_file))
@@ -297,6 +303,6 @@ def _run_child_transfer(root: Path) -> None:
     with pytest.MonkeyPatch.context() as monkeypatch:
         _install_fake_stores(root, monkeypatch)
         try:
-            handle_vault_to_keyring()
+            handle_vault_to_desktop_keyring()
         finally:
-            encryption.retire_keyring_worker()
+            encryption.retire_desktop_keyring_worker()

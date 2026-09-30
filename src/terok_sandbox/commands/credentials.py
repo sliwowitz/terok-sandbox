@@ -7,8 +7,8 @@ Two passphrase storage modes are chosen interactively when
 ``systemd-creds`` isn't available; with it, the chooser is skipped and
 the credential is sealed silently.  Once chosen, the mode is persisted
 so the resolution chain picks it up on the next daemon start —
-kernel-keyring mode self-describes via the cached key's presence;
-keyring sets ``credentials.use_keyring=true`` in ``config.yml``.
+session-cache mode self-describes via the cached passphrase's presence;
+desktop keyring sets ``credentials.use_desktop_keyring=true`` in ``config.yml``.
 [`plan_provisioning`][terok_sandbox.commands.credentials.plan_provisioning]
 is the shared decision core: the CLI chooser here and the TUI's modal
 flow are two renderings of the same plan.
@@ -40,12 +40,12 @@ _NON_TTY_TIER_HINT = """\
 {setup}: running non-interactively but no passphrase tier was chosen.
 
   systemd-creds is unavailable on this host (needs systemd ≥ 257), so
-  setup would otherwise fall through to the kernel-keyring cache — a
+  setup would otherwise fall through to the session cache — a
   fresh random passphrase you would never see, lost on reboot.  Pick a
   tier explicitly:
 
-    --passphrase-tier keyring          (desktop keyring; saved across reboots)
-    --passphrase-tier kernel-keyring   (temporary cache; re-unlock after reboot)
+    --passphrase-tier desktop-keyring  (desktop keyring; saved across reboots)
+    --passphrase-tier session-cache    (kernel keyring or tmpfs; re-unlock after reboot)
 
   Or install systemd ≥ 257 (Fedora ≥ 42, Debian ≥ 13) and re-run `{setup}`
   so the systemd-creds auto-tier becomes available.  For a headless
@@ -67,19 +67,19 @@ Choice [k]:"""
 # description.  The chooser lists every tier; an unavailable one is shown
 # with a ``[-]`` marker and its reason instead of a live selector, so the
 # operator sees why it's missing but can't pick it.  Empty or unrecognised
-# input falls back to the recommended keyring default — safer than
+# input falls back to the recommended desktop-keyring default — safer than
 # guessing the operator meant a volatile tier.
 _CHOOSER_OPTIONS: dict[PassphraseTier, tuple[str, str]] = {
-    PassphraseTier.KEYRING: (
+    PassphraseTier.DESKTOP_KEYRING: (
         "k",
         "desktop keyring — saved across reboots (recommended)",
     ),
-    PassphraseTier.KERNEL_KEYRING: (
+    PassphraseTier.SESSION_CACHE: (
         "n",
-        "kernel keyring — temporary cache (session-file fallback); lost on reboot",
+        "session cache — kernel keyring or tmpfs session file; lost on reboot",
     ),
 }
-_DEFAULT_TIER = PassphraseTier.KEYRING
+_DEFAULT_TIER = PassphraseTier.DESKTOP_KEYRING
 
 
 @dataclass(frozen=True)
@@ -147,7 +147,7 @@ def provision_passphrase_tier(
         NoPassphraseError,
         generate_passphrase,
         is_plaintext_sqlite,
-        store_passphrase_in_keyring,
+        store_passphrase_in_desktop_keyring,
     )
 
     if tier not in PROVISIONABLE_TIERS:
@@ -157,8 +157,8 @@ def provision_passphrase_tier(
         )
     tier = PassphraseTier(tier)
     if passphrase == "":  # nosec: B105 — rejecting the empty sentinel, not comparing a secret
-        # The keyring and systemd-creds writers refuse an empty value
-        # themselves; guard the kernel-keyring tier to the same standard
+        # The desktop-keyring and systemd-creds writers refuse an empty value
+        # themselves; guard the session-cache tier to the same standard
         # so no branch can report success while leaving nothing usable.
         raise ValueError("refusing to provision an empty passphrase")
     if cfg is None:
@@ -174,7 +174,7 @@ def provision_passphrase_tier(
         # Raises WrongPassphraseError on mismatch — before the write, so
         # a bad value never lands on any tier.
         CredentialDB(cfg.db_path, passphrase=passphrase).close()
-    elif _resolve_existing(replace(cfg, credentials_use_keyring=True)) is not None:
+    elif _resolve_existing(replace(cfg, credentials_use_desktop_keyring=True)) is not None:
         raise RuntimeError("A vault passphrase is already provisioned; refusing to replace it.")
     if passphrase is None:
         passphrase = generate_passphrase()
@@ -188,26 +188,26 @@ def provision_passphrase_tier(
         _systemd_creds.seal(passphrase, cfg.vault_systemd_creds_file, key_mode="auto")
         return TierProvisionResult(passphrase, PassphraseTier.SYSTEMD_CREDS, generated)
 
-    if tier is PassphraseTier.KEYRING:
-        if not store_passphrase_in_keyring(passphrase):
+    if tier is PassphraseTier.DESKTOP_KEYRING:
+        if not store_passphrase_in_desktop_keyring(passphrase):
             raise RuntimeError(
                 "could not store and verify the passphrase in the desktop keyring;"
                 " choose a different storage mode"
             )
-        _persist_mode_choice(PassphraseTier.KEYRING)
-        return TierProvisionResult(passphrase, PassphraseTier.KEYRING, generated)
+        _persist_mode_choice(PassphraseTier.DESKTOP_KEYRING)
+        return TierProvisionResult(passphrase, PassphraseTier.DESKTOP_KEYRING, generated)
 
-    if tier is PassphraseTier.KERNEL_KEYRING:
+    if tier is PassphraseTier.SESSION_CACHE:
         if not session_cache.store(passphrase, cfg.db_path):
             raise RuntimeError(
                 "the session cache is unavailable here"
                 f" ({session_cache.unavailable_reason() or 'store failed'});"
                 " choose a different storage mode"
             )
-        return TierProvisionResult(passphrase, PassphraseTier.KERNEL_KEYRING, generated)
+        return TierProvisionResult(passphrase, PassphraseTier.SESSION_CACHE, generated)
 
     # Every member of PROVISIONABLE_TIERS is handled above; a new one
-    # reaching here should fail loudly, not silently land in the keyring.
+    # reaching here should fail loudly, not silently land in the desktop keyring.
     raise ValueError(f"unhandled provisionable tier: {tier!r}")  # pragma: no cover
 
 
@@ -252,7 +252,7 @@ def _resolve_existing(cfg: SandboxConfig) -> tuple[str, PassphraseTier] | None:
     passphrase, source = resolve_passphrase_with_source(
         credentials_db=cfg.db_path,
         systemd_creds_file=cfg.vault_systemd_creds_file,
-        use_keyring=cfg.credentials_use_keyring,
+        use_desktop_keyring=cfg.credentials_use_desktop_keyring,
         passphrase_command=cfg.credentials_passphrase_command,
     )
     if passphrase is None or source is None:
@@ -290,7 +290,7 @@ def plan_provisioning(cfg: SandboxConfig | None = None) -> ProvisioningPlan:
     """
     from ..config import SandboxConfig
     from ..vault.store import session_cache, systemd_creds as _systemd_creds
-    from ..vault.store.encryption import keyring_backend_available
+    from ..vault.store.encryption import desktop_keyring_backend_available
 
     if cfg is None:
         cfg = SandboxConfig()
@@ -301,10 +301,12 @@ def plan_provisioning(cfg: SandboxConfig | None = None) -> ProvisioningPlan:
     # reported (with the reason) so a frontend can grey them out rather
     # than hide them or fail after the pick.
     unavailable: dict[PassphraseTier, str] = {}
-    if not keyring_backend_available():
-        unavailable[PassphraseTier.KEYRING] = "no desktop keyring backend is reachable on this host"
-    if (kernel_reason := session_cache.unavailable_reason()) is not None:
-        unavailable[PassphraseTier.KERNEL_KEYRING] = kernel_reason
+    if not desktop_keyring_backend_available():
+        unavailable[PassphraseTier.DESKTOP_KEYRING] = (
+            "no desktop keyring backend is reachable on this host"
+        )
+    if (session_cache_reason := session_cache.unavailable_reason()) is not None:
+        unavailable[PassphraseTier.SESSION_CACHE] = session_cache_reason
     return ProvisioningPlan(
         provisioned=False,
         auto_tier=auto_tier,
@@ -329,11 +331,11 @@ def _handle_credentials_encrypt_db(
 
     1. *passphrase_tier* (CLI: ``--passphrase-tier``) — the operator
        said exactly which tier to use, so honour it.  ``systemd-creds``
-       refuses if unavailable; ``kernel-keyring`` skips the silent-default
+       refuses if unavailable; ``session-cache`` skips the silent-default
        refusal below.
     2. A tier that already resolves — reuse it silently.  A frontend
        (the TUI chooser) may have provisioned in-process just before
-       dispatching setup, and a previous run's keyring entry or sealed
+       dispatching setup, and a previous run's desktop-keyring entry or sealed
        credential is equally authoritative; minting over either would
        orphan the value the operator already saved.
     3. ``systemd-creds`` auto-detect — the strongest option when present;
@@ -543,7 +545,7 @@ def _ask_passphrase_mode(
     with a ``[-]`` marker and their reason and carry no selector key, so
     the operator sees why a tier is missing but cannot pick it.  Empty or
     unrecognised input (including an unavailable tier's letter) falls back
-    to the recommended keyring default.
+    to the recommended desktop-keyring default.
     """
     if not sys.stdin.isatty():
         raise SystemExit(_NON_TTY_TIER_HINT.format(setup=setup_invocation()))
@@ -593,21 +595,21 @@ def _provision_passphrase(
     passphrase the operator hasn't typed themselves — used by
     [`_handle_credentials_encrypt_db`][terok_sandbox.commands.credentials._handle_credentials_encrypt_db]
     to decide whether the ack flow needs to run.  Reusing an existing
-    kernel-keyring / keyring / config entry returns ``False`` because
+    session-cache or desktop-keyring entry returns ``False`` because
     the operator (or the previous run) already saw the value.
     """
     from ..vault.store import session_cache
     from ..vault.store.encryption import (
         generate_passphrase,
-        load_passphrase_from_keyring,
+        load_passphrase_from_desktop_keyring,
         prompt_passphrase,
-        store_passphrase_in_keyring,
+        store_passphrase_in_desktop_keyring,
     )
 
-    if mode is PassphraseTier.KERNEL_KEYRING:
+    if mode is PassphraseTier.SESSION_CACHE:
         existing = session_cache.load(cfg.db_path)
         if existing is not None:
-            return existing, PassphraseTier.KERNEL_KEYRING, False
+            return existing, PassphraseTier.SESSION_CACHE, False
         # ``prompt_passphrase(confirm=True)`` mints-and-announces an
         # auto-generated value on empty input, or echo-confirms a typed
         # one.  We can't distinguish the two outcomes from here, so we
@@ -621,16 +623,16 @@ def _provision_passphrase(
                 f" ({session_cache.unavailable_reason() or 'store failed'});"
                 " choose a different storage mode"
             )
-        return new, PassphraseTier.KERNEL_KEYRING, True
+        return new, PassphraseTier.SESSION_CACHE, True
 
-    if mode is PassphraseTier.KEYRING:
-        existing = load_passphrase_from_keyring(allow_prompt=True)
+    if mode is PassphraseTier.DESKTOP_KEYRING:
+        existing = load_passphrase_from_desktop_keyring(allow_prompt=True)
         if existing is not None:
-            return existing, PassphraseTier.KEYRING, False
+            return existing, PassphraseTier.DESKTOP_KEYRING, False
         new = generate_passphrase()
-        if store_passphrase_in_keyring(new):
+        if store_passphrase_in_desktop_keyring(new):
             _announce_generated_passphrase(new, echo_to_stdout=echo_passphrase)
-            return new, PassphraseTier.KEYRING, True
+            return new, PassphraseTier.DESKTOP_KEYRING, True
         raise RuntimeError(
             "could not store and verify the passphrase in the desktop keyring;"
             " choose a different storage mode"
@@ -721,9 +723,9 @@ def _post_setup_recovery_hint(cfg: SandboxConfig | None = None) -> None:
 def _persist_mode_choice(mode: PassphraseTier) -> None:
     """Persist and verify the chosen mode before reporting provisioning success.
 
-    Kernel-keyring mode needs no change — the cached key is
-    self-describing.  ``use_keyring`` is written even though it defaults
-    on, so an explicit ``use_keyring: false`` in configuration can't
+    Session-cache mode needs no change — the cached passphrase is
+    self-describing.  ``use_desktop_keyring`` is written even though it defaults
+    on, so an explicit ``use_desktop_keyring: false`` in configuration can't
     silently disable the tier the operator just chose.
 
     Raises:
@@ -734,12 +736,12 @@ def _persist_mode_choice(mode: PassphraseTier) -> None:
     from .._yaml import update_section as _yaml_update_section
     from ..paths import config_file_paths
 
-    if mode is not PassphraseTier.KEYRING:
+    if mode is not PassphraseTier.DESKTOP_KEYRING:
         return
     _, config_path = config_file_paths()[-1]
     try:
-        _yaml_update_section(config_path, "credentials", {"use_keyring": True})
-        if not _config.credentials_use_keyring():
+        _yaml_update_section(config_path, "credentials", {"use_desktop_keyring": True})
+        if not _config.credentials_use_desktop_keyring():
             raise RuntimeError("desktop keyring is still disabled")
     except Exception as exc:  # noqa: BLE001 — YAML diagnostics can contain secret values
         raise RuntimeError(

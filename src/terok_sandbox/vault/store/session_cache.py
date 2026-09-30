@@ -86,7 +86,7 @@ def backing_detail(*, cached: bool) -> str:
         return f"unusable here: {reason}"
     if _backend() is _kernel_keyring:
         return (
-            "cached in the kernel keyring (Linux user keyring, @u)"
+            "cached in the kernel keyring (Linux kernel user keyring, @u)"
             if cached
             else "no passphrase cached"
         )
@@ -96,11 +96,11 @@ def backing_detail(*, cached: bool) -> str:
 
 def _backend() -> ModuleType:
     """The backing the supervisor this host would start can read."""
-    keyring_readable = (
+    kernel_keyring_readable = (
         supervisor_placement() is SupervisorPlacement.USER_UNIT
         and _kernel_keyring.unavailable_reason() is None
     )
-    return _kernel_keyring if keyring_readable else _session_file
+    return _kernel_keyring if kernel_keyring_readable else _session_file
 
 
 def _file_reason() -> str:
