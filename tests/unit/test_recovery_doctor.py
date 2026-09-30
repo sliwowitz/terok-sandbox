@@ -28,8 +28,8 @@ from terok_sandbox.vault.store.tiers import PassphraseTier
 def _cfg(tmp_path: Path) -> SandboxConfig:
     """Sandbox config rooted under tmp_path.
 
-    The keyring tier is on, so the chain resolves via the conftest
-    stub's deterministic keyring passphrase — a durable tier.
+    The desktop keyring tier is on, so the chain resolves via the conftest
+    stub's deterministic desktop keyring passphrase — a durable tier.
     """
     return SandboxConfig(
         state_dir=tmp_path / "state",
@@ -37,7 +37,7 @@ def _cfg(tmp_path: Path) -> SandboxConfig:
         config_dir=tmp_path / "cfg",
         vault_dir=tmp_path / "vault",
         services_mode="socket",
-        credentials_use_keyring=True,
+        credentials_use_desktop_keyring=True,
     )
 
 
@@ -67,7 +67,7 @@ class TestRecoveryAcknowledgedCheck:
 
     def test_marker_missing_with_durable_tier_returns_warn(self, tmp_path: Path) -> None:
         """Marker absent + durable (non-volatile) source → ``warn`` naming both remediations."""
-        # ``_cfg`` resolves via the keyring tier (a durable, machine-bound
+        # ``_cfg`` resolves via the desktop keyring tier (a durable, machine-bound
         # store) — missing marker is "warn", not "error".
         verdict = _eval_recovery(_cfg(tmp_path))
         assert verdict.severity == "warn"
@@ -87,7 +87,7 @@ class TestRecoveryAcknowledgedCheck:
         with patch.object(
             type(cfg),
             "resolve_passphrase_with_source",
-            lambda self, **_kw: ("p4ss", PassphraseTier.KERNEL_KEYRING),
+            lambda self, **_kw: ("p4ss", PassphraseTier.SESSION_CACHE),
         ):
             verdict = _eval_recovery(cfg)
         assert verdict.severity == "error"

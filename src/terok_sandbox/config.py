@@ -124,9 +124,9 @@ def _credentials_section() -> RawCredentialsSection:
         ) from None
 
 
-def credentials_use_keyring() -> bool:
-    """Read the current desktop-keyring policy from ``credentials.use_keyring``."""
-    return _credentials_section().use_keyring
+def credentials_use_desktop_keyring() -> bool:
+    """Read the current desktop-keyring policy from ``credentials.use_desktop_keyring``."""
+    return _credentials_section().use_desktop_keyring
 
 
 def credentials_passphrase_command() -> str | None:
@@ -134,9 +134,9 @@ def credentials_passphrase_command() -> str | None:
     return _credentials_section().passphrase_command
 
 
-def _default_credentials_use_keyring() -> bool:
-    """Default-factory indirection so tests can patch ``credentials_use_keyring``."""
-    return credentials_use_keyring()
+def _default_credentials_use_desktop_keyring() -> bool:
+    """Default-factory indirection so tests can patch ``credentials_use_desktop_keyring``."""
+    return credentials_use_desktop_keyring()
 
 
 def _default_credentials_passphrase_command() -> str | None:
@@ -329,7 +329,9 @@ class SandboxConfig:
     their own trusted source.
     """
 
-    credentials_use_keyring: bool = field(default_factory=_default_credentials_use_keyring)
+    credentials_use_desktop_keyring: bool = field(
+        default_factory=_default_credentials_use_desktop_keyring
+    )
     """Switch for the desktop keyring tier in the passphrase resolution chain.
 
     On by default — an empty desktop keyring simply doesn't resolve, so the
@@ -337,7 +339,7 @@ class SandboxConfig:
     who want the chain to stay away from Secret Service entirely (its
     ACLs are per-collection, not per-item, so authorising terok against
     the default collection grants read access to every other secret
-    stored there) set ``credentials.use_keyring: false``.
+    stored there) set ``credentials.use_desktop_keyring: false``.
     """
 
     credentials_passphrase_command: str | None = field(
@@ -345,7 +347,7 @@ class SandboxConfig:
     )
     """Operator-supplied shell command that prints the SQLCipher passphrase on stdout.
 
-    Resolver tier slotted between ``keyring`` and ``config``.  Canonical
+    Resolver tier slotted below the session cache and above the interactive prompt. Canonical
     headless option for hosts without systemd ≥ 257 — same shape as
     ``git config credential.helper`` or ``BORG_PASSCOMMAND``.  Read
     from ``credentials.passphrase_command`` in ``config.yml`` at
@@ -638,7 +640,7 @@ class SandboxConfig:
         — feeds the daemon startup log so the operator sees *which*
         tier unlocked the vault on this boot.
 
-        *credentials_db* overrides which vault the kernel-keyring lookup
+        *credentials_db* overrides which vault the session-cache lookup
         is scoped to; it defaults to this config's ``db_path``.  A caller
         opening a DB at a path other than the config default (the vault
         daemon, handed an explicit DB path) passes it so the cache lookup
@@ -660,7 +662,7 @@ class SandboxConfig:
         """
         return {
             "systemd_creds_file": self.vault_systemd_creds_file,
-            "use_keyring": self.credentials_use_keyring,
+            "use_desktop_keyring": self.credentials_use_desktop_keyring,
             "passphrase_command": self.credentials_passphrase_command,
             "prompt_on_tty": prompt_on_tty,
         }

@@ -65,7 +65,7 @@ def active_durable_source(cfg: SandboxConfig) -> PassphraseTier | None:
     """Name the durable tier that already resolves the vault, or ``None``.
 
     Probes the chain for a reboot-surviving tier (presence only — no
-    unseal, no command exec).  The volatile kernel-keyring cache is
+    unseal, no command exec).  The volatile session cache is
     ``durable=False`` and so never counts here.  The single source of
     truth for the no-cache guard, shared by the passphrase-cache writer
     and the CLI's skip-the-prompt early-out: if a durable tier is
@@ -74,7 +74,7 @@ def active_durable_source(cfg: SandboxConfig) -> PassphraseTier | None:
     for tier in _encryption.probe_passphrase_chain(
         credentials_db=cfg.db_path,
         systemd_creds_file=cfg.vault_systemd_creds_file,
-        use_keyring=cfg.credentials_use_keyring,
+        use_desktop_keyring=cfg.credentials_use_desktop_keyring,
         passphrase_command=cfg.credentials_passphrase_command,
     ):
         if tier.present and tier.source in DURABLE_TIERS:
@@ -235,7 +235,7 @@ class VaultStatus:
         chain = _encryption.probe_passphrase_chain(
             credentials_db=cfg.db_path,
             systemd_creds_file=cfg.vault_systemd_creds_file,
-            use_keyring=cfg.credentials_use_keyring,
+            use_desktop_keyring=cfg.credentials_use_desktop_keyring,
             passphrase_command=cfg.credentials_passphrase_command,
         )
         active_index = next((i for i, tier in enumerate(chain) if tier.present), None)

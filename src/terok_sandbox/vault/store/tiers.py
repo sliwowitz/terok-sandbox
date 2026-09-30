@@ -36,14 +36,16 @@ class PassphraseTier(StrEnum):
     SYSTEMD_CREDS = "systemd-creds"
     """Sealed machine-bound credential (TPM2 / host key); needs systemd ≥ 257."""
 
-    KEYRING = "keyring"
+    DESKTOP_KEYRING = "desktop-keyring"
     """Persistent desktop keyring entry, managed by the desktop secret service."""
 
-    KERNEL_KEYRING = "kernel-keyring"
-    """Linux kernel keyring (``@u``) — a volatile unlock cache in
-    unswappable kernel memory, uid-scoped, lost at reboot or when its
-    references disappear.  Logout alone does not guarantee removal.
-    Hosts unable to use it fall back to a tmpfs session file.  Sits
+    SESSION_CACHE = "session-cache"
+    """Temporary unlock cache, backed by the kernel keyring or a tmpfs session file.
+
+    The kernel keyring (``@u``) holds secrets in unswappable, uid-scoped
+    kernel memory; hosts unable to use it fall back to a tmpfs session file.
+    Both backings are lost at reboot and may disappear earlier. Logout
+    alone does not guarantee kernel-keyring removal. The cache sits
     below the zero-friction durable tiers but above the
     ``passphrase-command`` helper: it never shadows a tier that already
     unlocks non-interactively, yet still spares the operator from
@@ -60,8 +62,8 @@ class PassphraseTier(StrEnum):
     def display_name(self) -> str:
         """Unambiguous human-facing name; machine IDs remain the enum values."""
         return {
-            self.KEYRING: "desktop keyring",
-            self.KERNEL_KEYRING: "session cache",
+            self.DESKTOP_KEYRING: "desktop keyring",
+            self.SESSION_CACHE: "session cache",
         }.get(self, self.value)
 
     @property
@@ -109,8 +111,10 @@ _TRAITS: dict[PassphraseTier, TierTraits] = {
     PassphraseTier.SYSTEMD_CREDS: TierTraits(
         durable=True, provisionable=True, chooser_offered=False
     ),
-    PassphraseTier.KEYRING: TierTraits(durable=True, provisionable=True, chooser_offered=True),
-    PassphraseTier.KERNEL_KEYRING: TierTraits(
+    PassphraseTier.DESKTOP_KEYRING: TierTraits(
+        durable=True, provisionable=True, chooser_offered=True
+    ),
+    PassphraseTier.SESSION_CACHE: TierTraits(
         durable=False, provisionable=True, chooser_offered=True
     ),
     PassphraseTier.PASSPHRASE_COMMAND: TierTraits(

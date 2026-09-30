@@ -158,7 +158,7 @@ class RawCredentialsSection(BaseModel):
             " replacement instead of pydantic's generic extra-key refusal."
         ),
     )
-    use_keyring: bool = Field(
+    use_desktop_keyring: bool = Field(
         default=True,
         description=(
             "The desktop keyring tier of the passphrase resolution chain."

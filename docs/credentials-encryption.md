@@ -17,10 +17,10 @@ top-to-bottom and stops at the first hit:
    by `vault passphrase seal`.  Requires systemd ≥ 257.
 2. **Desktop keyring** — `(service=terok-sandbox, username=credentials-db)`.
    On by default (an empty desktop keyring simply doesn't resolve); set
-   `credentials.use_keyring: false` in `config.yml` to keep the chain
+   `credentials.use_desktop_keyring: false` in `config.yml` to keep the chain
    away from Secret Service entirely. GNOME Keyring is one implementation;
-   "login" can name a collection, not a separate kind of keyring.
-3. **Temporary cache** — the **kernel keyring** (Linux's per-UID user
+   "login" can name a desktop-keyring collection, not a separate storage tier.
+3. **Session cache** — the **kernel keyring** (Linux's per-UID kernel user
    keyring, `@u`), with a tmpfs session-file fallback when the supervisor
    cannot access it. Written by `vault unlock`. It never survives reboot
    and can disappear earlier. Kernel-keyring lifetime depends on processes
@@ -40,10 +40,22 @@ top-to-bottom and stops at the first hit:
 
 The desktop keyring supplies the passphrase directly to the process opening
 SQLCipher; it does not need an additional kernel-keyring copy. Manual
-unlock uses the temporary cache to avoid retyping the passphrase in later
+unlock uses the session cache to avoid retyping the passphrase in later
 processes. Both paths still bring secret material into process memory.
-The CLI/config tier IDs remain `keyring` for the desktop keyring and
-`kernel-keyring` for the temporary cache, including its tmpfs fallback.
+The CLI/config tier IDs are `desktop-keyring` for the desktop keyring and
+`session-cache` for the temporary cache. The session-cache tier is not
+always backed by the kernel keyring: `vault status` identifies the actual
+backend as the kernel keyring or a tmpfs session file.
+
+!!! warning "Storage names have no compatibility aliases"
+    Rename the old desktop-keyring setting `credentials.use_keyring` to
+    `credentials.use_desktop_keyring` in existing configuration. The old
+    setting is rejected. Use `to-desktop-keyring` for the transfer command,
+    and `desktop-keyring` or `session-cache` for `--passphrase-tier`.
+    Recreate existing task containers to regenerate their sidecars with
+    the renamed `credentials_use_desktop_keyring` policy field.
+    Stored desktop-keyring entries and kernel-keyring cache identities
+    are unchanged; this rename does not require moving the passphrase.
 
 !!! note "The plaintext `credentials.passphrase` tier was removed"
     Configs that still set it are rejected with migration directions:
@@ -88,7 +100,7 @@ exempt because its job requires Podman runtime state.
 This is a filesystem-path boundary, not a same-UID kernel-keyring boundary.
 Vault and signer both resolve the credentials passphrase through the
 configured desktop-keyring policy by design. Operators who do not want that shared
-desktop-keyring trust can disable `credentials.use_keyring` and choose another tier.
+desktop-keyring trust can disable `credentials.use_desktop_keyring` and choose another tier.
 The launch sidecar snapshots that non-secret policy.  Each secret-holder
 resolves it after process hardening but before installing Landlock, so an
 operator-selected `passphrase_command` may use its normal files while the
@@ -184,7 +196,7 @@ fallback):
 | Choice | When to pick it |
 |--------|-----------------|
 | `[k]` Desktop keyring *(default)* | desktop with a working Secret Service / Keychain |
-| `[n]` Kernel keyring / temporary cache | no persistent store; re-enter after reboot or cache loss |
+| `[n]` Session cache (kernel keyring or tmpfs session file) | no persistent store; re-enter after reboot or cache loss |
 
 (Headless hosts that want a file-based store skip the chooser and set
 `credentials.passphrase_command: cat /path/to/secret-file` instead —
@@ -245,7 +257,7 @@ one verb does the whole swap:
 
 ```bash
 # Move the passphrase from its current tier into the desktop keyring.
-terok-sandbox vault passphrase to-keyring
+terok-sandbox vault passphrase to-desktop-keyring
 
 # Move it into a machine-bound systemd-creds credential.
 # (Land it as session first if not already auto-resolvable, then seal.
@@ -254,10 +266,10 @@ echo -n "<passphrase>" | terok-sandbox vault unlock
 terok-sandbox vault passphrase seal --key=auto
 ```
 
-`to-keyring` resolves the passphrase from whichever tier currently
+`to-desktop-keyring` resolves the passphrase from whichever tier currently
 holds it, validates it, writes to the desktop keyring, and verifies that
 the saved value can be read back without prompting before removing the
-source. It enables `credentials.use_keyring` in `config.yml`, disconnects
+source. It enables `credentials.use_desktop_keyring` in `config.yml`, disconnects
 `passphrase_command`, and removes the temporary/sealed copies. If the
 write or readback fails, the source is preserved. The running TUI and the
 next supervisor use the updated configuration.
@@ -317,7 +329,7 @@ terok-sandbox vault passphrase seal --key=auto        # seal; drops the session 
 
 # → desktop keyring:
 terok-sandbox vault passphrase acknowledge            # re-confirm the recovery key
-terok-sandbox vault passphrase to-keyring             # one verb, no chooser
+terok-sandbox vault passphrase to-desktop-keyring     # one verb, no chooser
 
 # → passphrase_command (headless; helper points at a file, pass / bw / op / cloud CLI):
 pass insert -m terok-sandbox/vault-passphrase         # or your helper's

@@ -19,11 +19,11 @@ from secretstorage.exceptions import ItemNotFoundException, LockedException
 
 from terok_sandbox.vault.store import encryption
 from terok_sandbox.vault.store.encryption import (
-    KEYRING_SERVICE,
-    KEYRING_USERNAME,
-    forget_passphrase_in_keyring,
-    load_passphrase_from_keyring,
-    store_passphrase_in_keyring,
+    DESKTOP_KEYRING_SERVICE,
+    DESKTOP_KEYRING_USERNAME,
+    forget_passphrase_in_desktop_keyring,
+    load_passphrase_from_desktop_keyring,
+    store_passphrase_in_desktop_keyring,
 )
 
 _PASSPHRASE = "dummy-pässphrase"
@@ -33,7 +33,7 @@ _DELETE_PROMPT_PATH = "/org/freedesktop/secrets/prompt/terok_testing"
 
 @pytest.fixture
 def backend(monkeypatch: pytest.MonkeyPatch) -> Mock:
-    """Route every keyring operation to a fake backend, never the operator's stores."""
+    """Route every desktop-keyring operation to a fake backend, never the operator's stores."""
     selected = Mock()
     selected.get_password.return_value = _PASSPHRASE
     monkeypatch.setattr(keyring, "get_keyring", lambda: selected)
@@ -64,14 +64,18 @@ class TestVerifiedDesktopStore:
     """Writing alone is not a transfer success; the value must be retrievable."""
 
     def test_exact_value_read_back(self, backend: Mock) -> None:
-        assert store_passphrase_in_keyring(_PASSPHRASE)
-        backend.set_password.assert_called_once_with(KEYRING_SERVICE, KEYRING_USERNAME, _PASSPHRASE)
-        backend.get_password.assert_called_once_with(KEYRING_SERVICE, KEYRING_USERNAME)
+        assert store_passphrase_in_desktop_keyring(_PASSPHRASE)
+        backend.set_password.assert_called_once_with(
+            DESKTOP_KEYRING_SERVICE, DESKTOP_KEYRING_USERNAME, _PASSPHRASE
+        )
+        backend.get_password.assert_called_once_with(
+            DESKTOP_KEYRING_SERVICE, DESKTOP_KEYRING_USERNAME
+        )
 
     @pytest.mark.parametrize("retrieved", [None, "", "wrong-passphrase"])
     def test_missing_or_wrong_readback_is_not_success(self, backend: Mock, retrieved: str | None):
         backend.get_password.return_value = retrieved
-        assert not store_passphrase_in_keyring(_PASSPHRASE)
+        assert not store_passphrase_in_desktop_keyring(_PASSPHRASE)
         backend.delete_password.assert_not_called()
 
     @pytest.mark.parametrize("operation", ["set_password", "get_password"])
@@ -79,16 +83,16 @@ class TestVerifiedDesktopStore:
         self, backend: Mock, operation: str, caplog: pytest.LogCaptureFixture
     ) -> None:
         getattr(backend, operation).side_effect = RuntimeError(_PASSPHRASE)
-        assert not store_passphrase_in_keyring(_PASSPHRASE)
+        assert not store_passphrase_in_desktop_keyring(_PASSPHRASE)
         assert _PASSPHRASE not in caplog.text
 
     def test_noop_null_backend_is_not_success(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr(keyring, "get_keyring", lambda: null.Keyring())
-        assert not store_passphrase_in_keyring(_PASSPHRASE)
+        assert not store_passphrase_in_desktop_keyring(_PASSPHRASE)
 
     def test_empty_value_never_reaches_backend(self, backend: Mock) -> None:
         with pytest.raises(ValueError, match="empty passphrase"):
-            store_passphrase_in_keyring("")
+            store_passphrase_in_desktop_keyring("")
         backend.set_password.assert_not_called()
 
     def test_readback_timeout_preserves_failure(
@@ -105,9 +109,9 @@ class TestVerifiedDesktopStore:
                 finished.set()
 
         backend.get_password.side_effect = delayed_read
-        monkeypatch.setattr(encryption, "_KEYRING_READ_TIMEOUT_S", 0.01)
+        monkeypatch.setattr(encryption, "_DESKTOP_KEYRING_READ_TIMEOUT_S", 0.01)
         try:
-            assert not store_passphrase_in_keyring(_PASSPHRASE)
+            assert not store_passphrase_in_desktop_keyring(_PASSPHRASE)
             backend.set_password.assert_called_once()
         finally:
             release.set()
@@ -120,7 +124,7 @@ class TestVerifiedDesktopStore:
         other = Mock()
         other.get_password.return_value = _PASSPHRASE
         chain = _select_chain(monkeypatch, backend, other)
-        assert not store_passphrase_in_keyring(_PASSPHRASE)
+        assert not store_passphrase_in_desktop_keyring(_PASSPHRASE)
         other.set_password.assert_not_called()
         assert keyring.get_keyring() is chain
 
@@ -132,14 +136,14 @@ class TestVerifiedDesktopStore:
         writable = Mock()
         writable.get_password.return_value = _PASSPHRASE
         _select_chain(monkeypatch, backend, writable)
-        assert not store_passphrase_in_keyring(_PASSPHRASE)
+        assert not store_passphrase_in_desktop_keyring(_PASSPHRASE)
         writable.set_password.assert_called_once()
 
     def test_chainer_write_verifies_destination_and_resolution(
         self, backend: Mock, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         _select_chain(monkeypatch, backend)
-        assert store_passphrase_in_keyring(_PASSPHRASE)
+        assert store_passphrase_in_desktop_keyring(_PASSPHRASE)
         assert backend.get_password.call_count == 2
 
     def test_secret_service_readback_does_not_unlock(
@@ -147,7 +151,7 @@ class TestVerifiedDesktopStore:
     ) -> None:
         backend, collection, _connection = secret_service
         monkeypatch.setattr(backend, "set_password", Mock())
-        assert store_passphrase_in_keyring(_PASSPHRASE)
+        assert store_passphrase_in_desktop_keyring(_PASSPHRASE)
         collection.unlock.assert_not_called()
         backend.get_password.assert_not_called()
 
@@ -161,10 +165,10 @@ class TestPromptlessSecretService:
         backend, collection, connection = secret_service
         backend.preferred_collection = _PREFERRED_COLLECTION
         backend.scheme = "KeePassXC"
-        assert load_passphrase_from_keyring() == _PASSPHRASE
+        assert load_passphrase_from_desktop_keyring() == _PASSPHRASE
         secretstorage.Collection.assert_called_with(connection, _PREFERRED_COLLECTION)
         collection.search_items.assert_called_once_with(
-            {"UserName": KEYRING_USERNAME, "Title": KEYRING_SERVICE}
+            {"UserName": DESKTOP_KEYRING_USERNAME, "Title": DESKTOP_KEYRING_SERVICE}
         )
         connection.close.assert_called_once()
 
@@ -173,7 +177,7 @@ class TestPromptlessSecretService:
     ) -> None:
         _backend, _collection, connection = secret_service
         secretstorage.Collection.side_effect = ItemNotFoundException("absent")
-        assert load_passphrase_from_keyring() is None
+        assert load_passphrase_from_desktop_keyring() is None
         secretstorage.get_default_collection.assert_not_called()
         connection.close.assert_called_once()
 
@@ -181,7 +185,7 @@ class TestPromptlessSecretService:
         self, secret_service: tuple[SecretService, Mock, Mock]
     ) -> None:
         secretstorage.Collection.side_effect = ItemNotFoundException("absent")
-        assert forget_passphrase_in_keyring() is None
+        assert forget_passphrase_in_desktop_keyring() is None
         secretstorage.get_default_collection.assert_not_called()
 
     def test_locked_collection_skips_read(
@@ -190,7 +194,7 @@ class TestPromptlessSecretService:
         backend, collection, _connection = secret_service
         collection.is_locked.return_value = True
         collection.ensure_not_locked.side_effect = LockedException("locked")
-        assert load_passphrase_from_keyring() is None
+        assert load_passphrase_from_desktop_keyring() is None
         backend.get_password.assert_not_called()
         collection.search_items.assert_not_called()
 
@@ -204,7 +208,7 @@ class TestPromptlessSecretService:
             collection.ensure_not_locked if locked_after_probe == "collection" else item.get_secret
         )
         operation.side_effect = LockedException("locked after probe")
-        assert load_passphrase_from_keyring() is None
+        assert load_passphrase_from_desktop_keyring() is None
         backend.get_password.assert_not_called()
         collection.unlock.assert_not_called()
         item.unlock.assert_not_called()
@@ -216,8 +220,8 @@ class TestPromptlessSecretService:
         collection.is_locked.return_value = True
         collection.ensure_not_locked.side_effect = LockedException("locked")
         _select_chain(monkeypatch, backend)
-        assert encryption.os_keyring_read_blocked() is not None
-        assert load_passphrase_from_keyring() is None
+        assert encryption.desktop_keyring_read_blocked() is not None
+        assert load_passphrase_from_desktop_keyring() is None
         backend.get_password.assert_not_called()
 
     def test_chained_unlocked_read_never_calls_generic_getter(
@@ -225,7 +229,7 @@ class TestPromptlessSecretService:
     ) -> None:
         backend, _collection, _connection = secret_service
         _select_chain(monkeypatch, backend)
-        assert load_passphrase_from_keyring() == _PASSPHRASE
+        assert load_passphrase_from_desktop_keyring() == _PASSPHRASE
         backend.get_password.assert_not_called()
 
     def test_unused_native_backend_does_not_mask_secret_service(
@@ -235,7 +239,7 @@ class TestPromptlessSecretService:
         native = type("Keyring", (), {"__module__": "keyring.backends.libsecret"})()
         native.get_password = Mock(side_effect=AssertionError("would prompt"))
         _select_chain(monkeypatch, backend, native)
-        assert load_passphrase_from_keyring() == _PASSPHRASE
+        assert load_passphrase_from_desktop_keyring() == _PASSPHRASE
         native.get_password.assert_not_called()
 
 
@@ -254,10 +258,10 @@ class TestUnsupportedImplicitUnlock:
             _select_chain(monkeypatch, backend)
         else:
             monkeypatch.setattr(keyring, "get_keyring", lambda: backend)
-        assert encryption.os_keyring_read_blocked() is not None
-        assert not encryption.keyring_backend_available()
-        assert load_passphrase_from_keyring() is None
-        assert not store_passphrase_in_keyring(_PASSPHRASE)
+        assert encryption.desktop_keyring_read_blocked() is not None
+        assert not encryption.desktop_keyring_backend_available()
+        assert load_passphrase_from_desktop_keyring() is None
+        assert not store_passphrase_in_desktop_keyring(_PASSPHRASE)
         backend.get_password.assert_not_called()
         backend.set_password.assert_not_called()
 
@@ -268,7 +272,7 @@ class TestUnsupportedImplicitUnlock:
         monkeypatch.delenv("WAYLAND_DISPLAY", raising=False)
         bounded = Mock(wraps=encryption._call_with_timeout)
         monkeypatch.setattr(encryption, "_call_with_timeout", bounded)
-        assert load_passphrase_from_keyring(allow_prompt=True) == _PASSPHRASE
+        assert load_passphrase_from_desktop_keyring(allow_prompt=True) == _PASSPHRASE
         assert bounded.call_count == 1
 
 
@@ -280,21 +284,21 @@ class TestVerifiedDesktopDelete:
         backend.get_password.return_value = None
         if missing_error:
             backend.delete_password.side_effect = PasswordDeleteError("absent")
-        assert forget_passphrase_in_keyring() is None
+        assert forget_passphrase_in_desktop_keyring() is None
         backend.get_password.assert_called_once()
 
     @pytest.mark.parametrize("missing_error", [False, True])
     def test_silent_noop_and_false_missing_are_failures(self, backend: Mock, missing_error: bool):
         if missing_error:
             backend.delete_password.side_effect = PasswordDeleteError("still present")
-        assert forget_passphrase_in_keyring() is not None
+        assert forget_passphrase_in_desktop_keyring() is not None
 
     @pytest.mark.parametrize("operation", ["delete_password", "get_password"])
     def test_backend_error_is_not_absence_or_secret_disclosure(
         self, backend: Mock, operation: str, caplog: pytest.LogCaptureFixture
     ) -> None:
         getattr(backend, operation).side_effect = RuntimeError(_PASSPHRASE)
-        reason = forget_passphrase_in_keyring()
+        reason = forget_passphrase_in_desktop_keyring()
         assert reason is not None
         assert _PASSPHRASE not in reason
         assert _PASSPHRASE not in caplog.text
@@ -304,7 +308,7 @@ class TestVerifiedDesktopDelete:
     ) -> None:
         _backend, collection, _connection = secret_service
         collection.ensure_not_locked.side_effect = LockedException("locked after probe")
-        assert forget_passphrase_in_keyring() is not None
+        assert forget_passphrase_in_desktop_keyring() is not None
         collection.unlock.assert_not_called()
 
     def test_secret_service_delete_verifies_the_actual_item(
@@ -318,7 +322,7 @@ class TestVerifiedDesktopDelete:
             return (encryption._SECRET_SERVICE_NO_PROMPT,)
 
         item._item.call.side_effect = delete
-        assert forget_passphrase_in_keyring() is None
+        assert forget_passphrase_in_desktop_keyring() is None
         item._item.call.assert_called_once_with("Delete", "")
         item.delete.assert_not_called()
         collection.unlock.assert_not_called()
@@ -333,7 +337,10 @@ class TestVerifiedDesktopDelete:
         item._item.call.return_value = (_DELETE_PROMPT_PATH,)
         prompt = Mock(side_effect=AssertionError("must not prompt"))
         monkeypatch.setattr(secretstorage.item, "exec_prompt", prompt)
-        assert forget_passphrase_in_keyring() == "desktop keyring requires deletion confirmation"
+        assert (
+            forget_passphrase_in_desktop_keyring()
+            == "desktop keyring requires deletion confirmation"
+        )
         item._item.call.assert_called_once_with("Delete", "")
         item.delete.assert_not_called()
         prompt.assert_not_called()
@@ -345,7 +352,7 @@ class TestVerifiedDesktopDelete:
         other = Mock()
         other.get_password.return_value = _PASSPHRASE
         _select_chain(monkeypatch, backend, other)
-        assert forget_passphrase_in_keyring() is not None
+        assert forget_passphrase_in_desktop_keyring() is not None
         other.delete_password.assert_not_called()
 
 
