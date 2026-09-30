@@ -17,20 +17,25 @@ Two layers of validation matter here, and the tests pin both:
 
 from __future__ import annotations
 
+from typing import get_args
+
 import pytest
 from pydantic import ValidationError
 
 from terok_sandbox.config_schema import (
+    ClearanceMode,
     RawCredentialsSection,
     RawHooksSection,
     RawNetworkSection,
     RawPathsSection,
     RawRunSection,
+    RawServicesSection,
     RawShieldSection,
     RawSSHSection,
     RawVaultSection,
     SandboxConfigView,
 )
+from tests.constants import MOCK_HOST_BIN
 
 # ── Owned sub-section strictness ──────────────────────────────────────
 
@@ -85,6 +90,169 @@ def test_shield_section_rejects_profiles_key() -> None:
     """The ``shield:`` section names no profiles; ``SandboxConfig.shield_profiles`` does."""
     with pytest.raises(ValidationError, match="Extra inputs are not permitted"):
         RawShieldSection.model_validate({"profiles": {"dev-standard": {}}})
+
+
+# ── shield.bypass_duration ────────────────────────────────────────────
+
+USABLE_DURATIONS = ("1s", "30s", "5m", "2h", "1d", "05m", "90m")
+"""Window durations shield can arm: a non-zero count and one unit."""
+
+UNUSABLE_DURATIONS = ("0s", "00m", "5min", "1h30m", "5", "m", "", " 5m", "5m ", "-5m", "5M", "5ms")
+"""Typos and zeros shield refuses to arm — a zero count would be a window that never closes."""
+
+
+@pytest.mark.parametrize("value", USABLE_DURATIONS)
+def test_shield_bypass_duration_keeps_a_duration_shield_can_arm(
+    value: str, capsys: pytest.CaptureFixture[str]
+) -> None:
+    assert RawShieldSection.model_validate({"bypass_duration": value}).bypass_duration == value
+    assert capsys.readouterr().err == ""
+
+
+@pytest.mark.parametrize("value", [*UNUSABLE_DURATIONS, 300, None, True])
+def test_shield_bypass_duration_falls_back_for_that_key_alone(
+    value: object, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A typo shows at load, not when an operator opens a window — and costs only itself.
+
+    Rejecting it would reset the whole ``shield:`` section, kill-switch included,
+    and in terok, whose global config composes this section, the whole file.
+    """
+    section = RawShieldSection.model_validate(
+        {
+            "bypass_duration": value,
+            "disable_firewall_no_protection": True,
+            "audit": False,
+            "dnsmasq_path": str(MOCK_HOST_BIN / "dnsmasq"),
+        }
+    )
+    assert section.bypass_duration == RawShieldSection().bypass_duration
+    assert section.disable_firewall_no_protection is True
+    assert section.audit is False
+    assert section.dnsmasq_path == MOCK_HOST_BIN / "dnsmasq"
+    err = capsys.readouterr().err
+    assert "invalid shield.bypass_duration" in err
+    assert repr(value) in err
+
+
+def test_shield_bypass_duration_default_is_one_shield_can_arm() -> None:
+    """The fallback must itself be usable, or falling back would only move the error."""
+    from terok_shield.nft.rules import arm_bypass_window
+
+    arm_bypass_window(RawShieldSection().bypass_duration)
+
+
+@pytest.mark.parametrize("value", [*USABLE_DURATIONS, *UNUSABLE_DURATIONS])
+def test_shield_bypass_duration_grammar_is_shields(value: str) -> None:
+    """Sandbox keeps exactly what shield arms, and what shield's own config file accepts.
+
+    The grammar is spelled in sandbox because its schema may not import shield;
+    this keeps the two from drifting apart.
+    """
+    from terok_shield.config_file import ShieldFileConfig
+    from terok_shield.nft.rules import arm_bypass_window
+
+    try:
+        arm_bypass_window(value)
+        shield_arms = True
+    except ValueError:
+        shield_arms = False
+    try:
+        ShieldFileConfig.model_validate({"bypass_duration": value})
+        shield_loads = True
+    except ValidationError:
+        shield_loads = False
+    kept = RawShieldSection.model_validate({"bypass_duration": value}).bypass_duration == value
+    assert kept == shield_arms == shield_loads
+
+
+def test_view_keeps_the_rest_of_the_config_past_a_bad_bypass_duration() -> None:
+    """terok validates its whole global config through this view: a duration typo
+    must not reset the file — the kill-switch and the other sections stay as written."""
+    view = SandboxConfigView.model_validate(
+        {
+            "shield": {"bypass_duration": "5min", "disable_firewall_no_protection": True},
+            "services": {"mode": "tcp", "clearance": "off"},
+        }
+    )
+    assert view.shield.bypass_duration == RawShieldSection().bypass_duration
+    assert view.shield.disable_firewall_no_protection is True
+    assert view.services.mode == "tcp"
+    assert view.services.clearance == "off"
+
+
+# ── services.clearance ────────────────────────────────────────────────
+
+
+def test_services_clearance_defaults_to_prompt() -> None:
+    """Unset, the operator is asked — the behaviour every task had before the setting."""
+    assert RawServicesSection.model_validate({}).clearance == "prompt"
+
+
+@pytest.mark.parametrize("value", ["prompt", "mute", "off"])
+def test_services_clearance_accepts_each_value(value: str) -> None:
+    assert RawServicesSection.model_validate({"clearance": value}).clearance == value
+
+
+@pytest.mark.parametrize("value", ["silent", "Mute", "", True, False, None, 0, ["off"]], ids=repr)
+def test_services_clearance_falls_back_for_that_key_alone(
+    value: object, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A YAML boolean or a case variant is a typo to surface, not a mode to guess at —
+    surfaced as a warning at load, at the cost of this key alone.
+
+    Rejecting it would reset the whole ``services:`` section, so a typo here would
+    quietly undo the SELinux ``tcp`` opt-out in ``mode`` — and in terok, whose global
+    config composes this section, the whole file.
+    """
+    section = RawServicesSection.model_validate({"mode": "tcp", "clearance": value})
+    assert section.clearance == RawServicesSection().clearance
+    assert section.mode == "tcp"
+    err = capsys.readouterr().err
+    assert "invalid services.clearance" in err
+    assert repr(value) in err
+
+
+@pytest.mark.parametrize("value", ["prompt", "mute", "off"])
+def test_services_clearance_keeps_a_known_mode_quietly(
+    value: str, capsys: pytest.CaptureFixture[str]
+) -> None:
+    assert RawServicesSection.model_validate({"clearance": value}).clearance == value
+    assert capsys.readouterr().err == ""
+
+
+def test_services_section_stays_strict_on_its_keys() -> None:
+    """The new key keeps ``extra="forbid"``: a misspelt ``clearance`` is still an error."""
+    with pytest.raises(ValidationError, match="Extra inputs are not permitted"):
+        RawServicesSection.model_validate({"clearence": "off"})
+
+
+def test_clearance_mode_is_the_field_vocabulary() -> None:
+    """The exported alias names exactly the values the field accepts, and nothing else."""
+    assert get_args(ClearanceMode) == ("prompt", "mute", "off")
+    assert RawServicesSection.model_fields["clearance"].annotation == ClearanceMode
+
+
+def test_view_carries_services_clearance() -> None:
+    """The view terok's global config inherits validates the key in its ``services:`` section."""
+    view = SandboxConfigView.model_validate({"services": {"mode": "tcp", "clearance": "off"}})
+    assert view.services.clearance == "off"
+    assert view.services.mode == "tcp"
+
+
+def test_view_keeps_the_rest_of_the_config_past_a_bad_clearance() -> None:
+    """terok validates its whole global config through this view: a clearance typo
+    must not reset the file — ``mode``, the kill-switch and the other sections stay."""
+    view = SandboxConfigView.model_validate(
+        {
+            "services": {"mode": "tcp", "clearance": "silent"},
+            "shield": {"disable_firewall_no_protection": True, "audit": False},
+        }
+    )
+    assert view.services.clearance == RawServicesSection().clearance
+    assert view.services.mode == "tcp"
+    assert view.shield.disable_firewall_no_protection is True
+    assert view.shield.audit is False
 
 
 def test_ssh_section_use_personal_defaults_to_none() -> None:

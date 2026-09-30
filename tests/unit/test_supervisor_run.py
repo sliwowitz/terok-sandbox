@@ -121,6 +121,31 @@ class TestWiredServices:
         )
         assert "gate" in wired_services(cfg)
 
+    @pytest.mark.parametrize(
+        ("clearance", "gate", "expected"),
+        [
+            pytest.param("prompt", False, ("verdict", "clearance", "vault", "signer"), id="prompt"),
+            pytest.param("mute", False, ("verdict", "clearance", "vault", "signer"), id="mute"),
+            pytest.param("off", False, ("vault", "signer"), id="off"),
+            pytest.param("off", True, ("gate", "vault", "signer"), id="off-with-gate"),
+        ],
+    )
+    def test_clearance_decides_the_clearance_arm(
+        self, tmp_path: Path, clearance: str, gate: bool, expected: tuple[str, ...]
+    ) -> None:
+        """``off`` drops verdict and clearance together; ``mute`` keeps both — the
+        hub must run to start muted — and the setting never touches the rest."""
+        cfg = SidecarConfig(
+            container_name="demo",
+            ipc_mode="socket",
+            db_path=tmp_path / "vault.db",
+            runtime_dir=tmp_path / "rt",
+            gate_base_path=tmp_path / "mirrors" if gate else None,
+            gate_token="terok-g-abc" if gate else None,
+            clearance=clearance,  # type: ignore[arg-type]
+        )
+        assert wired_services(cfg) == expected
+
 
 @pytest.mark.asyncio
 async def test_runs_until_container_exits_and_terminates_children(sidecar: Path) -> None:
@@ -136,6 +161,22 @@ async def test_runs_until_container_exits_and_terminates_children(sidecar: Path)
     assert spawn.launched == ["verdict", "clearance", "vault", "signer"]
     for handle in spawn.handles:
         handle.process.terminate.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_clearance_off_launches_no_clearance_arm(sidecar: Path) -> None:
+    """A sidecar saying ``clearance: off`` gets no verdict or clearance child at all."""
+    payload = json.loads(sidecar.read_text())
+    sidecar.write_text(json.dumps({**payload, "clearance": "off"}))
+    spawn = _FakeSpawner()
+    with (
+        patch("terok_sandbox.supervisor.main.launch_child", spawn),
+        patch("terok_sandbox.supervisor.main._wait_for_container", AsyncMock(return_value=0)),
+        patch("terok_sandbox.supervisor.main._install_signal_handlers"),
+    ):
+        rc = await run_supervisor("abc123def456", sidecar)
+    assert rc == 0
+    assert spawn.launched == ["vault", "signer"]
 
 
 @pytest.mark.asyncio

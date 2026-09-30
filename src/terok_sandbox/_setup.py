@@ -13,8 +13,12 @@ Each phase is self-contained and idempotent:
   verify cycle so a re-run after ``pipx install terok-sandbox``
   guarantees the running unit picks up the new code, not just the
   rewritten on-disk unit file.
-* The clearance phase is optional — headless servers that skip the
-  desktop bridge still get a working shield+vault+gate install.
+* There is no clearance phase.  The clearance hub and its verdict
+  server run as children of each container's supervisor, which the
+  supervisor phase installs; whether a container gets them is decided
+  per launch by ``services.clearance`` (``off`` leaves both out), not by
+  what setup installed.  A headless host needs nothing extra either way:
+  without a session bus the hub's notifier degrades to a no-op.
 
 Stage-line output routes through `terok_sandbox._stage` (re-exported
 via the package's public surface) so frontends (terok, terok-executor)
