@@ -40,6 +40,7 @@ from .setup import check_setup
 if TYPE_CHECKING:
     from collections.abc import Callable, Mapping
 
+    from .config_schema import ClearanceMode
     from .runtime import Container, ContainerRemoveResult
     from .vault.ssh.manager import SSHManager
 
@@ -665,6 +666,41 @@ class Sandbox:
         from .integrations.shield import ShieldManager
 
         ShieldManager(task_dir, self._cfg).down(container, container_id)
+
+    # -- Clearance ----------------------------------------------------------
+
+    def clearance_refresh(self, container: str, *, clearance: ClearanceMode) -> None:
+        """Set an existing container's clearance mode for its next start.
+
+        The clearance counterpart of
+        [`shield_refresh`][terok_sandbox.Sandbox.shield_refresh]: a restart
+        calls both before ``podman start``, so a resumed container runs
+        under today's ``services.clearance`` instead of the value frozen at
+        its creation.  The mode reaches the supervisor only through the
+        container's sidecar, which every start re-reads; this rewrites the
+        sidecar's ``clearance`` field and writes every other field back as
+        it was — the ports and tokens there must keep matching the
+        container's immutable env.  The file rules are the creation
+        writer's (see
+        [`refresh_clearance`][terok_sandbox.supervisor.sidecar.refresh_clearance]).
+
+        *container* is the podman name, the key the sidecar is stored under
+        ([`SandboxConfig.sidecar_path`][terok_sandbox.config.SandboxConfig.sidecar_path]).
+        *clearance* is checked against ``prompt`` / ``mute`` / ``off`` before
+        anything is touched.  A running container is unaffected until it
+        starts again: its supervisor keeps the mode it started with.
+
+        Raises:
+            ValueError: *container* is not a safe single path component,
+                *clearance* is not a known mode, or the sidecar is not a
+                JSON object.
+            FileNotFoundError: The container has no sidecar; none is created.
+            OSError: The sidecar is a symlink, not a regular file, or owned
+                by another user, or the rewrite failed.  It is left as it was.
+        """
+        from .supervisor.sidecar import refresh_clearance
+
+        refresh_clearance(self._cfg.sidecar_path(container), clearance)
 
     # -- Container launch ---------------------------------------------------
     #

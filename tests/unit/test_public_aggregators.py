@@ -20,8 +20,40 @@ stale callable.
 
 from __future__ import annotations
 
+import ast
+import importlib
+from pathlib import Path
+
+import pytest
+
 import terok_sandbox
 from terok_sandbox.commands import _handle_sandbox_uninstall
+
+#: Shield's promotion vocabulary the package root re-exports, each with the
+#: shield module that owns it.  terok's promotion engine and TUI match on
+#: these — the tier standing in a harvest entry's way, the remedies that
+#: could lift it, what a grant returned — never on a copy spelled locally.
+SHIELD_PROMOTION_VOCABULARY = (
+    ("AllowResult", "terok_shield"),
+    ("OverrideRevocation", "terok_shield"),
+    ("SecurityTierRefusal", "terok_shield"),
+    ("validate_target", "terok_shield"),
+    ("ShieldReading", "terok_shield"),
+    ("ShieldState", "terok_shield"),
+    ("RotationRisk", "terok_shield"),
+    ("HarvestEntry", "terok_shield.harvest"),
+    ("HarvestReport", "terok_shield.harvest"),
+    ("TIER_ALLOWLIST", "terok_shield.harvest"),
+    ("TIER_OPERATOR_DENY", "terok_shield.harvest"),
+    ("TIER_SECURITY", "terok_shield.harvest"),
+    ("TIER_PRIVATE", "terok_shield.harvest"),
+    ("TIER_HARD_DENY", "terok_shield.harvest"),
+    ("REMEDY_TASK", "terok_shield.harvest"),
+    ("REMEDY_PROJECT", "terok_shield.harvest"),
+    ("REMEDY_SET", "terok_shield.harvest"),
+    ("REMEDY_OVERRIDE", "terok_shield.harvest"),
+    ("REMEDY_HOST_PORT", "terok_shield.harvest"),
+)
 
 
 def test_sandbox_uninstall_is_public_alias_of_aggregator() -> None:
@@ -48,3 +80,47 @@ def test_combined_annotations_resolver_is_public_alias() -> None:
     assert terok_sandbox.ShieldAnnotations is ShieldAnnotations
     assert "resolve_container_annotations" in terok_sandbox.__all__
     assert "ShieldAnnotations" in terok_sandbox.__all__
+
+
+@pytest.mark.parametrize(
+    ("name", "owner"), SHIELD_PROMOTION_VOCABULARY, ids=[n for n, _ in SHIELD_PROMOTION_VOCABULARY]
+)
+def test_shield_promotion_vocabulary_is_public(name: str, owner: str) -> None:
+    """Each name resolves lazily to shield's own object and rides ``__all__``."""
+    assert getattr(terok_sandbox, name) is getattr(importlib.import_module(owner), name)
+    assert name in terok_sandbox._LAZY
+    assert name in terok_sandbox.__all__
+
+
+def _type_checking_imports() -> set[str]:
+    """Names the barrel imports under ``if TYPE_CHECKING:`` — its view for type checkers."""
+    tree = ast.parse(Path(terok_sandbox.__file__).read_text(encoding="utf-8"))
+    return {
+        alias.asname or alias.name
+        for node in tree.body
+        if isinstance(node, ast.If)
+        and isinstance(node.test, ast.Name)
+        and node.test.id == "TYPE_CHECKING"
+        for stmt in node.body
+        if isinstance(stmt, ast.ImportFrom)
+        for alias in stmt.names
+    }
+
+
+def test_shield_promotion_vocabulary_is_typed_for_checkers() -> None:
+    """Every name also sits in the barrel's ``TYPE_CHECKING`` import: without it a
+    type checker resolves the name through ``__getattr__`` and sees ``Any``."""
+    missing = {name for name, _ in SHIELD_PROMOTION_VOCABULARY} - _type_checking_imports()
+    assert missing == set()
+
+
+def test_clearance_mode_is_public_and_typed() -> None:
+    """``ClearanceMode`` — the ``services.clearance`` vocabulary terok's project schema
+    and ``make_sandbox_config`` annotate with — is the schema's own alias, rides
+    ``__all__``, and sits in the ``TYPE_CHECKING`` import for type checkers."""
+    from terok_sandbox.config_schema import ClearanceMode
+
+    assert terok_sandbox.ClearanceMode is ClearanceMode
+    assert "ClearanceMode" in terok_sandbox._LAZY
+    assert "ClearanceMode" in terok_sandbox.__all__
+    assert "ClearanceMode" in _type_checking_imports()

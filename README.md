@@ -31,6 +31,8 @@ a gated git server, and an egress firewall.
 - **Shield firewall** — installs the [terok-shield](https://github.com/terok-ai/terok-shield) OCI hooks at setup time and drives the firewall at runtime.
 - **Clearance in-supervisor** — each container's supervisor hosts the
   [terok-clearance](https://github.com/terok-ai/terok-clearance) hub, verdict server, and desktop notifier, so the operator can authorise blocked outbound connections live.
+  `services.clearance: mute` starts each task with those prompts silenced, and `off` leaves the clearance arm out entirely; either way the shield still refuses every blocked connection, and records the refused destinations in its audit log while `shield.audit` is on (the default).
+  A change applies at the next start of the task: create, recreate, or a terok restart.
 - **Setup as one call** — idempotent `terok-sandbox setup` installs the shield +
   supervisor OCI hooks and provisions the encrypted credentials DB;
   `terok-sandbox uninstall` reverses it.

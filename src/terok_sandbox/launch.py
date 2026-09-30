@@ -43,6 +43,7 @@ from .podman_args import (
 from .runtime.seccomp import seccomp_args
 from .sandbox import Sharing, VolumeSpec
 from .setup import check_setup
+from .supervisor.sidecar import remove_sidecar, store_sidecar
 
 # Loopback TCP port the in-container vault HTTP bridge listens on in
 # socket-transport mode.  Constant by design — every layer (this module,
@@ -520,6 +521,20 @@ def write_sidecar(
     both ``gate_base_path`` and ``gate_token`` are present.
     ``allow_debugger`` records debug mode: the supervisor children then
     leave themselves ptrace-able instead of clearing the dumpable flag.
+    ``clearance`` records ``cfg.clearance`` (``services.clearance``), the
+    per-project choice of who is asked about a refusal: ``off`` and the
+    supervisor launches no verdict or clearance child, ``mute`` and its
+    clearance hub starts with the container muted.  It is the one field a
+    later restart may rewrite from current config
+    ([`Sandbox.clearance_refresh`][terok_sandbox.Sandbox.clearance_refresh]),
+    so a changed setting applies at the task's next start.
+
+    The file goes through
+    [`store_sidecar`][terok_sandbox.supervisor.sidecar.store_sidecar], the
+    writer that refresh shares: ``0600`` from the first byte, atomically
+    replaced, never written through a symlink planted at the path, and
+    never between another change's check and its act — creation, refresh
+    and removal take turns under the sidecar directory's lock.
 
     Best-effort: a write failure logs to stderr and returns ``None``;
     callers pick their own policy (`compose` rolls back and aborts the
@@ -538,9 +553,9 @@ def write_sidecar(
     ):
         raise ValueError(f"invalid container name: {container_name!r}")
 
-    sidecar_dir = cfg.state_dir / "sidecar"
+    target = cfg.sidecar_path(container_name)
     try:
-        sidecar_dir.mkdir(parents=True, exist_ok=True)
+        target.parent.mkdir(parents=True, exist_ok=True)
     except OSError as exc:
         print(f"warning: sidecar dir setup failed: {exc}", file=sys.stderr)
         return None
@@ -548,6 +563,7 @@ def write_sidecar(
     payload: dict[str, object] = {
         "container_name": container_name,
         "ipc_mode": cfg.services_mode,
+        "clearance": cfg.clearance,
         "db_path": str(cfg.db_path),
         "routes_path": str(cfg.routes_path),
         "vault_systemd_creds_file": str(cfg.vault_systemd_creds_file),
@@ -577,24 +593,15 @@ def write_sidecar(
         # a debugger can attach.  Absent (the default) means fully hardened.
         payload["allow_debugger"] = True
 
-    target = sidecar_dir / f"{container_name}.json"
-    # The payload can carry a live gate_token, so the file must not be
-    # world-readable.  Create it 0600 directly (the process umask would
-    # otherwise leave it 0644) and fchmod to also cover the re-launch case
-    # where the file already exists with looser permissions.
-    #
-    # ``O_NOFOLLOW`` refuses to open the final path component if it is a
-    # symlink — a pre-planted symlink at ``target`` (e.g. pointing at
-    # ``~/.ssh/authorized_keys``) would otherwise let this write clobber
-    # an arbitrary file with the token payload.  The container_name
-    # traversal guard above blocks one vector; this closes the symlink
-    # vector at the open(2) level.  The ``ELOOP`` it raises is an OSError,
-    # so it falls into the existing soft-fail branch and returns ``None``.
+    # The payload can carry a live gate_token.  ``store_sidecar`` writes it
+    # 0600 from the first byte (tightening a file an older writer left
+    # looser), swaps it in atomically, and refuses a symlink pre-planted at
+    # ``target`` (e.g. pointing at ``~/.ssh/authorized_keys``) instead of
+    # clobbering its target with the token payload.  The container_name
+    # traversal guard above blocks the other vector.  Every refusal is an
+    # OSError, so it falls into the soft-fail branch and returns ``None``.
     try:
-        fd = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o600)
-        with os.fdopen(fd, "w", encoding="utf-8") as fh:
-            os.fchmod(fh.fileno(), 0o600)
-            json.dump(payload, fh, indent=2)
+        store_sidecar(target, payload)
     except OSError as exc:
         print(f"warning: sidecar write failed: {exc}", file=sys.stderr)
         return None
@@ -612,14 +619,20 @@ def remove_container_state(container: str, *, cfg: SandboxConfig) -> None:
     Call at real teardown — after the container is removed — never at
     mere stop.  Idempotent; missing state is a no-op.
 
+    The sidecar goes through
+    [`remove_sidecar`][terok_sandbox.supervisor.sidecar.remove_sidecar],
+    under the lock every sidecar change holds, so a clearance refresh
+    racing the teardown can never bring it back.
+
     Raises:
         ValueError: If ``container`` is empty or carries a path
-            separator / traversal segment — such a name would redirect
-            the unlink/rmtree outside the sandbox-owned directories.
+            separator / NUL / traversal segment — such a name would
+            redirect the unlink/rmtree outside the sandbox-owned
+            directories.  Refused by
+            [`sidecar_path`][terok_sandbox.config.SandboxConfig.sidecar_path]
+            before anything is removed.
     """
-    if not container or container in (".", "..") or "/" in container or "\\" in container:
-        raise ValueError(f"invalid container name: {container!r}")
-    (cfg.state_dir / "sidecar" / f"{container}.json").unlink(missing_ok=True)
+    remove_sidecar(cfg.sidecar_path(container))
     shutil.rmtree(cfg.container_runtime_dir(container), ignore_errors=True)
 
 

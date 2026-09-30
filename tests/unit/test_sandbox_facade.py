@@ -5,13 +5,18 @@
 
 from __future__ import annotations
 
+import dataclasses
+import json
+import stat
 import subprocess
 from pathlib import Path
+from typing import TYPE_CHECKING
 from unittest.mock import MagicMock, call, patch
 
 import pytest
 
 from terok_sandbox import GpuConfigError, SandboxConfig
+from terok_sandbox.launch import PerContainerResources, write_sidecar
 from terok_sandbox.runtime import ContainerRemoveResult
 from terok_sandbox.runtime.gpu import check_gpu_error
 from terok_sandbox.runtime.podman import redact_env_args
@@ -23,7 +28,22 @@ from terok_sandbox.sandbox import (
     Sharing,
     VolumeSpec,
 )
-from tests.constants import MISSING_PODMAN_INIT, MOCK_BASE, MOCK_TASK_DIR
+from terok_sandbox.supervisor.sidecar import (
+    _LOCK_NAME as SIDECAR_LOCK_NAME,
+    load_sidecar,
+    wired_services,
+)
+from tests.constants import (
+    DRIFTED_SERVICE_PORTS,
+    FAKE_SERVICE_PORTS,
+    MISSING_PODMAN_INIT,
+    MOCK_BASE,
+    MOCK_TASK_DIR,
+)
+
+if TYPE_CHECKING:
+    from terok_sandbox import ClearanceMode
+    from terok_sandbox.config_schema import ServicesMode
 
 MOCK_HOST_DIR = MOCK_BASE / "host-dir"
 
@@ -1409,3 +1429,172 @@ class TestTaskStateDir:
         with pytest.raises(ValueError, match="unsafe container name"):
             sandbox.task_state_dir(name)
         assert set(tmp_path.rglob("*")) == existing_paths
+
+
+def _tcp_cfg(tmp_path: Path, clearance: ClearanceMode) -> SandboxConfig:
+    """A TCP-mode config rooted in *tmp_path*, every port pinned so nothing is allocated."""
+    vault_port, signer_port, gate_port = FAKE_SERVICE_PORTS
+    return SandboxConfig(
+        state_dir=tmp_path / "state",
+        runtime_dir=tmp_path / "run",
+        vault_dir=tmp_path / "vault",
+        services_mode="tcp",
+        token_broker_port=vault_port,
+        ssh_signer_port=signer_port,
+        gate_port=gate_port,
+        clearance=clearance,
+    )
+
+
+def _drifted_cfg(tmp_path: Path, services_mode: ServicesMode) -> SandboxConfig:
+    """Today's config for `_tcp_cfg`'s ``state_dir``, drifted in everything a sidecar records.
+
+    Only ``state_dir`` is shared, because the sidecar's path derives from it.
+    The ports, the runtime and vault dirs and the keyring policy all differ,
+    and for ``socket`` the transport too: a refresh that rebuilt any field
+    from config, rather than keep the file's, would show.
+    """
+    vault_port, signer_port, gate_port = DRIFTED_SERVICE_PORTS
+    return SandboxConfig(
+        state_dir=tmp_path / "state",
+        runtime_dir=tmp_path / "run-now",
+        vault_dir=tmp_path / "vault-now",
+        services_mode=services_mode,
+        token_broker_port=vault_port,
+        ssh_signer_port=signer_port,
+        gate_port=gate_port,
+        credentials_use_keyring=True,
+        clearance="prompt",
+    )
+
+
+def _launch_sidecar(cfg: SandboxConfig, tmp_path: Path) -> Path:
+    """Write ``myc``'s sidecar exactly as a TCP-mode launch with a wired gate writes it."""
+    vault_port, signer_port, gate_port = FAKE_SERVICE_PORTS
+    path = write_sidecar(
+        "myc",
+        cfg=cfg,
+        per_container=PerContainerResources(
+            container_runtime_dir=cfg.container_runtime_dir("myc"),
+            token_broker_port=vault_port,
+            ssh_signer_port=signer_port,
+            gate_port=gate_port,
+        ),
+        scope_id="proj",
+        project_id="proj",
+        task_id="7",
+        dossier_path=tmp_path / "dossier.json",
+        gate_base_path=str(tmp_path / "gate"),
+        gate_token="terok-g-refresh",
+        gate_port=gate_port,
+        allow_debugger=True,
+    )
+    assert path is not None
+    return path
+
+
+class TestClearanceRefresh:
+    """``clearance_refresh`` — what a restart calls before ``podman start``.
+
+    The clearance mode reaches a supervisor only through the sidecar, which
+    a restart reuses; without the refresh a changed ``services.clearance``
+    would reach a task only when it is recreated.  The sidecar also holds
+    the gate token and the ports the container's immutable env was created
+    with, so the refresh may change that one field and nothing else.
+    """
+
+    @pytest.mark.parametrize(
+        ("created", "refreshed"), [("prompt", "mute"), ("mute", "off"), ("off", "prompt")]
+    )
+    def test_refreshed_sidecar_is_the_one_creation_writes_for_that_mode(
+        self, tmp_path: Path, created: ClearanceMode, refreshed: ClearanceMode
+    ) -> None:
+        """Byte for byte: as if the container had been created under the new setting."""
+        path = _launch_sidecar(_tcp_cfg(tmp_path, created), tmp_path)
+        Sandbox(_tcp_cfg(tmp_path, created)).clearance_refresh("myc", clearance=refreshed)
+        after_refresh = path.read_bytes()
+        _launch_sidecar(_tcp_cfg(tmp_path, refreshed), tmp_path)
+        assert after_refresh == path.read_bytes()
+
+    @pytest.mark.parametrize("services_mode", ["tcp", "socket"])
+    def test_keeps_what_the_file_recorded_not_what_config_says_now(
+        self, tmp_path: Path, services_mode: ServicesMode
+    ) -> None:
+        """Only ``clearance`` follows today's config; every other field stays as recorded.
+
+        The ports and tokens must keep matching the container's immutable env,
+        which today's config no longer describes: the refresh runs through a
+        ``Sandbox`` whose config has drifted in all but ``state_dir``.  Same
+        keys, same order, same values — bar ``clearance``.
+        """
+        path = _launch_sidecar(_tcp_cfg(tmp_path, "prompt"), tmp_path)
+        recorded = json.loads(path.read_text())
+        Sandbox(_drifted_cfg(tmp_path, services_mode)).clearance_refresh("myc", clearance="off")
+        refreshed = json.loads(path.read_text())
+        assert refreshed == {**recorded, "clearance": "off"}
+        assert list(refreshed) == list(recorded)
+
+    @pytest.mark.parametrize("mode", ["prompt", "mute", "off"])
+    def test_supervisor_parses_the_new_mode_and_nothing_else(
+        self, tmp_path: Path, mode: ClearanceMode
+    ) -> None:
+        """Round trip through the supervisor's own parser; ``off`` drops the clearance arm."""
+        cfg = _tcp_cfg(tmp_path, "prompt")
+        path = _launch_sidecar(cfg, tmp_path)
+        before = load_sidecar(path)
+        assert before is not None
+        Sandbox(cfg).clearance_refresh("myc", clearance=mode)
+        after = load_sidecar(path)
+        assert after == dataclasses.replace(before, clearance=mode)
+        assert ("clearance" in wired_services(after)) is (mode != "off")
+
+    def test_refuses_a_container_without_a_sidecar(self, tmp_path: Path) -> None:
+        """Nothing to refresh is an error, and no sidecar is conjured up for it."""
+        cfg = _tcp_cfg(tmp_path, "prompt")
+        sandbox = Sandbox(cfg)
+        with pytest.raises(FileNotFoundError, match="no sidecar to refresh"):
+            sandbox.clearance_refresh("myc", clearance="off")
+        assert not cfg.sidecar_path("myc").parent.exists()
+
+    def test_refuses_a_symlinked_sidecar(self, tmp_path: Path) -> None:
+        """A link planted at the sidecar path is refused; the file it points at stays intact."""
+        cfg = _tcp_cfg(tmp_path, "prompt")
+        victim = _launch_sidecar(cfg, tmp_path).rename(tmp_path / "victim.json")
+        before = victim.read_bytes()
+        cfg.sidecar_path("myc").symlink_to(victim)
+        sandbox = Sandbox(cfg)
+        with pytest.raises(OSError, match="symlink"):
+            sandbox.clearance_refresh("myc", clearance="off")
+        assert cfg.sidecar_path("myc").is_symlink()
+        assert victim.read_bytes() == before
+
+    def test_rewrite_keeps_the_sidecar_private(self, tmp_path: Path) -> None:
+        """0600 even over a looser leftover, with no temp file beside it."""
+        cfg = _tcp_cfg(tmp_path, "prompt")
+        path = _launch_sidecar(cfg, tmp_path)
+        path.chmod(0o644)
+        Sandbox(cfg).clearance_refresh("myc", clearance="mute")
+        assert stat.S_IMODE(path.stat().st_mode) == 0o600
+        # Nothing beside the sidecar but the directory's lock file — no temp file left.
+        assert sorted(entry.name for entry in path.parent.iterdir()) == sorted(
+            [SIDECAR_LOCK_NAME, "myc.json"]
+        )
+
+    @pytest.mark.parametrize("value", ["OFF", "silent", None], ids=repr)
+    def test_rejects_an_unknown_mode(self, tmp_path: Path, value: object) -> None:
+        """The ``ClearanceMode`` vocabulary is enforced at the call, not just by type checkers."""
+        cfg = _tcp_cfg(tmp_path, "prompt")
+        path = _launch_sidecar(cfg, tmp_path)
+        before = path.read_bytes()
+        sandbox = Sandbox(cfg)
+        with pytest.raises(ValueError, match="unknown clearance mode"):
+            sandbox.clearance_refresh("myc", clearance=value)  # type: ignore[arg-type]
+        assert path.read_bytes() == before
+
+    @pytest.mark.parametrize("name", ["", ".", "..", "../escape", "a/b", "a\\b", "a\0b"])
+    def test_rejects_an_unsafe_container_name(self, tmp_path: Path, name: str) -> None:
+        """A path-shaped name never becomes a path under the sidecar directory."""
+        sandbox = Sandbox(_tcp_cfg(tmp_path, "prompt"))
+        with pytest.raises(ValueError, match="unsafe container name"):
+            sandbox.clearance_refresh(name, clearance="off")
+        assert not (tmp_path / "state").exists()

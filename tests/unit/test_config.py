@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import shutil
 import unittest.mock
+from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
@@ -29,6 +30,87 @@ def test_aslr_control_reads_global_config(
 def test_aslr_control_defaults_off() -> None:
     """Missing configuration leaves the host's seccomp policy untouched."""
     assert SandboxConfig().aslr_control is False
+
+
+class TestServicesClearance:
+    """``services.clearance`` resolves through the services schema into ``SandboxConfig``."""
+
+    def test_defaults_to_prompt(self) -> None:
+        """No setting asks the operator, as every task did before the knob existed."""
+        assert SandboxConfig().clearance == "prompt"
+
+    @pytest.mark.parametrize("value", ["prompt", "mute", "off"])
+    def test_reads_global_config(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, value: str
+    ) -> None:
+        """The value written unquoted reads back as written — ``off`` included.
+
+        YAML 1.1 parsers read a bare ``off`` as the boolean ``False``, which the
+        schema would not take for ``off``: it would warn and fall back to
+        ``prompt``.  The config stack's YAML 1.2 reader keeps it the string an
+        operator typed.
+        """
+        path = tmp_path / "config.yml"
+        path.write_text(f"services:\n  clearance: {value}\n")
+        monkeypatch.setenv("TEROK_CONFIG_FILE", str(path))
+        assert SandboxConfig().clearance == value
+
+    def test_explicit_value_wins(self) -> None:
+        """An orchestrator's resolved per-project value overrides the global default."""
+        with unittest.mock.patch("terok_sandbox.config.services_clearance", return_value="off"):
+            assert SandboxConfig().clearance == "off"
+            assert SandboxConfig(clearance="mute").clearance == "mute"
+
+    def test_invalid_value_warns_and_keeps_the_rest_of_the_section(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """A typo asks the operator rather than silencing anyone, and says so on stderr —
+        and costs that key alone: the SELinux ``tcp`` opt-out beside it survives."""
+        from terok_sandbox.config import services_clearance, services_mode
+
+        path = tmp_path / "config.yml"
+        path.write_text("services:\n  mode: tcp\n  clearance: silent\n")
+        monkeypatch.setenv("TEROK_CONFIG_FILE", str(path))
+        assert services_clearance() == "prompt"
+        assert services_mode() == "tcp"
+        err = capsys.readouterr().err
+        assert "invalid services.clearance ('silent'" in err
+        assert "invalid services section" not in err
+
+
+class TestShieldBypassDuration:
+    """``shield.bypass_duration`` resolves through the shield schema into ``SandboxConfig``."""
+
+    @pytest.fixture(autouse=True)
+    def _fresh_shield_section(self) -> Iterator[None]:
+        """The shield section is read once per process; each test reads its own config."""
+        from terok_sandbox import config as _config
+
+        _config._shield_section.cache_clear()
+        yield
+        _config._shield_section.cache_clear()
+
+    def test_reads_global_config(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        """A duration shield can arm reads back as written."""
+        path = tmp_path / "config.yml"
+        path.write_text("shield:\n  bypass_duration: 45s\n")
+        monkeypatch.setenv("TEROK_CONFIG_FILE", str(path))
+        assert SandboxConfig().shield_bypass_duration == "45s"
+
+    def test_unusable_value_warns_and_keeps_the_rest_of_the_section(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """A typo reads as the default with a warning at load — and only it: ``audit``
+        beside it in the same section keeps what the operator wrote."""
+        from terok_sandbox.config_schema import RawShieldSection
+
+        path = tmp_path / "config.yml"
+        path.write_text("shield:\n  bypass_duration: 5min\n  audit: false\n")
+        monkeypatch.setenv("TEROK_CONFIG_FILE", str(path))
+        cfg = SandboxConfig()
+        assert cfg.shield_bypass_duration == RawShieldSection().bypass_duration
+        assert cfg.shield_audit is False
+        assert "invalid shield.bypass_duration" in capsys.readouterr().err
 
 
 class TestSocketModeSkipsPortResolution:
@@ -186,6 +268,32 @@ class TestExperimentalEnabled:
         with unittest.mock.patch("terok_sandbox.config.experimental_enabled", return_value=True):
             cfg = SandboxConfig(experimental=False)
         assert cfg.experimental is False
+
+
+class TestSidecarPath:
+    """``sidecar_path`` — the one name → path rule the sidecar's writer and its editor share."""
+
+    def test_derives_path_under_state_dir(self, tmp_path: Path) -> None:
+        """``state_dir/sidecar/<name>.json``, derived without touching the disk."""
+        cfg = SandboxConfig(state_dir=tmp_path / "state")
+        assert cfg.sidecar_path("myc") == tmp_path / "state" / "sidecar" / "myc.json"
+        assert not (tmp_path / "state").exists()
+
+    @pytest.mark.parametrize(
+        "bad", ["", ".", "..", "../escape", "a/b", "back\\slash", "nul\0byte"], ids=repr
+    )
+    def test_rejects_unsafe_container_names(self, tmp_path: Path, bad: str) -> None:
+        """A name that is not one path component never becomes a path under ``state_dir``."""
+        cfg = SandboxConfig(state_dir=tmp_path / "state")
+        with pytest.raises(ValueError, match="unsafe container name"):
+            cfg.sidecar_path(bad)
+
+    def test_rejects_an_absolute_name(self, tmp_path: Path) -> None:
+        """``Path / "/abs"`` would swallow the whole prefix; the name is refused first."""
+        cfg = SandboxConfig(state_dir=tmp_path / "state")
+        absolute_name = str(tmp_path)
+        with pytest.raises(ValueError, match="unsafe container name"):
+            cfg.sidecar_path(absolute_name)
 
 
 class TestContainerRuntimeDir:
