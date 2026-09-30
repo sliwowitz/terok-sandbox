@@ -55,6 +55,42 @@ but the broker/gate/SSH bridges cannot connect.
 """
 
 
+def _compose_wiring(
+    container: str,
+    *,
+    cfg: SandboxConfig | None,
+    no_shield: bool,
+    no_gate: bool,
+    no_broker: bool,
+    scope: str | None,
+    profiles: list[str] | None,
+) -> list[str]:
+    """Compose the podman wiring args for *container*, defaulting *cfg*.
+
+    Raises:
+        SystemExit: If *profiles* names a profile that does not exist; the
+            message names the profiles that do, the treatment
+            [`main`][terok_sandbox.cli.main] gives every typed operator error.
+    """
+    from ..config import SandboxConfig
+    from ..integrations.shield import UnknownProfileError
+    from ..launch import compose
+
+    try:
+        args, _plan = compose(
+            container,
+            cfg=cfg if cfg is not None else SandboxConfig(),
+            shield=not no_shield,
+            gate=not no_gate,
+            broker=not no_broker,
+            scope=scope,
+            profiles=tuple(profiles) if profiles else None,
+        )
+    except UnknownProfileError as exc:
+        raise SystemExit(str(exc)) from None
+    return args
+
+
 def _handle_prepare(
     container: str,
     *,
@@ -80,23 +116,24 @@ def _handle_prepare(
         no_broker: Disable the vault token broker (default: on).
         scope: Credential scope.  Required for gate/broker/ssh; omit for
             a shield-only run.
-        profiles: Override shield profiles for this container.
+        profiles: Shield profiles to apply to this container.
         output_json: Emit a JSON array instead of a shell-quoted string.
         cfg: Optional [`SandboxConfig`][terok_sandbox.SandboxConfig] override.
-    """
-    from ..config import SandboxConfig
-    from ..launch import compose, format_args
 
-    if cfg is None:
-        cfg = SandboxConfig()
-    args, _plan = compose(
+    A ``--profiles`` name that names no profile exits with the profiles that
+    exist, the treatment [`main`][terok_sandbox.cli.main] gives every other
+    typed operator error.
+    """
+    from ..launch import format_args
+
+    args = _compose_wiring(
         container,
         cfg=cfg,
-        shield=not no_shield,
-        gate=not no_gate,
-        broker=not no_broker,
+        no_shield=no_shield,
+        no_gate=no_gate,
+        no_broker=no_broker,
         scope=scope,
-        profiles=tuple(profiles) if profiles else None,
+        profiles=profiles,
     )
     print(format_args(args, output_json=output_json))
 
@@ -119,19 +156,16 @@ def _handle_run(
     plus a collision check on the user-supplied trailing podman args and
     an ``os.execv`` into the podman binary.  Caller does not return.
     """
-    from ..config import SandboxConfig
-    from ..launch import compose, exec_podman
+    from ..launch import exec_podman
 
-    if cfg is None:
-        cfg = SandboxConfig()
-    sandbox_args, _plan = compose(
+    sandbox_args = _compose_wiring(
         container,
         cfg=cfg,
-        shield=not no_shield,
-        gate=not no_gate,
-        broker=not no_broker,
+        no_shield=no_shield,
+        no_gate=no_gate,
+        no_broker=no_broker,
         scope=scope,
-        profiles=tuple(profiles) if profiles else None,
+        profiles=profiles,
     )
     exec_podman(sandbox_args, podman_args or [])
 
@@ -156,6 +190,42 @@ def _handle_cleanup(container: str, *, cfg: SandboxConfig | None = None) -> None
         print(f"No sandbox state found for {container}; nothing to clean up.")
 
 
+#: The arguments ``prepare`` and ``run`` share: both verbs wire the same
+#: sandbox services into a user-owned container.
+_WIRING_ARGS: tuple[ArgDef, ...] = (
+    ArgDef(name="container", help="Container name (becomes --name)"),
+    ArgDef(
+        name="--no-shield",
+        action="store_true",
+        help="Disable egress firewall (default: on)",
+        dest="no_shield",
+    ),
+    ArgDef(
+        name="--no-gate",
+        action="store_true",
+        help="Disable git gate (default: on; requires --scope)",
+        dest="no_gate",
+    ),
+    ArgDef(
+        name="--no-broker",
+        action="store_true",
+        help="Disable vault token broker (default: on; requires --scope)",
+        dest="no_broker",
+    ),
+    ArgDef(
+        name="--scope",
+        help="Credential scope; enables vault SSH agent and is required by gate/broker",
+    ),
+    ArgDef(
+        name="--profiles",
+        type=_csv_list,
+        help=(
+            "Shield profiles to apply to this container"
+            " (comma-separated, e.g. 'dev-standard,dev-python')"
+        ),
+    ),
+)
+
 LAUNCH_COMMANDS: tuple[CommandDef, ...] = (
     CommandDef(
         name="prepare",
@@ -163,34 +233,7 @@ LAUNCH_COMMANDS: tuple[CommandDef, ...] = (
         handler=LazyHandler("terok_sandbox.commands.launch:_handle_prepare"),
         epilog=_BRIDGES_EPILOG,
         args=(
-            ArgDef(name="container", help="Container name (becomes --name)"),
-            ArgDef(
-                name="--no-shield",
-                action="store_true",
-                help="Disable egress firewall (default: on)",
-                dest="no_shield",
-            ),
-            ArgDef(
-                name="--no-gate",
-                action="store_true",
-                help="Disable git gate (default: on; requires --scope)",
-                dest="no_gate",
-            ),
-            ArgDef(
-                name="--no-broker",
-                action="store_true",
-                help="Disable vault token broker (default: on; requires --scope)",
-                dest="no_broker",
-            ),
-            ArgDef(
-                name="--scope",
-                help="Credential scope; enables vault SSH agent and is required by gate/broker",
-            ),
-            ArgDef(
-                name="--profiles",
-                type=_csv_list,
-                help="Override shield profiles for this container (comma-separated, e.g. 'dev,pypi')",
-            ),
+            *_WIRING_ARGS,
             ArgDef(
                 name="--json",
                 action="store_true",
@@ -204,36 +247,7 @@ LAUNCH_COMMANDS: tuple[CommandDef, ...] = (
         help="Launch a sandboxed user-owned container (exec into podman run)",
         handler=LazyHandler("terok_sandbox.commands.launch:_handle_run"),
         epilog=_BRIDGES_EPILOG,
-        args=(
-            ArgDef(name="container", help="Container name (becomes --name)"),
-            ArgDef(
-                name="--no-shield",
-                action="store_true",
-                help="Disable egress firewall (default: on)",
-                dest="no_shield",
-            ),
-            ArgDef(
-                name="--no-gate",
-                action="store_true",
-                help="Disable git gate (default: on; requires --scope)",
-                dest="no_gate",
-            ),
-            ArgDef(
-                name="--no-broker",
-                action="store_true",
-                help="Disable vault token broker (default: on; requires --scope)",
-                dest="no_broker",
-            ),
-            ArgDef(
-                name="--scope",
-                help="Credential scope; enables vault SSH agent and is required by gate/broker",
-            ),
-            ArgDef(
-                name="--profiles",
-                type=_csv_list,
-                help="Override shield profiles for this container (comma-separated, e.g. 'dev,pypi')",
-            ),
-        ),
+        args=_WIRING_ARGS,
     ),
     CommandDef(
         name="cleanup",
