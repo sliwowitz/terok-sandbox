@@ -388,7 +388,7 @@ class TestChangePassphrase:
         assert _opens_with(cfg, NEW)
         (problem,) = result.problems
         assert problem.tier is PassphraseTier.KEYRING
-        assert "stale entry removed" in problem.detail
+        assert "entry removed" in problem.detail
 
     def test_refuses_while_passphrase_command_is_configured(self, tmp_path: Path) -> None:
         """The external store's copy can't be rewritten from here — fail up front."""
@@ -519,7 +519,7 @@ class TestRewriteTier:
 
         rewrite = _rewrite_tier(cfg, PassphraseTier.KERNEL_KEYRING, NEW)
 
-        assert rewrite.ok and rewrite.detail == "kernel-keyring cache rewritten"
+        assert rewrite.ok and rewrite.detail == "session cache rewritten"
         assert _KERNEL_CACHE["pw"] == NEW
 
     def test_kernel_keyring_rewrite_failure_purges_stale_cache(
@@ -546,7 +546,7 @@ class TestRewriteTier:
 
         rewrite = _rewrite_tier(cfg, PassphraseTier.KEYRING, NEW)
 
-        assert rewrite.ok and rewrite.detail == "keyring entry rewritten"
+        assert rewrite.ok and rewrite.detail == "desktop keyring entry rewritten"
         assert stored == [NEW]
 
     def test_unwritable_tier_is_reported(self, tmp_path: Path) -> None:
@@ -566,13 +566,14 @@ class TestRewriteTier:
         monkeypatch.setattr(systemd_creds, "is_available", lambda: True)
 
         def _boom(*_a: object, **_kw: object) -> None:
-            raise OSError("disk full")
+            raise OSError(NEW)
 
         monkeypatch.setattr(systemd_creds, "seal", _boom)
 
         rewrite = _rewrite_tier(cfg, PassphraseTier.SYSTEMD_CREDS, NEW)
 
-        assert not rewrite.ok and rewrite.detail == "disk full"
+        assert not rewrite.ok and rewrite.detail == "tier rewrite failed (OSError)"
+        assert NEW not in repr(rewrite)
 
 
 class TestCollectCurrentPassphrase:
@@ -719,7 +720,7 @@ class TestChangeHandlerPiped:
         assert _opens_with(cfg, NEW)
         out = capsys.readouterr().out
         assert "re-encrypted" in out
-        assert "kernel-keyring cache rewritten" in out
+        assert "session cache rewritten" in out
 
     def test_tier_only_change_prints_no_rekey_line(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
@@ -733,7 +734,7 @@ class TestChangeHandlerPiped:
 
         out = capsys.readouterr().out
         assert "re-encrypted" not in out
-        assert "kernel-keyring cache rewritten" in out
+        assert "session cache rewritten" in out
         assert _KERNEL_CACHE["pw"] == NEW
 
     def test_failed_tier_rewrites_exit_nonzero(
@@ -751,7 +752,7 @@ class TestChangeHandlerPiped:
             _handle_vault_passphrase_change(cfg=cfg)
 
         out = capsys.readouterr().out
-        assert "✗ keyring" in out
+        assert "✗ desktop keyring" in out
         # The change itself succeeded — only the tier fan-out is incomplete.
         assert _opens_with(cfg, NEW)
 
@@ -864,7 +865,7 @@ class TestPlanProvisioning:
     def test_keyring_choice_survives_a_missing_user_config(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """No user-scope config file → the mode persist is a silent no-op, not a crash."""
+        """A system-only configuration still persists the chosen desktop tier."""
         from terok_sandbox.commands import credentials as credentials_mod
 
         monkeypatch.setattr(
@@ -872,7 +873,7 @@ class TestPlanProvisioning:
             lambda: [("system", tmp_path / "system.yml")],
         )
         credentials_mod._persist_mode_choice(PassphraseTier.KEYRING)  # must not raise
-        assert not (tmp_path / "system.yml").exists()
+        assert "use_keyring: true" in (tmp_path / "system.yml").read_text()
 
     def test_existing_tier_short_circuits(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch

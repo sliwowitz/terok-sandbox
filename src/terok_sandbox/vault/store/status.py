@@ -160,11 +160,11 @@ def _build_warnings(recovery: RecoveryStatus) -> tuple[VaultWarning, ...]:
             VaultWarning(
                 VaultWarningKind.RECOVERY_VOLATILE,
                 "error",
-                "recovery key UNSAVED, vault dies at logout",
-                "the only copy of the vault passphrase is the kernel-keyring cache,"
-                " which is cleared at logout and never survives a reboot — save it"
-                " off-host now or the vault becomes unrecoverable the next time this"
-                " login session ends",
+                "recovery key UNSAVED, only a temporary cache",
+                "the only available copy of the vault passphrase is the temporary cache"
+                " (kernel keyring or tmpfs session file). It never survives a reboot"
+                " and may disappear earlier — save it off-host now or cache loss"
+                " makes the vault unrecoverable",
             )
         )
     elif not recovery.acknowledged and recovery.source is not None:
@@ -322,7 +322,7 @@ def _classify_db_access(
     except WrongPassphraseError:
         return _DbAccess(
             lock_reason=(
-                f"the passphrase via {recovery.source} does not open the DB"
+                f"the passphrase via {PassphraseTier(recovery.source).display_name} does not open the DB"
                 " — wrong key, or a DB from another install"
             )
         )

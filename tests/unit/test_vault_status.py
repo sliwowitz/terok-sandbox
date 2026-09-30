@@ -52,7 +52,7 @@ class TestProbePassphraseChain:
         chain = probe_passphrase_chain(credentials_db=MOCK_DB_PATH)
         assert chain[2].source == "kernel-keyring"
         assert chain[2].present is True
-        assert "cached in the user keyring" in chain[2].detail
+        assert "cached in the kernel keyring" in chain[2].detail
 
     def test_kernel_keyring_unusable_when_facility_missing(
         self, monkeypatch: pytest.MonkeyPatch
@@ -208,7 +208,7 @@ class TestClassifyDbAccess:
         cfg.open_credential_db.side_effect = WrongPassphraseError("could not decrypt")
         access = _classify_db_access(cfg, _recovery(source="keyring"), db_exists=True)
         assert access.lock_reason is not None
-        assert "via keyring does not open the DB" in access.lock_reason
+        assert "via desktop keyring does not open the DB" in access.lock_reason
         assert access.providers is None and access.db_error is None
 
     def test_open_no_passphrase_race_is_plain_lock(self) -> None:
@@ -351,7 +351,7 @@ class TestHandleVaultStatusText:
         )
         _run_status(cfg, source="kernel-keyring")
         out = capsys.readouterr().out
-        assert "LOCKED — the passphrase via kernel-keyring does not open the DB" in out
+        assert "LOCKED — the passphrase via session cache does not open the DB" in out
 
     def test_locked_header_names_broken_tier(self, capsys: pytest.CaptureFixture[str]) -> None:
         """A fail-closed tier (broken seal) is surfaced verbatim, not as a plain lock."""
@@ -431,11 +431,13 @@ class TestHandleVaultStatusText:
     def test_urgent_recovery_warning_for_volatile_only(
         self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
     ) -> None:
-        """Kernel-keyring-only + unacknowledged escalates to the logout-loss error."""
+        """Kernel-keyring-only + unacknowledged escalates to the cache-loss error."""
         cfg = _status_cfg(db_path=_existing_db(tmp_path))
         _run_status(cfg, source="kernel-keyring", acknowledged=False)
         out = capsys.readouterr().out
-        assert "error: the only copy of the vault passphrase is the kernel-keyring cache" in out
+        assert (
+            "error: the only available copy of the vault passphrase is the temporary cache" in out
+        )
         assert "not confirmed saved off-host" not in out  # the urgent variant replaces it
 
     def test_credentials_listed_when_open(
@@ -510,7 +512,7 @@ class TestHandleVaultStatusJson:
         data = json.loads(capsys.readouterr().out)
         assert data["state"] == "locked"
         assert data["locked"] is True
-        assert "via keyring does not open the DB" in data["lock_reason"]
+        assert "via desktop keyring does not open the DB" in data["lock_reason"]
 
         # (c) a configured tier failed closed at resolve time
         _run_status(_status_cfg(), as_json=True, resolve_error="could not be unsealed")

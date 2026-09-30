@@ -6,8 +6,8 @@
 Three severity bands:
 
 * marker present → ``ok``
-* marker absent + kernel-keyring resolver → ``error`` (one logout away
-  from losing the vault — the volatile cache is wiped at logout)
+* marker absent + session-cache resolver → ``error`` (cache loss makes
+  the vault unrecoverable without a saved copy)
 * marker absent + any durable tier → ``warn`` (machine-bound; needs
   an off-host copy for hardware-failure DR)
 
@@ -79,13 +79,7 @@ class TestRecoveryAcknowledgedCheck:
         assert "vault passphrase acknowledge" in verdict.detail
 
     def test_marker_missing_with_volatile_only_returns_error(self, tmp_path: Path) -> None:
-        """Marker absent + kernel-keyring source → ``error`` with loud "logout" text.
-
-        The kernel-keyring cache is wiped at logout, so an unconfirmed
-        volatile-only key means the vault becomes unrecoverable the next
-        time the login session ends — a genuinely higher-severity state
-        than the generic machine-bound warning.
-        """
+        """A volatile-only key without a saved copy risks loss at reboot or earlier."""
         cfg = _cfg(tmp_path)
         # Spoof the chain so it resolves via the kernel-keyring tier.
         # We don't need a real cached key — the doctor only reads the
@@ -97,12 +91,10 @@ class TestRecoveryAcknowledgedCheck:
         ):
             verdict = _eval_recovery(cfg)
         assert verdict.severity == "error"
-        # The loud text must call out the logout lifetime explicitly,
-        # not just generic "machine-bound" — the operator needs to
-        # understand the difference between "save it eventually" and
-        # "save it NOW or lose it at logout".
-        assert "kernel-keyring" in verdict.detail
-        assert "logout" in verdict.detail.lower()
+        assert "kernel keyring" in verdict.detail
+        assert "tmpfs session file" in verdict.detail
+        assert "reboot or earlier" in verdict.detail
+        assert "logout" not in verdict.detail
         assert "UNRECOVERABLE" in verdict.detail
         # Remediation verbs still surface for the operator to act.
         assert "vault passphrase reveal" in verdict.detail

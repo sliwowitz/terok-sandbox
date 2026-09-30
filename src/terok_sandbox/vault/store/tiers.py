@@ -37,11 +37,13 @@ class PassphraseTier(StrEnum):
     """Sealed machine-bound credential (TPM2 / host key); needs systemd ≥ 257."""
 
     KEYRING = "keyring"
-    """OS keyring entry, unlocked together with the login session."""
+    """Persistent desktop keyring entry, managed by the desktop secret service."""
 
     KERNEL_KEYRING = "kernel-keyring"
     """Linux kernel keyring (``@u``) — a volatile unlock cache in
-    unswappable kernel memory, uid-scoped, cleared on logout.  Sits
+    unswappable kernel memory, uid-scoped, lost at reboot or when its
+    references disappear.  Logout alone does not guarantee removal.
+    Hosts unable to use it fall back to a tmpfs session file.  Sits
     below the zero-friction durable tiers but above the
     ``passphrase-command`` helper: it never shadows a tier that already
     unlocks non-interactively, yet still spares the operator from
@@ -53,6 +55,14 @@ class PassphraseTier(StrEnum):
 
     PROMPT = "prompt"
     """Interactive TTY entry — stores nothing, ever."""
+
+    @property
+    def display_name(self) -> str:
+        """Unambiguous human-facing name; machine IDs remain the enum values."""
+        return {
+            self.KEYRING: "desktop keyring",
+            self.KERNEL_KEYRING: "session cache",
+        }.get(self, self.value)
 
     @property
     def durable(self) -> bool:

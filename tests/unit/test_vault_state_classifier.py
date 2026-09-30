@@ -109,15 +109,19 @@ class TestBuildWarnings:
     """The warning catalog authors each situation's wording exactly once."""
 
     def test_unacked_volatile_only_is_urgent(self) -> None:
-        """Kernel-keyring-only + unacknowledged → the logout-loss error, nothing softer."""
+        """Kernel-keyring-only + unacknowledged → the cache-loss error, nothing softer."""
         warnings = _build_warnings(_recovery(PassphraseTier.KERNEL_KEYRING))
         assert [w.kind for w in warnings] == [VaultWarningKind.RECOVERY_VOLATILE]
         (warning,) = warnings
         assert warning.severity == "error"
         assert (
-            "the only copy of the vault passphrase is the kernel-keyring cache" in warning.message
+            "the only available copy of the vault passphrase is the temporary cache"
+            in warning.message
         )
         assert "unrecoverable" in warning.message
+        assert "kernel keyring or tmpfs session file" in warning.message
+        assert "reboot" in warning.message
+        assert "logout" not in warning.message
 
     def test_unacked_durable_tier_is_unconfirmed(self) -> None:
         """A durable tier without an off-host copy gets the softer machine-bound warning."""

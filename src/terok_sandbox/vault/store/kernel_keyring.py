@@ -30,13 +30,11 @@ passphrases):
   anyone, for any permission mask.  ``user`` is the only workable type
   (the same choice cryptsetup's readback path and eCryptfs are forced
   into).
-- *Anchor ``@u`` (the user keyring), not the persistent keyring.*  The
-  file this tier replaces lived under ``$XDG_RUNTIME_DIR``, which logind
-  wipes on final logout — so its effective lifetime already *was* the
-  user keyring's lifetime (per-uid, shared across every same-uid
-  terminal, torn down at logout).  ``@u`` is the semantic drop-in; the
-  persistent keyring would over-deliver (survive logout) and needs
-  ``keyctl_get_persistent`` machinery we deliberately avoid.
+- *Anchor ``@u`` (the Linux user keyring), not the persistent keyring.*
+  The cache is shared across same-uid processes in the operator's user
+  namespace. Its lifetime depends on processes and references, not
+  logout alone; remaining references can keep it alive after logout.
+  It never survives a reboot. No persistent-keyring retention is needed.
 - *Read it from the operator's own user namespace, nowhere else.*  A
   user keyring is per user *namespace*: a process inside podman's
   rootless namespace resolves ``@u`` to its own empty keyring, and the
@@ -59,11 +57,10 @@ passphrases):
   the writer to *possess* the key, so ``store`` first links ``@u`` into
   the session keyring (a headless supervisor / cron / CI has no
   pam_keyinit possession otherwise, and the setperm would fail EACCES).
-- *No auto-expiry.*  The cache persists for the whole login session —
-  until an explicit ``vault lock`` (or a move to a durable tier), just
-  like the tmpfs file it replaces — rather than timing out mid-session.
-  The payload lives in unswappable kernel memory, so it never reaches
-  disk or swap regardless.
+- *No auto-expiry.*  The cache does not time out mid-session.
+  ``vault lock`` or a move to a durable tier explicitly clears it;
+  reboot or loss of references also removes it. The payload lives in
+  unswappable kernel memory, not a desktop keyring or a disk file.
 
 Linux-only: on any host without the kernel key facility
 (``CONFIG_KEYS`` off, no ``libkeyutils``, WSL1, non-Linux) every entry
@@ -163,12 +160,10 @@ def cache_digest(db_path: str | os.PathLike[str]) -> str:
 def store(passphrase: str, db_path: str | os.PathLike[str]) -> bool:
     """Cache *passphrase* for *db_path* so later processes can unlock that vault.
 
-    The cache is deliberately untimed: it lives for the login session and
-    is cleared only by an explicit ``vault lock`` or a move to a durable
-    tier, matching the tmpfs file this tier replaces.  Failure is soft —
-    a cache is never the sole home of the secret — so an unreachable
-    facility, an exhausted key quota or a refused permission change is
-    logged and reported rather than raised.
+    The cache has no timeout, but reboot or loss of references removes
+    it. An explicit ``vault lock`` or a move to a durable tier clears it
+    sooner. An unreachable facility, an exhausted key quota or a refused
+    permission change is logged and reported as a failed write.
 
     Returns:
         True when the passphrase is cached and readable by this uid.

@@ -173,8 +173,8 @@ def _make_supervisor_children_check(container_id: str, container_name: str) -> D
 def _make_vault_unlocked_check() -> DoctorCheck:
     """Verify the passphrase resolves — and that the supervisor can resolve it too.
 
-    Host-side check: walks the resolution chain (systemd-creds → OS
-    keyring → kernel keyring → passphrase-command) and reports an
+    Host-side check: walks the resolution chain (systemd-creds → desktop
+    keyring → session cache → passphrase-command) and reports an
     actionable error when nothing yields.  The vault and signer children
     do not start without a passphrase, so this is the first check
     operators should see fail.
@@ -200,10 +200,10 @@ def _make_vault_unlocked_check() -> DoctorCheck:
             return CheckVerdict(
                 "error",
                 "vault is locked — no passphrase available."
-                " Run `terok-sandbox vault unlock` (kernel-keyring cache)"
+                " Run `terok-sandbox vault unlock` (temporary session cache)"
                 " or `terok-sandbox setup` to provision.",
             )
-        source = f" via {tier.value}" if tier is not None else ""
+        source = f" via {tier.display_name}" if tier is not None else ""
         return CheckVerdict("ok", f"credentials-DB passphrase available{source}")
 
     return DoctorCheck(
@@ -222,11 +222,10 @@ def make_recovery_acknowledged_check() -> DoctorCheck:
     """Warn when the operator hasn't confirmed they saved the recovery key.
 
     Two severity bands depending on the resolved tier when the marker
-    is absent — the kernel-keyring cache dies at logout, so "unconfirmed
-    AND volatile-only" is a genuine ``error`` (you are literally one
-    logout away from losing the vault), while every durable tier
-    (keyring, systemd-creds, config) is "only" a ``warn`` (machine-bound;
-    needs an off-host copy for disaster recovery).
+    is absent: "unconfirmed AND volatile-only" is an ``error`` because
+    the temporary cache is lost at reboot or earlier. Durable tiers
+    (desktop keyring, systemd-creds, passphrase-command) get a ``warn``:
+    an off-host copy is still needed for disaster recovery.
 
     Intentionally NOT bundled into
     [`sandbox_doctor_checks`][terok_sandbox.doctor.sandbox_doctor_checks]:
@@ -250,8 +249,9 @@ def make_recovery_acknowledged_check() -> DoctorCheck:
             return CheckVerdict(
                 "error",
                 "vault recovery key UNCONFIRMED and the passphrase lives ONLY"
-                " in the kernel-keyring cache — it will be wiped at logout"
-                " and your vault becomes UNRECOVERABLE then."
+                " in the temporary cache (kernel keyring or tmpfs session file)"
+                " — lost at reboot or earlier. Without a saved copy, cache loss"
+                " makes your vault UNRECOVERABLE."
                 f" Run {reveal} NOW and save the value off-host,"
                 f" or {ack} if you already captured it.",
             )
