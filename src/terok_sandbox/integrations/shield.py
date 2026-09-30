@@ -65,6 +65,7 @@ from terok_shield.prereqs import (  # noqa: F401 — re-exported with concrete t
     check_firewall_binaries,
     check_krun_binaries,
 )
+from terok_shield.profiles import UnknownProfileError  # noqa: F401 — re-exported for the CLI
 from terok_shield.run import NftNotFoundError  # noqa: F401
 from terok_shield.state import (
     BUNDLE_VERSION as BUNDLE_VERSION,  # noqa: F401 — re-exported

@@ -10,6 +10,7 @@ from io import StringIO
 from unittest.mock import patch
 
 import pytest
+from terok_shield.profiles import UnknownProfileError
 from terok_util import SetupRequiredError
 
 from terok_sandbox.cli import main
@@ -142,6 +143,17 @@ class TestCLIBasics:
             with pytest.raises(SystemExit, match="Run setup again") as error:
                 main(["setup"])
         assert error.value.__suppress_context__
+
+    def test_unknown_profile_is_an_actionable_exit(self) -> None:
+        """A ``--profiles`` name that names no profile lists the ones that exist."""
+        with (
+            patch(
+                "terok_sandbox.launch.compose",
+                side_effect=UnknownProfileError("Unknown profile 'typo'; available profiles: base"),
+            ),
+            pytest.raises(SystemExit, match="available profiles: base"),
+        ):
+            main(["prepare", "ctr"])
 
     def test_shield_no_subcommand_shows_help(self) -> None:
         out, _, _ = _run_cli("shield")

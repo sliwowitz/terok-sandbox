@@ -2520,7 +2520,7 @@ requires-dist = [
     { name = "ruamel-yaml", specifier = "==0.19.1" },
     { name = "sqlcipher3", specifier = "==0.6.2" },
     { name = "terok-clearance", specifier = ">=0.8.1,<0.9.0" },
-    { name = "terok-shield", specifier = ">=0.9.0,<0.10.0" },
+    { name = "terok-shield", url = "https://github.com/terok-ai/terok-shield/releases/download/v0.10.0a1/terok_shield-0.10.0a1-py3-none-any.whl" },
     { name = "terok-util", specifier = ">=0.4.0,<0.5.0" },
 ]
 
@@ -2555,16 +2555,22 @@ test = [
 
 [[package]]
 name = "terok-shield"
-version = "0.9.0"
-source = { registry = "https://pypi.org/simple" }
+version = "0.10.0a1"
+source = { url = "https://github.com/terok-ai/terok-shield/releases/download/v0.10.0a1/terok_shield-0.10.0a1-py3-none-any.whl" }
 dependencies = [
     { name = "pydantic" },
     { name = "pyyaml" },
     { name = "terok-util" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/dc/fb/e21e40e934a059ea7d29237147cefded6365ddb3e2cc27abcb15b90d3635/terok_shield-0.9.0.tar.gz", hash = "sha256:d60b045c9483266ecc3cecff184daf3f5e47db33b075ce3922c7077a7230a4cd", size = 464470, upload-time = "2026-09-29T06:33:04.597Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/ab/67/388e9686f11239e08cfd7adf8b1b03c288e752f57819abc6fb65d124aedc/terok_shield-0.9.0-py3-none-any.whl", hash = "sha256:8acee6519066c1c827069b265ec08b24c28014b462cc8eb1a3624930d8230a77", size = 171127, upload-time = "2026-09-29T06:33:03.173Z" },
+    { url = "https://github.com/terok-ai/terok-shield/releases/download/v0.10.0a1/terok_shield-0.10.0a1-py3-none-any.whl", hash = "sha256:2c7ee60e9cb80ef94edba028e33ffcbc950b9a17f661675c98a608191dc62845" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "pydantic", specifier = "~=2.13" },
+    { name = "pyyaml", specifier = "~=6.0" },
+    { name = "terok-util", specifier = ">=0.4.0,<0.5.0" },
 ]
 
 [[package]]
