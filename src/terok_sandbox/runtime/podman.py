@@ -158,16 +158,26 @@ _CONTAINER_REMOVE_TIMEOUT = 120
 _IMAGES_FORMAT = "{{.Repository}}\t{{.Tag}}\t{{.ID}}\t{{.Size}}\t{{.Created}}"
 
 
-def default_seccomp_profile() -> Path:
-    """Find the host's configured Podman seccomp profile; never guess a fallback.
+def default_seccomp_profile(*, runtime: str | None = None) -> Path:
+    """Find the host profile for a runtime that can honor the seccomp grants.
 
+    Probe with the launch override, or inherit Podman's configured runtime.
+    Reject krun before writing a host policy that cannot control its guest.
     A missing profile cannot safely be replaced with a bundled default: that
     could discard host-specific restrictions. Fail before launching instead.
     """
+    cmd = ["podman"]
+    if runtime is not None:
+        cmd += ["--runtime", runtime]
+    # Go field names retain SECCOMP; the JSON key is seccompProfilePath.
+    cmd += [
+        "info",
+        "--format",
+        "{{.Host.OCIRuntime.Name}}\n{{.Host.Security.SECCOMPProfilePath}}",
+    ]
     try:
-        result = subprocess.run(  # nosec B603 B607 — fixed argv, executable resolved from trusted host paths
-            # Go field names retain SECCOMP; the JSON key is seccompProfilePath.
-            ["podman", "info", "--format", "{{.Host.Security.SECCOMPProfilePath}}"],
+        result = subprocess.run(  # nosec B603 — managed argv, executable resolved from trusted host paths
+            cmd,
             executable=require_host_tool("podman"),
             capture_output=True,
             text=True,
@@ -179,11 +189,16 @@ def default_seccomp_profile() -> Path:
         if isinstance(exc, subprocess.CalledProcessError) and exc.stderr:
             detail += f"\n{exc.stderr.strip()}"
         raise SystemExit(
-            f"run.aslr_control: cannot discover Podman's seccomp profile: {detail}"
+            f"seccomp policy: cannot discover Podman's seccomp profile: {detail}"
         ) from exc
-    path = Path(result.stdout.strip())
+    runtime_name, separator, profile_path = result.stdout.partition("\n")
+    if not separator or runtime_name.strip() in ("", "<no value>"):
+        raise SystemExit("seccomp customization requires Podman's effective OCI runtime")
+    if Path(runtime_name.strip()).name == "krun":
+        raise SystemExit("run.perf and run.aslr_control are not supported with OCI runtime krun")
+    path = Path(profile_path.strip())
     if not path.is_absolute() or not path.is_file():
-        raise SystemExit("run.aslr_control requires a readable host Podman seccomp profile")
+        raise SystemExit("seccomp customization requires a readable host Podman seccomp profile")
     return path
 
 

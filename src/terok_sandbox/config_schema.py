@@ -423,9 +423,9 @@ class RawRunSection(BaseModel):
     perf: bool = Field(
         default=False,
         description=(
-            "Grant the container the ``perfmon`` capability so ``perf`` can "
-            "sample inside it (flips the default seccomp profile's "
-            "``perf_event_open`` rule to allow).  Rootless scope: the task "
+            "Grant the container the ``perfmon`` capability and explicitly allow "
+            "``perf_event_open`` in its seccomp profile so ``perf`` can sample "
+            "inside it.  Rootless scope: the task "
             "samples its **own** processes, user-space only — and only if the "
             "host's ``kernel.perf_event_paranoid`` sysctl is ≤ 2 (hardened "
             "kernels ship 4, which disables unprivileged perf entirely)."
@@ -453,10 +453,9 @@ class RawRunSection(BaseModel):
     runtime: Literal["crun", "krun"] | None = Field(
         default=None,
         description=(
-            "OCI runtime: ``crun`` (default) for conventional containers, "
+            "OCI runtime override: ``crun`` for conventional containers, "
             "or ``krun`` for KVM-microVM isolation (experimental).  ``None`` "
-            "resolves to ``crun`` — the OCI runtime podman picks by default "
-            "on every supported distro.  ``krun`` requires the global "
+            "inherits Podman's configured default. Explicit ``krun`` requires the global "
             "``experimental: true`` flag at task launch."
         ),
     )

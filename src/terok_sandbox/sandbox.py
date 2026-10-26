@@ -34,7 +34,7 @@ from .runtime.podman import (
     redact_env_args,
     unshielded_network_args,
 )
-from .runtime.seccomp import aslr_control_args
+from .runtime.seccomp import seccomp_args
 from .setup import check_setup
 
 if TYPE_CHECKING:
@@ -80,8 +80,9 @@ Freeform caller args must not carry ``--cap-add`` — the typed
 [`RunSpec.caps`][terok_sandbox.sandbox.RunSpec] field is the only way in,
 so this allowlist stays the single statement of capability policy.
 
-- ``perfmon`` — flips the default seccomp profile's ``perf_event_open``
-  rule from EPERM to allow, enabling in-container ``perf`` sampling.
+- ``perfmon`` — requests an explicit ``perf_event_open`` seccomp grant
+  alongside the capability, enabling in-container ``perf`` sampling even
+  when the host profile does not recognize PERFMON. Unrelated rules stay intact.
   Under rootless podman the capability lives in the container's user
   namespace only, so the kernel's ``perf_event_paranoid`` check still
   applies: the container can sample **its own processes, user-space
@@ -319,8 +320,8 @@ class RunSpec:
     runtime: str | None = None
     """OCI runtime to use (podman ``--runtime``).
 
-    ``None`` (default) lets podman pick — its built-in default is
-    ``crun``.  Set to ``"krun"`` to launch the task inside a KVM
+    ``None`` (default) inherits Podman's configured runtime.
+    Set to ``"krun"`` to launch the task inside a KVM
     microVM (Phase 3 KrunRuntime).  Backend-neutral here; the runtime
     string is passed through verbatim and any compatibility decisions
     live higher up (e.g. orchestrator config validation).
@@ -681,6 +682,7 @@ class Sandbox:
         In **sealed** mode the volume specs are omitted from the command
         (they are injected via [`copy_to`][terok_sandbox.sandbox.Sandbox.copy_to] between create and start).
         """
+        caps = _validate_caps(spec.caps)
         cmd: list[str] = ["podman", verb] + (["-d"] if verb == "run" else [])
         if spec.ephemeral:
             cmd.append("--rm")
@@ -690,7 +692,7 @@ class Sandbox:
 
         # ``--runtime`` must come before the image to be honoured; emit
         # it right after the verb to keep the rest of the assembly order
-        # unchanged.  ``None`` (default) lets podman pick crun itself.
+        # unchanged.  ``None`` inherits Podman's configured default.
         if spec.runtime is not None:
             cmd += ["--runtime", _validate_runtime(spec.runtime)]
 
@@ -702,10 +704,18 @@ class Sandbox:
         if not spec.unrestricted:
             cmd += ["--security-opt", "no-new-privileges"]
 
-        if self._cfg.aslr_control:
+        perf = "perfmon" in caps
+        if self._cfg.aslr_control or perf:
             if spec.runtime == "krun":
-                raise SystemExit("run.aslr_control is not supported with run.runtime: krun")
-            cmd += aslr_control_args(self.task_state_dir(spec.container_name))
+                raise SystemExit(
+                    "run.perf and run.aslr_control are not supported with run.runtime: krun"
+                )
+            cmd += seccomp_args(
+                self.task_state_dir(spec.container_name),
+                aslr_control=self._cfg.aslr_control,
+                perf=perf,
+                runtime=spec.runtime,
+            )
 
         if self._cfg.shield_disabled:
             print("\n!! SHIELD DISABLED — egress firewall off (shield_disabled is set) !!\n")
@@ -737,7 +747,7 @@ class Sandbox:
         if spec.cpus is not None:
             cmd += ["--cpus", spec.cpus]
 
-        for cap in _validate_caps(spec.caps):
+        for cap in caps:
             cmd += ["--cap-add", cap]
 
         if spec.extra_args:
