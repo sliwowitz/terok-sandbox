@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import contextlib
+import dataclasses
 import importlib
 import inspect
 import json
@@ -40,7 +41,6 @@ from terok_sandbox.launch import (
     _read_meta,
     _resolve_container_id,
     _rollback_compose_state,
-    _validate_container_name,
     allocate_per_container_resources,
     bridges_resource_dir,
     cleanup,
@@ -175,6 +175,20 @@ def _reap(pid: int) -> None:
 
 class TestCompose:
     """Verify ``compose`` emits the right podman args per flag combination."""
+
+    @pytest.mark.parametrize("enabled", [False, True])
+    def test_aslr_control(self, tmp_path: Path, enabled: bool) -> None:
+        """Standalone prepare/run honors the same opt-in as the facade."""
+        cfg = dataclasses.replace(_make_cfg(tmp_path), aslr_control=enabled)
+        security_args = ["--security-opt", f"seccomp={tmp_path / 'profile.json'}"]
+        with patch("terok_sandbox.launch.aslr_control_args", return_value=security_args) as profile:
+            args, _ = compose("myc", cfg=cfg, shield=False, gate=False, broker=False, scope=None)
+        if enabled:
+            profile.assert_called_once_with(run_state_dir(cfg, "myc"))
+            assert security_args[1] in args
+        else:
+            profile.assert_not_called()
+            assert not any(arg.startswith("seccomp=") for arg in args)
 
     def test_shield_only_when_scope_omitted(self, tmp_path: Path) -> None:
         """With no --scope, gate/broker/ssh skip silently; shield still applies."""
@@ -1259,26 +1273,37 @@ class TestEdgeCases:
 
 
 # ---------------------------------------------------------------------------
-# _validate_container_name — the launch-side path-component guard
+# Per-container state paths — the launch-side path-component guard
 # ---------------------------------------------------------------------------
 
 
-class TestValidateContainerName:
+class TestRunStateDir:
     """The name is interpolated into state + runtime dirs that get rmtree'd,
     so it must be a single safe path component."""
 
-    def test_accepts_plain_name(self) -> None:
-        """A simple alphanumeric name passes silently."""
-        _validate_container_name("my-task-42")  # must not raise
+    def test_accepts_plain_name(self, tmp_path: Path) -> None:
+        """A simple alphanumeric name stays under the configured runs directory."""
+        cfg = _make_cfg(tmp_path)
+        assert run_state_dir(cfg, "my-task-42") == cfg.state_dir / "sandbox" / "runs" / "my-task-42"
 
-    @pytest.mark.parametrize("bad", ["", "a/b", "/abs", "..", ".", "../evil"])
-    def test_rejects_unsafe_names(self, bad: str) -> None:
-        """Empty, separator-bearing, or parent-ref names are a hard SystemExit.
-
-        Mirrors the supervisor-side ``load_sidecar`` guard — both ends
-        refuse a name that could redirect filesystem operations."""
-        with pytest.raises(SystemExit, match="unsafe container name"):
-            _validate_container_name(bad)
+    @pytest.mark.parametrize("bad", ["", "a/b", "a\\b", "a\0b", "..", ".", "../evil", "absolute"])
+    def test_rejects_unsafe_names(self, tmp_path: Path, bad: str) -> None:
+        """Reject unsafe names before setup, profile discovery, or filesystem writes."""
+        if bad == "absolute":
+            bad = str(tmp_path / "escape")
+        cfg = dataclasses.replace(_make_cfg(tmp_path), aslr_control=True)
+        with pytest.raises(ValueError, match="unsafe container name"):
+            run_state_dir(cfg, bad)
+        with (
+            patch("terok_sandbox.launch.check_setup") as setup,
+            patch("terok_sandbox.runtime.seccomp.default_seccomp_profile") as discover,
+            pytest.raises(SystemExit, match="unsafe container name"),
+        ):
+            compose(bad, cfg=cfg, shield=False, gate=False, broker=False, scope=None)
+        setup.assert_not_called()
+        discover.assert_not_called()
+        assert not cfg.state_dir.exists()
+        assert not cfg.runtime_dir.exists()
 
 
 # ---------------------------------------------------------------------------
