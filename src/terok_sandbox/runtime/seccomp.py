@@ -55,7 +55,9 @@ def aslr_control_args(state_dir: Path) -> list[str]:
         destination = state_dir / _PROFILE_NAME
         with tempfile.TemporaryDirectory(dir=state_dir) as staging:
             staged = Path(staging) / _PROFILE_NAME
-            staged.write_text(json.dumps(profile, indent=2) + "\n")
+            with staged.open("w") as stream:
+                json.dump(profile, stream, indent=2)
+                stream.write("\n")
             staged.replace(destination)
     except (OSError, ValueError, KeyError, TypeError) as exc:
         raise SystemExit(

@@ -471,6 +471,15 @@ class SandboxConfig:
         """
         return self.runtime_dir / "vault.rekeyed_at"
 
+    def container_state_dir(self, container_name: str) -> Path:
+        """Host-side per-container state for launch plans and seccomp profiles.
+
+        Raises:
+            ValueError: If *container_name* is not a safe single path component.
+        """
+        _validate_container_name(container_name)
+        return self.state_dir / "sandbox" / "runs" / container_name
+
     def container_runtime_dir(self, container_name: str) -> Path:
         """Host-side per-container runtime dir, bind-mounted at ``/run/terok``.
 
@@ -492,17 +501,9 @@ class SandboxConfig:
 
         Raises:
             ValueError: If *container_name* is empty or not a single path
-                component (contains ``/`` or ``\\``, or is ``.``/``..``).
+                component (contains a separator or NUL, or is ``.``/``..``).
         """
-        if (
-            not container_name
-            or container_name in (".", "..")
-            or "/" in container_name
-            or "\\" in container_name
-        ):
-            raise ValueError(
-                f"unsafe container name (not a single path component): {container_name!r}"
-            )
+        _validate_container_name(container_name)
         return self.runtime_dir / "run" / container_name
 
     def ensure_container_runtime_dir(self, container_name: str) -> Path:
@@ -706,3 +707,13 @@ class SandboxConfig:
 
         _require_safe_scope(scope)
         return self.runtime_dir / f"ssh-agent-local-{scope}.sock"
+
+
+def _validate_container_name(container_name: str) -> None:
+    """Reject names that can redirect per-container filesystem operations."""
+    if (
+        not container_name
+        or container_name in (".", "..")
+        or any(character in container_name for character in ("/", "\\", "\0"))
+    ):
+        raise ValueError(f"unsafe container name (not a single path component): {container_name!r}")

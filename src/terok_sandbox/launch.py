@@ -211,7 +211,7 @@ def bridges_resource_dir() -> Path:
 
 def run_state_dir(cfg: SandboxConfig, container: str) -> Path:
     """Per-container state directory used by `prepare`/`cleanup`."""
-    return cfg.state_dir / "sandbox" / "runs" / container
+    return cfg.container_state_dir(container)
 
 
 def _meta_path(state_dir: Path) -> Path:
@@ -239,22 +239,6 @@ def _read_meta(state_dir: Path) -> WiringPlan | None:
 # ---------------------------------------------------------------------------
 # Args composition
 # ---------------------------------------------------------------------------
-
-
-def _validate_container_name(container: str) -> None:
-    """Reject a container name that isn't a safe single path component.
-
-    ``container`` is interpolated into host state + runtime directory
-    paths ([`run_state_dir`][terok_sandbox.launch.run_state_dir],
-    [`allocate_per_container_resources`][terok_sandbox.launch.allocate_per_container_resources])
-    and the sidecar filename — all of which are created, chmod'd, and
-    ``rmtree``'d.  A name carrying a path separator or parent-ref could
-    redirect those filesystem operations outside their roots, so reject it
-    before anything is touched.  Mirrors the supervisor-side guard in
-    [`load_sidecar`][terok_sandbox.supervisor.sidecar.load_sidecar].
-    """
-    if not container or "/" in container or container in (".", ".."):
-        raise SystemExit(f"unsafe container name (not a single path component): {container!r}")
 
 
 def _rollback_compose_state(
@@ -309,7 +293,10 @@ def compose(
     Raises a typed setup error before changing per-container state (propagated from
     [`ShieldManager.pre_start`][terok_sandbox.integrations.shield.ShieldManager.pre_start]).
     """
-    _validate_container_name(container)
+    try:
+        state_dir = run_state_dir(cfg, container)
+    except ValueError as exc:
+        raise SystemExit(str(exc)) from exc
     require_setup(
         check_setup(
             dataclasses.replace(cfg, shield_disabled=cfg.shield_disabled or not shield), live=True
@@ -325,7 +312,6 @@ def compose(
     if profiles:
         cfg = dataclasses.replace(cfg, shield_profiles=tuple(profiles))
 
-    state_dir = run_state_dir(cfg, container)
     state_dir.mkdir(parents=True, exist_ok=True)
 
     security_args = aslr_control_args(state_dir) if cfg.aslr_control else []

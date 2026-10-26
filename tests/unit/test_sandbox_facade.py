@@ -66,10 +66,32 @@ def test_aslr_control_wiring(tmp_path: Path, verb: str, enabled: bool) -> None:
 
 def test_aslr_control_rejects_krun() -> None:
     """A host filter cannot grant personality calls inside a microVM guest."""
+    sandbox = Sandbox(SandboxConfig(aslr_control=True))
+    spec = _make_spec(runtime="krun")
     with patch("terok_sandbox.sandbox.aslr_control_args") as profile:
         with pytest.raises(SystemExit, match="not supported.*krun"):
-            Sandbox(SandboxConfig(aslr_control=True))._build_cmd(_make_spec(runtime="krun"))
+            sandbox._build_cmd(spec)
     profile.assert_not_called()
+
+
+@pytest.mark.parametrize("verb", ["run", "create"])
+@pytest.mark.parametrize("name", ["", ".", "..", "../escape", "a/b", "a\\b", "a\0b", "absolute"])
+def test_aslr_control_rejects_unsafe_names(tmp_path: Path, verb: str, name: str) -> None:
+    """Unsafe names cannot discover or write profiles or start shield setup."""
+    if name == "absolute":
+        name = str(tmp_path / "escape")
+    sandbox = Sandbox(SandboxConfig(state_dir=tmp_path / "state", aslr_control=True))
+    spec = _make_spec(container_name=name)
+    existing_paths = set(tmp_path.rglob("*"))
+    with (
+        patch("terok_sandbox.runtime.seccomp.default_seccomp_profile") as discover,
+        patch("terok_sandbox.sandbox.Sandbox.pre_start_args") as shield,
+        pytest.raises(ValueError, match="unsafe container name"),
+    ):
+        sandbox._build_cmd(spec, verb)
+    discover.assert_not_called()
+    shield.assert_not_called()
+    assert set(tmp_path.rglob("*")) == existing_paths
 
 
 class TestRunSpec:
@@ -1266,10 +1288,18 @@ class TestRedactEnvArgs:
 class TestTaskStateDir:
     """Verify the per-container state-dir derivation on the facade."""
 
-    def test_task_state_dir_under_sandbox_runs(self, tmp_path: Path) -> None:
-        """Resolves under ``{state_dir}/sandbox/runs/{container}`` for any container name."""
+    @pytest.mark.parametrize("name", ["my-task", "task_42.example", "01"])
+    def test_task_state_dir_under_sandbox_runs(self, tmp_path: Path, name: str) -> None:
+        """Safe names resolve under ``{state_dir}/sandbox/runs/{container}``."""
         cfg = SandboxConfig(state_dir=tmp_path / "state")
         sandbox = Sandbox(cfg)
-        assert (
-            sandbox.task_state_dir("my-task") == tmp_path / "state" / "sandbox" / "runs" / "my-task"
-        )
+        assert sandbox.task_state_dir(name) == tmp_path / "state" / "sandbox" / "runs" / name
+
+    @pytest.mark.parametrize("name", ["", ".", "..", "../escape", "a/b", "a\\b", "a\0b"])
+    def test_task_state_dir_rejects_unsafe_names(self, tmp_path: Path, name: str) -> None:
+        """The public state-path boundary rejects unsafe names even without ASLR."""
+        sandbox = Sandbox(SandboxConfig(state_dir=tmp_path / "state"))
+        existing_paths = set(tmp_path.rglob("*"))
+        with pytest.raises(ValueError, match="unsafe container name"):
+            sandbox.task_state_dir(name)
+        assert set(tmp_path.rglob("*")) == existing_paths
