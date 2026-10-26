@@ -122,7 +122,7 @@ def test_discover_configured_profile(host_profile: Path) -> None:
         "podman",
         "info",
         "--format",
-        "{{.Host.Security.SeccompProfilePath}}",
+        "{{.Host.Security.SECCOMPProfilePath}}",
     ]
     assert run.call_args.kwargs["check"] is True
     assert run.call_args.kwargs["timeout"] > 0
@@ -152,3 +152,18 @@ def test_profile_discovery_failure_is_fatal(error: Exception) -> None:
     with patch("terok_sandbox.runtime.podman.subprocess.run", side_effect=error):
         with pytest.raises(SystemExit, match="cannot discover"):
             default_seccomp_profile()
+
+
+@pytest.mark.parametrize("stderr", [None, "", "Error: cannot evaluate profile field\n"])
+def test_profile_discovery_failure_preserves_diagnostics(stderr: str | None) -> None:
+    """Show Podman's explanation alongside the failed-command context, when available."""
+    error = subprocess.CalledProcessError(125, "podman", stderr=stderr)
+    with (
+        patch("terok_sandbox.runtime.podman.subprocess.run", side_effect=error),
+        pytest.raises(SystemExit, match="cannot discover") as caught,
+    ):
+        default_seccomp_profile()
+    message = str(caught.value)
+    assert str(error) in message
+    if stderr:
+        assert message.endswith(f"\n{stderr.strip()}")

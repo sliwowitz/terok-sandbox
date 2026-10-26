@@ -166,7 +166,8 @@ def default_seccomp_profile() -> Path:
     """
     try:
         result = subprocess.run(  # nosec B603 B607 — fixed argv, executable resolved from trusted host paths
-            ["podman", "info", "--format", "{{.Host.Security.SeccompProfilePath}}"],
+            # Go field names retain SECCOMP; the JSON key is seccompProfilePath.
+            ["podman", "info", "--format", "{{.Host.Security.SECCOMPProfilePath}}"],
             executable=require_host_tool("podman"),
             capture_output=True,
             text=True,
@@ -174,8 +175,11 @@ def default_seccomp_profile() -> Path:
             timeout=_PROBE_TIMEOUT,
         )
     except (OSError, subprocess.SubprocessError) as exc:
+        detail = str(exc)
+        if isinstance(exc, subprocess.CalledProcessError) and exc.stderr:
+            detail += f"\n{exc.stderr.strip()}"
         raise SystemExit(
-            f"run.aslr_control: cannot discover Podman's seccomp profile: {exc}"
+            f"run.aslr_control: cannot discover Podman's seccomp profile: {detail}"
         ) from exc
     path = Path(result.stdout.strip())
     if not path.is_absolute() or not path.is_file():

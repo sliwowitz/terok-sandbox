@@ -50,7 +50,7 @@ with project settings pass the resolved project override in that config.
 Both `prepare`/`run` and `Sandbox.run`/`Sandbox.create` honor the setting.
 
 Sandbox reads the profile reported by
-`podman info --format '{{.Host.Security.SeccompProfilePath}}'`, copies it
+`podman info --format '{{.Host.Security.SECCOMPProfilePath}}'`, copies it
 to the container's host-side state as `seccomp-aslr.json`, and adds exact
 `personality` argument grants: `0xffffffff` (query), and `ADDR_NO_RANDOMIZE`
 combined with `PER_LINUX` or `PER_LINUX32`, optionally `UNAME26`.
