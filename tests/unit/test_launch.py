@@ -181,10 +181,10 @@ class TestCompose:
         """Standalone prepare/run honors the same opt-in as the facade."""
         cfg = dataclasses.replace(_make_cfg(tmp_path), aslr_control=enabled)
         security_args = ["--security-opt", f"seccomp={tmp_path / 'profile.json'}"]
-        with patch("terok_sandbox.launch.aslr_control_args", return_value=security_args) as profile:
+        with patch("terok_sandbox.launch.seccomp_args", return_value=security_args) as profile:
             args, _ = compose("myc", cfg=cfg, shield=False, gate=False, broker=False, scope=None)
         if enabled:
-            profile.assert_called_once_with(run_state_dir(cfg, "myc"))
+            profile.assert_called_once_with(run_state_dir(cfg, "myc"), aslr_control=True)
             assert security_args[1] in args
         else:
             profile.assert_not_called()

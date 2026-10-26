@@ -40,7 +40,7 @@ from .podman_args import (
     reject_managed_flags,
     reject_managed_volumes,
 )
-from .runtime.seccomp import aslr_control_args
+from .runtime.seccomp import seccomp_args
 from .sandbox import Sharing, VolumeSpec
 from .setup import check_setup
 
@@ -314,7 +314,7 @@ def compose(
 
     state_dir.mkdir(parents=True, exist_ok=True)
 
-    security_args = aslr_control_args(state_dir) if cfg.aslr_control else []
+    security_args = seccomp_args(state_dir, aslr_control=True) if cfg.aslr_control else []
 
     # Resolve subsystem activation against the scope precondition.  Three
     # of the four subsystems are scope-bound; silently skipping them with

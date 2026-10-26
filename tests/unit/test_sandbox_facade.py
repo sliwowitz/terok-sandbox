@@ -43,54 +43,100 @@ def _make_spec(**overrides) -> RunSpec:
 
 
 @pytest.mark.parametrize("verb", ["run", "create"])
-@pytest.mark.parametrize("enabled", [False, True])
-def test_aslr_control_wiring(tmp_path: Path, verb: str, enabled: bool) -> None:
-    """Both creation paths honor the opt-in without affecting capabilities or NNP."""
-    cfg = SandboxConfig(state_dir=tmp_path, aslr_control=enabled)
+@pytest.mark.parametrize("aslr_control", [False, True])
+@pytest.mark.parametrize("perf", [False, True])
+def test_seccomp_wiring(tmp_path: Path, verb: str, aslr_control: bool, perf: bool) -> None:
+    """Both creation paths combine requested grants without changing caps or NNP."""
+    cfg = SandboxConfig(state_dir=tmp_path, aslr_control=aslr_control)
     security_args = ["--security-opt", f"seccomp={tmp_path / 'profile.json'}"]
     with (
-        patch("terok_sandbox.sandbox.aslr_control_args", return_value=security_args) as profile,
+        patch("terok_sandbox.sandbox.seccomp_args", return_value=security_args) as profile,
         patch("terok_sandbox.sandbox.Sandbox.pre_start_args", return_value=[]),
     ):
         sandbox = Sandbox(cfg)
-        cmd = sandbox._build_cmd(_make_spec(unrestricted=False, caps=("perfmon",)), verb)
-    if enabled:
-        profile.assert_called_once_with(sandbox.task_state_dir("test-ctr"))
+        caps = ("perfmon",) if perf else ()
+        cmd = sandbox._build_cmd(_make_spec(unrestricted=False, caps=caps), verb)
+    if aslr_control or perf:
+        profile.assert_called_once_with(
+            sandbox.task_state_dir("test-ctr"), aslr_control=aslr_control, perf=perf
+        )
         assert security_args[1] in cmd
     else:
         profile.assert_not_called()
         assert not any(arg.startswith("seccomp=") for arg in cmd)
+        assert not sandbox.task_state_dir("test-ctr").exists()
     assert "no-new-privileges" in cmd
-    assert cmd[cmd.index("--cap-add") + 1] == "perfmon"
-
-
-def test_aslr_control_rejects_krun() -> None:
-    """A host filter cannot grant personality calls inside a microVM guest."""
-    sandbox = Sandbox(SandboxConfig(aslr_control=True))
-    spec = _make_spec(runtime="krun")
-    with patch("terok_sandbox.sandbox.aslr_control_args") as profile:
-        with pytest.raises(SystemExit, match="not supported.*krun"):
-            sandbox._build_cmd(spec)
-    profile.assert_not_called()
+    if perf:
+        assert cmd[cmd.index("--cap-add") + 1] == "perfmon"
+    else:
+        assert "--cap-add" not in cmd
 
 
 @pytest.mark.parametrize("verb", ["run", "create"])
+@pytest.mark.parametrize(("aslr_control", "perf"), [(True, False), (False, True), (True, True)])
+def test_seccomp_rejects_krun(tmp_path: Path, verb: str, aslr_control: bool, perf: bool) -> None:
+    """A host filter cannot grant syscalls inside a microVM guest."""
+    sandbox = Sandbox(SandboxConfig(state_dir=tmp_path / "state", aslr_control=aslr_control))
+    spec = _make_spec(runtime="krun", caps=("perfmon",) if perf else ())
+    existing_paths = set(tmp_path.rglob("*"))
+    with (
+        patch("terok_sandbox.sandbox.seccomp_args") as profile,
+        patch("terok_sandbox.sandbox.Sandbox.pre_start_args") as shield,
+        patch("subprocess.run") as probe,
+    ):
+        with pytest.raises(SystemExit, match="not supported.*krun"):
+            sandbox._build_cmd(spec, verb)
+    profile.assert_not_called()
+    shield.assert_not_called()
+    probe.assert_not_called()
+    assert set(tmp_path.rglob("*")) == existing_paths
+
+
+@pytest.mark.parametrize("verb", ["run", "create"])
+@pytest.mark.parametrize(("aslr_control", "perf"), [(True, False), (False, True), (True, True)])
 @pytest.mark.parametrize("name", ["", ".", "..", "../escape", "a/b", "a\\b", "a\0b", "absolute"])
-def test_aslr_control_rejects_unsafe_names(tmp_path: Path, verb: str, name: str) -> None:
+def test_seccomp_rejects_unsafe_names(
+    tmp_path: Path, verb: str, aslr_control: bool, perf: bool, name: str
+) -> None:
     """Unsafe names cannot discover or write profiles or start shield setup."""
     if name == "absolute":
         name = str(tmp_path / "escape")
-    sandbox = Sandbox(SandboxConfig(state_dir=tmp_path / "state", aslr_control=True))
-    spec = _make_spec(container_name=name)
+    sandbox = Sandbox(SandboxConfig(state_dir=tmp_path / "state", aslr_control=aslr_control))
+    spec = _make_spec(container_name=name, caps=("perfmon",) if perf else ())
     existing_paths = set(tmp_path.rglob("*"))
     with (
         patch("terok_sandbox.runtime.seccomp.default_seccomp_profile") as discover,
         patch("terok_sandbox.sandbox.Sandbox.pre_start_args") as shield,
+        patch("subprocess.run") as probe,
         pytest.raises(ValueError, match="unsafe container name"),
     ):
         sandbox._build_cmd(spec, verb)
     discover.assert_not_called()
     shield.assert_not_called()
+    probe.assert_not_called()
+    assert set(tmp_path.rglob("*")) == existing_paths
+
+
+@pytest.mark.parametrize("verb", ["run", "create"])
+@pytest.mark.parametrize("aslr_control", [False, True])
+@pytest.mark.parametrize("caps", [("sys_admin",), ("perfmon", "sys_admin")])
+def test_seccomp_rejects_invalid_caps_before_setup(
+    tmp_path: Path, verb: str, aslr_control: bool, caps: tuple[str, ...]
+) -> None:
+    """Invalid capabilities cannot create profiles or start shield setup."""
+    sandbox = Sandbox(SandboxConfig(state_dir=tmp_path / "state", aslr_control=aslr_control))
+    spec = _make_spec(caps=caps)
+    existing_paths = set(tmp_path.rglob("*"))
+    with (
+        patch("terok_sandbox.runtime.seccomp.default_seccomp_profile") as discover,
+        patch("terok_sandbox.sandbox.Sandbox.pre_start_args") as shield,
+        patch("subprocess.run") as probe,
+        pytest.raises(ValueError, match="sys_admin.*not in allowlist"),
+    ):
+        sandbox._build_cmd(spec, verb)
+    discover.assert_not_called()
+    shield.assert_not_called()
+    probe.assert_not_called()
     assert set(tmp_path.rglob("*")) == existing_paths
 
 
@@ -927,16 +973,24 @@ class TestSandbox:
         assert "--memory" not in cmd
         assert "--cpus" not in cmd
 
-    def test_caps_in_podman_cmd(self) -> None:
+    def test_caps_in_podman_cmd(self, tmp_path: Path) -> None:
         """Each grantable cap appears as a ``--cap-add`` pair."""
+        security_args = ["--security-opt", f"seccomp={tmp_path / 'profile.json'}"]
         with (
             patch("subprocess.run") as mock_run,
             patch("builtins.print"),
+            patch("terok_sandbox.sandbox.seccomp_args", return_value=security_args) as profile,
             patch("terok_sandbox.integrations.shield.ShieldManager.pre_start", return_value=[]),
         ):
-            Sandbox().run(_make_spec(caps=("perfmon",)))
+            sandbox = Sandbox()
+            sandbox.run(_make_spec(caps=("perfmon",)))
 
         cmd = mock_run.call_args[0][0]
+        profile.assert_called_once_with(
+            sandbox.task_state_dir("test-ctr"), aslr_control=False, perf=True
+        )
+        assert security_args[1] in cmd
+        assert "no-new-privileges" not in cmd
         idx = cmd.index("--cap-add")
         assert cmd[idx + 1] == "perfmon"
 

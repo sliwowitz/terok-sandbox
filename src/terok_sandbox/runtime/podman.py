@@ -179,11 +179,11 @@ def default_seccomp_profile() -> Path:
         if isinstance(exc, subprocess.CalledProcessError) and exc.stderr:
             detail += f"\n{exc.stderr.strip()}"
         raise SystemExit(
-            f"run.aslr_control: cannot discover Podman's seccomp profile: {detail}"
+            f"seccomp policy: cannot discover Podman's seccomp profile: {detail}"
         ) from exc
     path = Path(result.stdout.strip())
     if not path.is_absolute() or not path.is_file():
-        raise SystemExit("run.aslr_control requires a readable host Podman seccomp profile")
+        raise SystemExit("seccomp customization requires a readable host Podman seccomp profile")
     return path
 
 

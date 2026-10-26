@@ -41,7 +41,7 @@ services are scope-bound (the gate serves `<scope>.git`; the broker
 serves the scope's credentials); when `--scope` is omitted they are
 skipped with a note on stderr.
 
-## ASLR control for ThreadSanitizer
+## Seccomp grants for ThreadSanitizer and perf
 
 Set `run.aslr_control: true` in the host's `config.yml` to allow processes
 to disable their ASLR for sanitizer/debugging runs. The default is `false`.
@@ -49,24 +49,41 @@ Embedded callers can set `SandboxConfig(aslr_control=True)`; orchestrators
 with project settings pass the resolved project override in that config.
 Both `prepare`/`run` and `Sandbox.run`/`Sandbox.create` honor the setting.
 
+For perf profiling, embedded callers request `RunSpec(caps=("perfmon",))`;
+terok forwards its `run.perf: true` setting through that capability channel.
+`Sandbox.run` and `Sandbox.create` grant both the capability and the syscall.
+The capability alone is insufficient: host seccomp profiles may still deny
+`perf_event_open` unless `CAP_SYS_ADMIN` is present. Sandbox never grants
+`CAP_SYS_ADMIN` to solve that restriction.
+
 Sandbox reads the profile reported by
 `podman info --format '{{.Host.Security.SECCOMPProfilePath}}'`, copies it
-to the container's host-side state as `seccomp-aslr.json`, and adds exact
+to the container's host-side state as `seccomp.json`, and applies the requested
+grants together in that single profile. ASLR control adds exact
 `personality` argument grants: `0xffffffff` (query), and `ADDR_NO_RANDOMIZE`
 combined with `PER_LINUX` or `PER_LINUX32`, optionally `UNAME26`.
-No other syscall rule, capability condition, or architecture mapping changes.
+Perf replaces only `perf_event_open` entries with one unconditional allow,
+removing that syscall from shared rules without changing their other members.
+Unrelated syscall rules, capability conditions, and architecture mappings stay intact.
+With neither opt-in, Podman's policy is left untouched.
 The source profile is not modified. Missing/unreadable profiles, profiles
-without `SCMP_ACT_ERRNO` as their default, and explicit personality denials
+without `SCMP_ACT_ERRNO` as their default, and (when ASLR control is requested)
+explicit personality denials
 fail launch rather than silently changing the host's policy.
 
 This grants permission, not a blanket ASLR disable. Disabling ASLR weakens
-exploit mitigation; use it for development tasks, not services. A host-side
-filter cannot grant syscalls inside a krun microVM; that runtime is not
-supported by this option. An outer sandbox can still deny the call.
+exploit mitigation; use it for development tasks, not services. Allowing perf
+does not bypass kernel permissions: rootless `CAP_PERFMON` is not host-level
+privilege. Host `perf_event_paranoid`, security policy, target access, and event
+availability still apply. Start with user-only, per-process software events.
+A host-side filter cannot grant syscalls inside a krun microVM; neither option
+supports that runtime. An outer sandbox can still deny the calls.
 
 Recreate containers to change the policy; restarting an existing container
 retains its creation-time policy. Verify in a newly created container with
 `setarch --addr-no-randomize true`, then run an LLVM TSan-instrumented binary.
+For perf, start with `perf stat -e task-clock:u -- true`; verify the generated
+OCI policy has a `perf_event_open` allow and no matching deny.
 
 ## Container-side contract
 
