@@ -18,7 +18,7 @@ from .podman import default_seccomp_profile
 _ADDR_NO_RANDOMIZE = 0x40000
 _PERSONALITY_QUERY = 0xFFFFFFFF
 _LINUX_PERSONALITIES = (0, 8, 0x20000, 0x20008)
-"""PER_LINUX/PER_LINUX32, with or without ADDR_COMPAT_LAYOUT."""
+"""PER_LINUX/PER_LINUX32, with or without UNAME26."""
 _PROFILE_NAME = "seccomp-aslr.json"
 
 
