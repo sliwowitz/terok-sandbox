@@ -1,39 +1,36 @@
 # SPDX-FileCopyrightText: 2026 Jiri Vyskocil
 # SPDX-License-Identifier: Apache-2.0
 
-"""Round-trip YAML write-back for the few sandbox sites that mutate config.yml.
+"""Write-back for the few sandbox sites that mutate config files, and for secrets.
 
-Mirrors the round-trip facade in ``terok.lib.util.yaml`` — sandbox
-can't import from terok, so the two stay duplicated; keep in sync if
-the parser race-fix comment ever changes.
-
-A fresh ``YAML()`` per call: the class carries parser state, so a
-module-level singleton races under concurrent use from TUI worker
-threads.
+Config edits go through the shared round-trip YAML facade
+([`terok_util.yaml`][terok_util.yaml]) and are written as operator-owned
+config ([`write_config_file`][terok_util.fs.write_config_file]).
+Secrets get [`write_secret_text`][terok_sandbox._yaml.write_secret_text]
+instead: atomic, and always ``0o600``.
 """
 
 from __future__ import annotations
 
 import os
 import tempfile
-from io import StringIO
 from pathlib import Path
 from typing import Any
 
-from ruamel.yaml import YAML
+from terok_util import write_config_file
+from terok_util.yaml import dump, load
 
 __all__ = ["update_section", "write_secret_text"]
 
 
 def update_section(path: Path, section: str, updates: dict[str, Any]) -> None:
-    """Merge *updates* into ``data[section]`` at *path*, preserving comments."""
-    yaml = YAML(typ="rt")
-    yaml.preserve_quotes = True
-    if path.exists():
-        existing = yaml.load(path.read_text(encoding="utf-8")) or {}
-    else:
-        path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-        existing = {}
+    """Merge *updates* into ``data[section]`` at *path*, preserving comments.
+
+    The file is operator-owned config: an existing one is rewritten in
+    place and keeps its symlinks, mode and owner, and a new one is
+    created ``0o600``.
+    """
+    existing = (load(path.read_text(encoding="utf-8")) or {}) if path.exists() else {}
     if not isinstance(existing, dict):
         raise ValueError(
             f"{path} top-level is {type(existing).__name__}, expected a mapping;"
@@ -44,9 +41,7 @@ def update_section(path: Path, section: str, updates: dict[str, Any]) -> None:
     if not isinstance(existing.get(section), dict):
         existing[section] = {}
     existing[section].update(updates)
-    buf = StringIO()
-    yaml.dump(existing, buf)
-    write_secret_text(path, buf.getvalue())
+    write_config_file(path, dump(existing))
 
 
 def write_secret_text(path: Path, text: str) -> None:
@@ -63,8 +58,8 @@ def write_secret_text(path: Path, text: str) -> None:
     tmp_path = Path(tmp_name)
     try:
         # POSIX ``write`` is allowed to return a short count; loop until
-        # the full payload is committed.  A truncated config.yml or
-        # vault.passphrase would lock the operator out of the vault.
+        # the full payload is committed.  A truncated vault.passphrase
+        # would lock the operator out of the vault.
         data = memoryview(text.encode("utf-8"))
         while data:
             data = data[os.write(fd, data) :]
