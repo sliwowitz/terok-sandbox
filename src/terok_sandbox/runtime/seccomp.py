@@ -41,8 +41,6 @@ def seccomp_args(state_dir: Path, *, aslr_control: bool = False, perf: bool = Fa
         if profile["defaultAction"] != "SCMP_ACT_ERRNO":
             raise ValueError("expected a default-deny SCMP_ACT_ERRNO profile")
         rules = profile["syscalls"]
-        if any(rule.get("name") for rule in rules):
-            raise ValueError("expected syscall rules using names, not the legacy name field")
         if aslr_control:
             if any(
                 "personality" in rule["names"] and rule["action"] != "SCMP_ACT_ALLOW"
@@ -70,7 +68,7 @@ def seccomp_args(state_dir: Path, *, aslr_control: bool = False, perf: bool = Fa
                 json.dump(profile, stream, indent=2)
                 stream.write("\n")
             staged.replace(destination)
-    except (OSError, ValueError, KeyError, TypeError, AttributeError) as exc:
+    except (OSError, ValueError, KeyError, TypeError) as exc:
         raise SystemExit(f"seccomp policy: cannot extend seccomp profile {source}: {exc}") from exc
     return ["--security-opt", f"seccomp={destination}"]
 

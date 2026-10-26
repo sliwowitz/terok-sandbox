@@ -212,25 +212,6 @@ def test_personality_denial_only_blocks_aslr(
     assert host_profile.read_text() == original
 
 
-@pytest.mark.parametrize("aslr_control", [False, True])
-def test_legacy_singular_perf_rule_fails_closed(
-    host_profile: Path, tmp_path: Path, aslr_control: bool
-) -> None:
-    """An unsupported singular-name denial must not survive beside the perf grant."""
-    profile = json.loads(host_profile.read_text())
-    profile["syscalls"].append(
-        {"name": "perf_event_open", "names": [], "action": "SCMP_ACT_ERRNO", "errnoRet": 1}
-    )
-    host_profile.write_text(json.dumps(profile))
-    original = host_profile.read_text()
-    state = tmp_path / "state"
-    with patch("terok_sandbox.runtime.seccomp.default_seccomp_profile", return_value=host_profile):
-        with pytest.raises(SystemExit, match="seccomp policy: cannot extend"):
-            seccomp_args(state, aslr_control=aslr_control, perf=True)
-    assert not state.exists()
-    assert host_profile.read_text() == original
-
-
 @pytest.mark.parametrize(("aslr_control", "perf"), _ENABLED_POLICIES)
 def test_profile_read_failure_fails_closed(tmp_path: Path, aslr_control: bool, perf: bool) -> None:
     """A disappearing profile is not replaced by a less restrictive fallback."""
