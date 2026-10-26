@@ -53,7 +53,7 @@ Sandbox reads the profile reported by
 `podman info --format '{{.Host.Security.SeccompProfilePath}}'`, copies it
 to the container's host-side state as `seccomp-aslr.json`, and adds exact
 `personality` argument grants: `0xffffffff` (query), and `ADDR_NO_RANDOMIZE`
-combined with `PER_LINUX` or `PER_LINUX32`, optionally `ADDR_COMPAT_LAYOUT`.
+combined with `PER_LINUX` or `PER_LINUX32`, optionally `UNAME26`.
 No other syscall rule, capability condition, or architecture mapping changes.
 The source profile is not modified. Missing/unreadable profiles, profiles
 without `SCMP_ACT_ERRNO` as their default, and explicit personality denials
