@@ -320,8 +320,8 @@ class RunSpec:
     runtime: str | None = None
     """OCI runtime to use (podman ``--runtime``).
 
-    ``None`` (default) lets podman pick — its built-in default is
-    ``crun``.  Set to ``"krun"`` to launch the task inside a KVM
+    ``None`` (default) inherits Podman's configured runtime.
+    Set to ``"krun"`` to launch the task inside a KVM
     microVM (Phase 3 KrunRuntime).  Backend-neutral here; the runtime
     string is passed through verbatim and any compatibility decisions
     live higher up (e.g. orchestrator config validation).
@@ -692,7 +692,7 @@ class Sandbox:
 
         # ``--runtime`` must come before the image to be honoured; emit
         # it right after the verb to keep the rest of the assembly order
-        # unchanged.  ``None`` (default) lets podman pick crun itself.
+        # unchanged.  ``None`` inherits Podman's configured default.
         if spec.runtime is not None:
             cmd += ["--runtime", _validate_runtime(spec.runtime)]
 
@@ -714,6 +714,7 @@ class Sandbox:
                 self.task_state_dir(spec.container_name),
                 aslr_control=self._cfg.aslr_control,
                 perf=perf,
+                runtime=spec.runtime,
             )
 
         if self._cfg.shield_disabled:

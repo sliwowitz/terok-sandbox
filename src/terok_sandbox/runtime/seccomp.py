@@ -24,18 +24,25 @@ _PERF_EVENT_OPEN = "perf_event_open"
 _PROFILE_NAME = "seccomp.json"
 
 
-def seccomp_args(state_dir: Path, *, aslr_control: bool = False, perf: bool = False) -> list[str]:
+def seccomp_args(
+    state_dir: Path,
+    *,
+    aslr_control: bool = False,
+    perf: bool = False,
+    runtime: str | None = None,
+) -> list[str]:
     """Write a per-container profile and return its Podman security option.
 
     Perf replaces only ``perf_event_open`` entries with one unconditional allow;
     kernel permissions still apply. ASLR adds narrow personality grants, refusing
     explicit personality denials. Preserve all unrelated host rules and metadata.
     The file stays in host-side state for container restarts, outside its mounts.
+    Discovery verifies the effective runtime before any profile is written.
     Without either opt-in, leave Podman's policy untouched and skip discovery.
     """
     if not (aslr_control or perf):
         return []
-    source = default_seccomp_profile()
+    source = default_seccomp_profile(runtime=runtime)
     try:
         profile = json.loads(source.read_text())
         if profile["defaultAction"] != "SCMP_ACT_ERRNO":

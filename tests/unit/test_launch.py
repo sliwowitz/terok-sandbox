@@ -21,7 +21,7 @@ import time
 from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -189,6 +189,24 @@ class TestCompose:
         else:
             profile.assert_not_called()
             assert not any(arg.startswith("seccomp=") for arg in args)
+
+    def test_aslr_control_rejects_default_krun_before_state_setup(self, tmp_path: Path) -> None:
+        """An unsupported host-default runtime leaves standalone launch state untouched."""
+        cfg = dataclasses.replace(_make_cfg(tmp_path), aslr_control=True)
+        baseline = tmp_path / "host-profile.json"
+        baseline.write_text('{"defaultAction": "SCMP_ACT_ERRNO", "syscalls": []}')
+        existing_paths = set(tmp_path.rglob("*"))
+        with (
+            patch("subprocess.run", return_value=MagicMock(stdout=f"krun\n{baseline}\n")) as probe,
+            patch("terok_sandbox.integrations.shield.ShieldManager.pre_start") as shield,
+            pytest.raises(SystemExit, match="not supported.*krun"),
+        ):
+            compose("myc", cfg=cfg, shield=True, gate=False, broker=False, scope=None)
+        probe.assert_called_once()
+        shield.assert_not_called()
+        assert not cfg.state_dir.exists()
+        assert not cfg.runtime_dir.exists()
+        assert set(tmp_path.rglob("*")) == existing_paths
 
     def test_shield_only_when_scope_omitted(self, tmp_path: Path) -> None:
         """With no --scope, gate/broker/ssh skip silently; shield still applies."""

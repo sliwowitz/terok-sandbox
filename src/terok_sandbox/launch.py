@@ -312,9 +312,9 @@ def compose(
     if profiles:
         cfg = dataclasses.replace(cfg, shield_profiles=tuple(profiles))
 
-    state_dir.mkdir(parents=True, exist_ok=True)
-
     security_args = seccomp_args(state_dir, aslr_control=True) if cfg.aslr_control else []
+
+    state_dir.mkdir(parents=True, exist_ok=True)
 
     # Resolve subsystem activation against the scope precondition.  Three
     # of the four subsystems are scope-bound; silently skipping them with

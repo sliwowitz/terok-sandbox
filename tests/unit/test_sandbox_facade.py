@@ -45,7 +45,10 @@ def _make_spec(**overrides) -> RunSpec:
 @pytest.mark.parametrize("verb", ["run", "create"])
 @pytest.mark.parametrize("aslr_control", [False, True])
 @pytest.mark.parametrize("perf", [False, True])
-def test_seccomp_wiring(tmp_path: Path, verb: str, aslr_control: bool, perf: bool) -> None:
+@pytest.mark.parametrize("runtime", [None, "crun"])
+def test_seccomp_wiring(
+    tmp_path: Path, verb: str, aslr_control: bool, perf: bool, runtime: str | None
+) -> None:
     """Both creation paths combine requested grants without changing caps or NNP."""
     cfg = SandboxConfig(state_dir=tmp_path, aslr_control=aslr_control)
     security_args = ["--security-opt", f"seccomp={tmp_path / 'profile.json'}"]
@@ -55,10 +58,13 @@ def test_seccomp_wiring(tmp_path: Path, verb: str, aslr_control: bool, perf: boo
     ):
         sandbox = Sandbox(cfg)
         caps = ("perfmon",) if perf else ()
-        cmd = sandbox._build_cmd(_make_spec(unrestricted=False, caps=caps), verb)
+        cmd = sandbox._build_cmd(_make_spec(unrestricted=False, caps=caps, runtime=runtime), verb)
     if aslr_control or perf:
         profile.assert_called_once_with(
-            sandbox.task_state_dir("test-ctr"), aslr_control=aslr_control, perf=perf
+            sandbox.task_state_dir("test-ctr"),
+            aslr_control=aslr_control,
+            perf=perf,
+            runtime=runtime,
         )
         assert security_args[1] in cmd
     else:
@@ -90,6 +96,52 @@ def test_seccomp_rejects_krun(tmp_path: Path, verb: str, aslr_control: bool, per
     shield.assert_not_called()
     probe.assert_not_called()
     assert set(tmp_path.rglob("*")) == existing_paths
+
+
+@pytest.mark.parametrize("verb", ["run", "create"])
+@pytest.mark.parametrize(("aslr_control", "perf"), [(True, False), (False, True), (True, True)])
+def test_seccomp_rejects_default_krun(
+    tmp_path: Path, verb: str, aslr_control: bool, perf: bool
+) -> None:
+    """A host-default microVM runtime fails before profile writes or shield setup."""
+    baseline = tmp_path / "host-profile.json"
+    baseline.write_text('{"defaultAction": "SCMP_ACT_ERRNO", "syscalls": []}')
+    sandbox = Sandbox(SandboxConfig(state_dir=tmp_path / "state", aslr_control=aslr_control))
+    spec = _make_spec(caps=("perfmon",) if perf else ())
+    existing_paths = set(tmp_path.rglob("*"))
+    with (
+        patch("subprocess.run", return_value=MagicMock(stdout=f"krun\n{baseline}\n")) as probe,
+        patch("terok_sandbox.sandbox.Sandbox.pre_start_args") as shield,
+        pytest.raises(SystemExit, match="not supported.*krun"),
+    ):
+        sandbox._build_cmd(spec, verb)
+    probe.assert_called_once()
+    assert probe.call_args.args[0][:3] == ["podman", "info", "--format"]
+    shield.assert_not_called()
+    assert set(tmp_path.rglob("*")) == existing_paths
+
+
+@pytest.mark.parametrize("verb", ["run", "create"])
+@pytest.mark.parametrize(("aslr_control", "perf"), [(True, False), (False, True), (True, True)])
+def test_seccomp_discovers_explicit_crun(
+    tmp_path: Path, verb: str, aslr_control: bool, perf: bool
+) -> None:
+    """Discovery and launch use the same explicit runtime rather than the host default."""
+    baseline = tmp_path / "host-profile.json"
+    baseline.write_text('{"defaultAction": "SCMP_ACT_ERRNO", "syscalls": []}')
+    sandbox = Sandbox(SandboxConfig(state_dir=tmp_path / "state", aslr_control=aslr_control))
+    spec = _make_spec(runtime="crun", caps=("perfmon",) if perf else ())
+    with (
+        patch("subprocess.run", return_value=MagicMock(stdout=f"crun\n{baseline}\n")) as probe,
+        patch("terok_sandbox.sandbox.Sandbox.pre_start_args", return_value=[]),
+    ):
+        cmd = sandbox._build_cmd(spec, verb)
+    probe.assert_called_once()
+    assert probe.call_args.args[0][:4] == ["podman", "--runtime", "crun", "info"]
+    assert cmd[cmd.index("--runtime") + 1] == "crun"
+    profile_path = sandbox.task_state_dir("test-ctr") / "seccomp.json"
+    assert profile_path.is_file()
+    assert f"seccomp={profile_path}" in cmd
 
 
 @pytest.mark.parametrize("verb", ["run", "create"])
@@ -212,7 +264,7 @@ class TestRunSpec:
         assert spec.cpus == "2.0"
 
     def test_runtime_defaults_none(self) -> None:
-        """``runtime`` defaults to None (podman picks crun)."""
+        """``runtime`` defaults to None (inherits Podman's configured default)."""
         assert _make_spec().runtime is None
 
     def test_runtime_carries_through(self) -> None:
@@ -652,7 +704,7 @@ class TestSandbox:
         assert cmd[cmd.index("--hostname") + 1] == "myproj-cli-k3v8h"
 
     def test_run_omits_runtime_flag_by_default(self) -> None:
-        """Without spec.runtime, --runtime is absent (podman picks crun)."""
+        """Without spec.runtime, --runtime is absent (inherits Podman's configured default)."""
         with (
             patch("subprocess.run") as mock_run,
             patch("builtins.print"),
@@ -987,7 +1039,7 @@ class TestSandbox:
 
         cmd = mock_run.call_args[0][0]
         profile.assert_called_once_with(
-            sandbox.task_state_dir("test-ctr"), aslr_control=False, perf=True
+            sandbox.task_state_dir("test-ctr"), aslr_control=False, perf=True, runtime=None
         )
         assert security_args[1] in cmd
         assert "no-new-privileges" not in cmd

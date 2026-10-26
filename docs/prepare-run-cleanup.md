@@ -77,7 +77,9 @@ does not bypass kernel permissions: rootless `CAP_PERFMON` is not host-level
 privilege. Host `perf_event_paranoid`, security policy, target access, and event
 availability still apply. Start with user-only, per-process software events.
 A host-side filter cannot grant syscalls inside a krun microVM; neither option
-supports that runtime. An outer sandbox can still deny the calls.
+supports that runtime. Profile discovery checks the effective OCI runtime,
+including Podman's configured default when no explicit override is passed,
+and rejects krun before writing the profile. An outer sandbox can still deny the calls.
 
 Recreate containers to change the policy; restarting an existing container
 retains its creation-time policy. Verify in a newly created container with

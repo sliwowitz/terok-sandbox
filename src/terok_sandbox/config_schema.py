@@ -453,10 +453,9 @@ class RawRunSection(BaseModel):
     runtime: Literal["crun", "krun"] | None = Field(
         default=None,
         description=(
-            "OCI runtime: ``crun`` (default) for conventional containers, "
+            "OCI runtime override: ``crun`` for conventional containers, "
             "or ``krun`` for KVM-microVM isolation (experimental).  ``None`` "
-            "resolves to ``crun`` — the OCI runtime podman picks by default "
-            "on every supported distro.  ``krun`` requires the global "
+            "inherits Podman's configured default. Explicit ``krun`` requires the global "
             "``experimental: true`` flag at task launch."
         ),
     )

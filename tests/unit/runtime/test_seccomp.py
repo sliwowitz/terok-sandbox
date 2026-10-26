@@ -14,6 +14,7 @@ from terok_sandbox.runtime.podman import default_seccomp_profile
 from terok_sandbox.runtime.seccomp import seccomp_args
 
 _ENABLED_POLICIES = [(True, False), (False, True), (True, True)]
+_PROFILE_INFO_FORMAT = "{{.Host.OCIRuntime.Name}}\n{{.Host.Security.SECCOMPProfilePath}}"
 _PERF_ALLOW = {"names": ["perf_event_open"], "action": "SCMP_ACT_ALLOW"}
 _ASLR_ALLOWS = [
     {
@@ -101,11 +102,17 @@ def perf_host_profile(host_profile: Path, request: pytest.FixtureRequest) -> Pat
     return host_profile
 
 
-def test_aslr_profile_preserves_every_existing_rule(host_profile: Path, tmp_path: Path) -> None:
+@pytest.mark.parametrize("runtime", [None, "crun"])
+def test_aslr_profile_preserves_every_existing_rule(
+    host_profile: Path, tmp_path: Path, runtime: str | None
+) -> None:
     """No host rule, capability condition, architecture, or default is replaced."""
     original = host_profile.read_text()
-    with patch("terok_sandbox.runtime.seccomp.default_seccomp_profile", return_value=host_profile):
-        args = seccomp_args(tmp_path / "state", aslr_control=True)
+    with patch(
+        "terok_sandbox.runtime.seccomp.default_seccomp_profile", return_value=host_profile
+    ) as discover:
+        args = seccomp_args(tmp_path / "state", aslr_control=True, runtime=runtime)
+    discover.assert_called_once_with(runtime=runtime)
     assert args[0] == "--security-opt"
     profile_path = Path(args[1].removeprefix("seccomp="))
     profile = json.loads(profile_path.read_text())
@@ -117,12 +124,31 @@ def test_aslr_profile_preserves_every_existing_rule(host_profile: Path, tmp_path
     assert list(profile_path.parent.iterdir()) == [profile_path]
 
 
-def test_no_policy_request_has_no_side_effects(tmp_path: Path) -> None:
+@pytest.mark.parametrize("runtime", [None, "crun", "krun"])
+def test_no_policy_request_has_no_side_effects(tmp_path: Path, runtime: str | None) -> None:
     """The default launch neither discovers a host profile nor creates state."""
     state = tmp_path / "state"
     with patch("terok_sandbox.runtime.seccomp.default_seccomp_profile") as discover:
-        assert seccomp_args(state) == []
+        assert seccomp_args(state, runtime=runtime) == []
     discover.assert_not_called()
+    assert not state.exists()
+
+
+@pytest.mark.parametrize(("aslr_control", "perf"), _ENABLED_POLICIES)
+@pytest.mark.parametrize("absolute_runtime", [False, True])
+def test_default_krun_rejects_custom_policy(
+    host_profile: Path, tmp_path: Path, aslr_control: bool, perf: bool, absolute_runtime: bool
+) -> None:
+    """A configured krun default must reject host seccomp customization before writing."""
+    state = tmp_path / "state"
+    runtime_name = str(tmp_path / "krun") if absolute_runtime else "krun"
+
+    with patch(
+        "terok_sandbox.runtime.podman.subprocess.run",
+        return_value=subprocess.CompletedProcess([], 0, f"{runtime_name}\n{host_profile}\n"),
+    ):
+        with pytest.raises(SystemExit, match="not supported.*krun"):
+            seccomp_args(state, aslr_control=aslr_control, perf=perf)
     assert not state.exists()
 
 
@@ -143,7 +169,7 @@ def test_perf_replaces_conflicting_host_rules(
         "terok_sandbox.runtime.seccomp.default_seccomp_profile", return_value=perf_host_profile
     ) as discover:
         args = seccomp_args(state, aslr_control=aslr_control, perf=perf)
-    discover.assert_called_once_with()
+    discover.assert_called_once_with(runtime=None)
     profile_path = state / "seccomp.json"
     assert args == ["--security-opt", f"seccomp={profile_path}"]
     actual = json.loads(profile_path.read_text())
@@ -247,21 +273,40 @@ def test_profile_can_be_regenerated(
     assert list(state.iterdir()) == [profile_path]
 
 
-def test_discover_configured_profile(host_profile: Path) -> None:
-    """Podman's configured path, rather than a distro-specific guess, wins."""
+@pytest.mark.parametrize(
+    ("runtime", "reported_runtime"), [(None, "crun"), (None, "runc"), ("crun", "crun")]
+)
+def test_discover_configured_profile(
+    host_profile: Path, runtime: str | None, reported_runtime: str
+) -> None:
+    """Probe the selected runtime and configured path together, honoring explicit overrides."""
     with patch(
         "terok_sandbox.runtime.podman.subprocess.run",
-        return_value=subprocess.CompletedProcess([], 0, f"{host_profile}\n"),
+        return_value=subprocess.CompletedProcess([], 0, f"{reported_runtime}\n{host_profile}\n"),
     ) as run:
-        assert default_seccomp_profile() == host_profile
+        assert default_seccomp_profile(runtime=runtime) == host_profile
     assert run.call_args.args[0] == [
         "podman",
+        *(["--runtime", runtime] if runtime is not None else []),
         "info",
         "--format",
-        "{{.Host.Security.SECCOMPProfilePath}}",
+        _PROFILE_INFO_FORMAT,
     ]
     assert run.call_args.kwargs["check"] is True
     assert run.call_args.kwargs["timeout"] > 0
+
+
+@pytest.mark.parametrize(
+    "output", ["", "crun", "{profile}", "\n{profile}", "<no value>\n{profile}"]
+)
+def test_missing_runtime_metadata_is_rejected(host_profile: Path, output: str) -> None:
+    """An absent runtime or missing separator cannot silently bypass the krun check."""
+    with patch(
+        "terok_sandbox.runtime.podman.subprocess.run",
+        return_value=subprocess.CompletedProcess([], 0, output.format(profile=host_profile)),
+    ):
+        with pytest.raises(SystemExit, match="runtime"):
+            default_seccomp_profile()
 
 
 @pytest.mark.parametrize("output", ["", "<no value>", "unconfined"])
@@ -269,7 +314,7 @@ def test_missing_profile_path_is_rejected(output: str) -> None:
     """A built-in or disabled profile cannot be safely extended from a file."""
     with patch(
         "terok_sandbox.runtime.podman.subprocess.run",
-        return_value=subprocess.CompletedProcess([], 0, output),
+        return_value=subprocess.CompletedProcess([], 0, f"crun\n{output}\n"),
     ):
         with pytest.raises(SystemExit, match="readable host Podman seccomp profile"):
             default_seccomp_profile()
