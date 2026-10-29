@@ -87,7 +87,7 @@ class TestRecoveryAcknowledgedCheck:
         with patch.object(
             type(cfg),
             "resolve_passphrase_with_source",
-            lambda self, **_kw: ("p4ss", PassphraseTier.SESSION_CACHE),
+            return_value=("p4ss", PassphraseTier.SESSION_CACHE),
         ):
             verdict = _eval_recovery(cfg)
         assert verdict.severity == "error"

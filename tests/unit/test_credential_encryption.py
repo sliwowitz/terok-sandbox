@@ -2962,7 +2962,8 @@ class TestProvisionPassphraseTier:
             lambda mode: persisted.update(mode=mode),
         )
         result = provision_passphrase_tier(_make_cfg(tmp_path), tier="desktop-keyring")
-        assert result.source == "desktop-keyring" and result.generated is True
+        assert result.source == "desktop-keyring"
+        assert result.generated is True
         assert stored["pw"] == result.passphrase
         assert persisted["mode"] == "desktop-keyring"
 
@@ -3222,7 +3223,8 @@ class TestProvisioningDefaultCfg:
             lambda **_kw: None,
         )
         result = provision_passphrase_tier(tier="session-cache")
-        assert result.source == "session-cache" and result.generated is True
+        assert result.source == "session-cache"
+        assert result.generated is True
 
     def test_credentials_provisioned_defaults_cfg(self) -> None:
         """Default cfg + the fixture's stub desktop keyring ("test") → provisioned."""

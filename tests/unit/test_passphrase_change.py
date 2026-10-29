@@ -548,7 +548,8 @@ class TestRewriteTier:
 
         rewrite = _rewrite_tier(cfg, PassphraseTier.DESKTOP_KEYRING, NEW)
 
-        assert rewrite.ok and rewrite.detail == "desktop keyring entry rewritten"
+        assert rewrite.ok
+        assert rewrite.detail == "desktop keyring entry rewritten"
         assert stored == [NEW]
 
     def test_unwritable_tier_is_reported(self, tmp_path: Path) -> None:
@@ -574,7 +575,8 @@ class TestRewriteTier:
 
         rewrite = _rewrite_tier(cfg, PassphraseTier.SYSTEMD_CREDS, NEW)
 
-        assert not rewrite.ok and rewrite.detail == "tier rewrite failed (OSError)"
+        assert not rewrite.ok
+        assert rewrite.detail == "tier rewrite failed (OSError)"
         assert NEW not in repr(rewrite)
 
 
