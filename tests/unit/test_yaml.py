@@ -20,10 +20,10 @@ class TestUpdateSection:
     def test_creates_file_when_missing(self, tmp_path: Path) -> None:
         """A missing config file is created with the section populated."""
         path = tmp_path / "config.yml"
-        update_section(path, "credentials", {"use_keyring": True})
+        update_section(path, "credentials", {"use_desktop_keyring": True})
         text = path.read_text()
         assert "credentials:" in text
-        assert "use_keyring: true" in text
+        assert "use_desktop_keyring: true" in text
 
     def test_merges_into_existing_section(self, tmp_path: Path) -> None:
         """Existing keys outside ``updates`` are preserved verbatim."""
@@ -34,19 +34,19 @@ class TestUpdateSection:
             "  passphrase: secret  # inline\n"
             "  unrelated: keep-me\n"
         )
-        update_section(path, "credentials", {"use_keyring": True})
+        update_section(path, "credentials", {"use_desktop_keyring": True})
         text = path.read_text()
         assert "# top-level comment" in text  # round-trip preserves the leading comment
         assert "unrelated: keep-me" in text
-        assert "use_keyring: true" in text
+        assert "use_desktop_keyring: true" in text
 
     def test_replaces_non_dict_section(self, tmp_path: Path) -> None:
         """A stale scalar at ``data[section]`` is replaced, not ``update``-d."""
         path = tmp_path / "config.yml"
         path.write_text("credentials: legacy-string\n")
-        update_section(path, "credentials", {"use_keyring": True})
+        update_section(path, "credentials", {"use_desktop_keyring": True})
         text = path.read_text()
-        assert "use_keyring: true" in text
+        assert "use_desktop_keyring: true" in text
         assert "legacy-string" not in text
 
     def test_rejects_non_dict_root(self, tmp_path: Path) -> None:
@@ -59,7 +59,7 @@ class TestUpdateSection:
         original = "- list-not-mapping\n"
         path.write_text(original)
         with pytest.raises(ValueError, match="config.yml.*expected a mapping"):
-            update_section(path, "credentials", {"use_keyring": True})
+            update_section(path, "credentials", {"use_desktop_keyring": True})
         # File on disk is untouched — the bad input is still there for the
         # operator to inspect, not silently replaced with a fresh ``{}``.
         assert path.read_text() == original
@@ -67,29 +67,29 @@ class TestUpdateSection:
     def test_new_file_is_private(self, tmp_path: Path) -> None:
         """A config file created here gets 0600, in a directory created 0700."""
         path = tmp_path / "terok" / "config.yml"
-        update_section(path, "credentials", {"use_keyring": True})
+        update_section(path, "credentials", {"use_desktop_keyring": True})
         assert os.stat(path).st_mode & 0o777 == 0o600
         assert os.stat(path.parent).st_mode & 0o777 == 0o700
 
     def test_existing_file_keeps_its_mode(self, tmp_path: Path) -> None:
         """The operator's config stays theirs: the mode they set survives an update."""
         path = tmp_path / "config.yml"
-        path.write_text("credentials:\n  use_keyring: false\n")
+        path.write_text("credentials:\n  use_desktop_keyring: false\n")
         os.chmod(path, 0o644)
-        update_section(path, "credentials", {"use_keyring": True})
-        assert "use_keyring: true" in path.read_text()
+        update_section(path, "credentials", {"use_desktop_keyring": True})
+        assert "use_desktop_keyring: true" in path.read_text()
         assert os.stat(path).st_mode & 0o777 == 0o644
 
     def test_symlinked_file_stays_a_link(self, tmp_path: Path) -> None:
         """A dotfiles-managed config is updated through its link, not replaced by a copy."""
         target = tmp_path / "dotfiles" / "config.yml"
         target.parent.mkdir()
-        target.write_text("credentials:\n  use_keyring: false\n")
+        target.write_text("credentials:\n  use_desktop_keyring: false\n")
         link = tmp_path / "config.yml"
         link.symlink_to(target)
-        update_section(link, "credentials", {"use_keyring": True})
+        update_section(link, "credentials", {"use_desktop_keyring": True})
         assert link.is_symlink()
-        assert "use_keyring: true" in target.read_text()
+        assert "use_desktop_keyring: true" in target.read_text()
 
 
 class TestWriteSecretText:
