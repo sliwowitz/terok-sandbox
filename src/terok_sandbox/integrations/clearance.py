@@ -8,22 +8,22 @@ Re-export catalog: every ``from terok_clearance …`` import in
 ``.importlinter`` (``terok_clearance`` is a protected module with
 ``terok_sandbox.integrations.clearance`` as the sole allowed importer).
 
-Headless installs typically skip the clearance phase entirely
-(``terok_clearance`` not installed); callers handle ``ImportError`` on
-this module's first attribute access by surfacing a stage-line
-``skip`` line.  No symbol here raises on import — that would defeat
-the soft-skip behaviour.
-
-Clearance runs as a single in-process composition that the supervisor
-builds at startup:
-[`ClearanceHub`][terok_clearance.ClearanceHub] +
-[`VerdictServer`][terok_clearance.VerdictServer] +
+Clearance runs as two of the per-container supervisor's children: the
+verdict child serves
+[`VerdictServer`][terok_clearance.VerdictServer], and the clearance
+child composes [`ClearanceHub`][terok_clearance.ClearanceHub] +
 [`EventSubscriber`][terok_clearance.EventSubscriber] (driven by
 [`create_notifier`][terok_clearance.create_notifier]).  TUI clients
 multiplex across per-container hub sockets via
 [`MultiSocketSubscriber`][terok_clearance.MultiSocketSubscriber].  The
 supervisor composes these objects directly, so there is no per-service
 systemd install.
+
+``terok_clearance`` is a hard dependency, and there is no clearance
+setup phase to skip.  Whether a container runs the two children is
+decided per launch by ``services.clearance``: ``off`` and the
+supervisor starts neither, ``mute`` and the hub starts with the
+container muted.
 """
 
 from terok_clearance import (  # noqa: F401 — re-exported public API

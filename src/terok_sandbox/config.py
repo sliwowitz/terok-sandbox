@@ -30,6 +30,7 @@ from .paths import (
 
 if TYPE_CHECKING:
     from .config_schema import (
+        ClearanceMode,
         RawCredentialsSection,
         RawGateServerSection,
         RawShieldSection,
@@ -81,6 +82,26 @@ def _default_services_mode() -> ServicesMode:
     reference at class-definition time and ignore later patches.
     """
     return services_mode()
+
+
+def services_clearance() -> ClearanceMode:
+    """Resolve the ``services.clearance`` setting through sandbox's own pydantic schema.
+
+    Same section as [`services_mode`][terok_sandbox.config.services_mode].
+    A value outside ``prompt`` / ``mute`` / ``off`` warns and reads as
+    ``prompt`` — an unreadable setting asks the operator rather than
+    silencing anyone — and costs that key alone: ``services.mode`` beside
+    it keeps what the operator wrote (see
+    [`RawServicesSection`][terok_sandbox.config_schema.RawServicesSection]).
+    """
+    from .config_schema import RawServicesSection
+
+    return _validate_section(RawServicesSection, "services").clearance
+
+
+def _default_services_clearance() -> ClearanceMode:
+    """Default-factory indirection so tests can patch ``services_clearance``."""
+    return services_clearance()
 
 
 @functools.lru_cache(maxsize=1)
@@ -143,6 +164,21 @@ def shield_dnsmasq_path() -> Path | None:
 def _default_shield_dnsmasq_path() -> Path | None:
     """Default-factory indirection so tests can patch ``shield_dnsmasq_path``."""
     return shield_dnsmasq_path()
+
+
+def shield_bypass_duration() -> str:
+    """Resolve the ``shield.bypass_duration`` setting through the schema.
+
+    A value shield could not arm warns and reads as the default, and costs
+    that key alone: the rest of the ``shield:`` section — the kill-switch
+    among it — keeps what the operator wrote.
+    """
+    return _shield_section().bypass_duration
+
+
+def _default_shield_bypass_duration() -> str:
+    """Default-factory indirection so tests can patch ``shield_bypass_duration``."""
+    return shield_bypass_duration()
 
 
 def experimental_enabled() -> bool:
@@ -295,6 +331,16 @@ class SandboxConfig:
     Default-factory reads ``shield.dnsmasq_path`` from the layered
     config.yml.  Set for a dnsmasq built outside the distro package.
     """
+    shield_bypass_duration: str = field(default_factory=_default_shield_bypass_duration)
+    """How long the timed bypass window stays open when a caller names no duration.
+
+    Default-factory reads ``shield.bypass_duration`` from the layered
+    config.yml.  An nft timeout: a non-zero count and one unit (``30s``,
+    ``5m``, ``2h``).  The schema checks the configured value at load: one
+    shield could not arm warns and falls back to the default.  A value
+    passed here directly is checked by shield, when a window is opened
+    without a duration of its own.
+    """
 
     shield_disabled: bool = False
     """DANGEROUS: when True, the egress firewall is completely disabled.
@@ -343,6 +389,25 @@ class SandboxConfig:
     rather than a free-function call per site so downstream code can't
     bypass config resolution — no manager without a ``SandboxConfig``,
     every ``SandboxConfig`` carries a resolved mode.
+    """
+
+    clearance: ClearanceMode = field(default_factory=_default_services_clearance)
+    """Who is asked about a connection the shield refused: ``prompt``, ``mute`` or ``off``.
+
+    Default-factory reads ``services.clearance`` from the layered
+    config.yml through the same
+    [`RawServicesSection`][terok_sandbox.config_schema.RawServicesSection]
+    schema; orchestrators with per-project settings pass the resolved
+    project value explicitly.  It reaches the container's supervisor
+    through the sidecar, which creation writes from this field
+    ([`write_sidecar`][terok_sandbox.launch.write_sidecar]) and every
+    start re-reads: ``off`` launches no verdict or clearance child,
+    ``mute`` starts the clearance hub with the container muted, ``prompt``
+    puts each refusal to the operator.  The shield refuses either way.  A
+    restart that should honour a changed setting rewrites the sidecar's
+    copy first
+    ([`Sandbox.clearance_refresh`][terok_sandbox.Sandbox.clearance_refresh]),
+    so a change applies at the task's next start.
     """
 
     experimental: bool = field(default_factory=_default_experimental)
@@ -479,6 +544,22 @@ class SandboxConfig:
         """
         _validate_container_name(container_name)
         return self.state_dir / "sandbox" / "runs" / container_name
+
+    def sidecar_path(self, container_name: str) -> Path:
+        """The container's supervisor sidecar: ``state_dir/sidecar/<name>.json``.
+
+        Keyed on the name, which is known before ``podman run``: the launch
+        path writes the file and pins it in the ``terok.sandbox.sidecar``
+        annotation before the container exists.  Shared by
+        [`write_sidecar`][terok_sandbox.launch.write_sidecar], which creates
+        it, and [`Sandbox.clearance_refresh`][terok_sandbox.Sandbox.clearance_refresh],
+        which edits it, so the edit always lands on the file creation wrote.
+
+        Raises:
+            ValueError: If *container_name* is not a safe single path component.
+        """
+        _validate_container_name(container_name)
+        return self.state_dir / "sidecar" / f"{container_name}.json"
 
     def container_runtime_dir(self, container_name: str) -> Path:
         """Host-side per-container runtime dir, bind-mounted at ``/run/terok``.

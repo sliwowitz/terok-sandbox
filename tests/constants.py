@@ -73,6 +73,32 @@ FAKE_PEER_PORT = 12345
 LOCALHOST_PEER = (LOCALHOST, FAKE_PEER_PORT)
 """Fake peer address for HTTP handler tests."""
 
+DESTINATION_IP = "203.0.113.10"
+"""TEST-NET-3 (RFC 5737) address standing in for a destination shield resolved."""
+
+FAKE_SERVICE_PORTS = (21001, 21002, 21003)
+"""Per-container vault-proxy, SSH-signer and git-gate ports a TCP-mode sidecar records."""
+
+DRIFTED_SERVICE_PORTS = (22001, 22002, 22003)
+"""The same three ports as today's config names them, since drifted from ``FAKE_SERVICE_PORTS``."""
+
+# ── Shield policy targets and container identity ─────────────────────────────
+
+PROMOTED_DOMAIN = "registry.example.com"
+"""An ordinary host a promotion allows — rotation-prone on a static DNS tier."""
+
+SECURITY_TIER_DOMAIN = "api.provider.example.com"
+"""A vault-relayed provider host: the t20 security tier refuses it, an override reaches it."""
+
+FAKE_CONTAINER_ID = "0123456789AB" + "cdef" * 13
+"""A full 64-hex podman container id, in mixed case podman itself never writes."""
+
+FAKE_CONTAINER_SHORT_ID = "0123456789ab"
+"""The 12-character lowercase short id of ``FAKE_CONTAINER_ID`` every per-container surface keys on."""
+
+FAKE_CONTAINER_NAME = "demo-task-7"
+"""The podman name of ``FAKE_CONTAINER_ID``'s container — a third spelling, unlike either id."""
+
 # ── Matrix capability probes ─────────────────────────────────────────────────
 
 PUBLIC_DNS_PROBE = ("1.1.1.1", 53)

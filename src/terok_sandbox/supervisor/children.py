@@ -31,7 +31,8 @@ The five children map onto the six former services: ``clearance`` owns
 the hub *and* the desktop notifier/subscriber (they share the clearance
 socket and the notifier only drives the subscriber), while ``verdict``,
 ``vault``, ``signer``, and ``gate`` are one service each.  ``gate`` only
-runs when the sidecar wired it.
+runs when the sidecar wired it, and ``verdict`` and ``clearance`` not at
+all when the sidecar says ``services.clearance: off``.
 """
 
 from __future__ import annotations
@@ -138,6 +139,17 @@ async def _run_clearance(cfg: SidecarConfig, paths: SupervisorPaths, stop: async
     ``create_notifier`` is no-fail — it degrades to a null notifier when
     no session bus is reachable — so the hub is the only bring-up here
     that can fail the child.
+
+    The hub serves this one container and is told which: its key is the
+    12-char short id the shield reader stamps on every event, and the hub
+    holds the prompts it relays, the verdicts it binds and the mutes it
+    keeps under that key alone.  The full id and the podman name are
+    aliases a ``SetMute`` caller may use instead — never the key, since no
+    event carries them and a mute keyed by one would silence nothing.
+    ``services.clearance: mute`` seeds that key muted before the hub binds
+    its ingester, so not even the first refusal is put to anyone; the seed
+    is re-applied on every container start, while a runtime unmute lasts
+    until the hub stops.
     """
     from terok_sandbox._util._selinux import socket_selinux_context
     from terok_sandbox.integrations.clearance import (
@@ -149,11 +161,17 @@ async def _run_clearance(cfg: SidecarConfig, paths: SupervisorPaths, stop: async
         create_notifier,
     )
 
+    # The reader's cut of the OCI id, lowercased as shield records it for the
+    # orchestrator that mutes the task (podman writes lowercase ids anyway).
+    short_id = paths.container_id[:12].lower()
     hub = ClearanceHub(
         clearance_socket=paths.clearance_socket,
         reader_socket=paths.events_socket,
         verdict_client=VerdictClient(socket_path=paths.verdict_socket),
         socket_context=socket_selinux_context,
+        container=short_id,
+        aliases=(paths.container_id, cfg.container_name),
+        muted=(short_id,) if cfg.clearance == "mute" else (),
     )
     await hub.start()
     notifier = await create_notifier("terok-supervisor")

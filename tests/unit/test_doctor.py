@@ -268,7 +268,7 @@ class TestSupervisorChildrenCheck:
     """Host-side check: every service the sidecar wires has a live child."""
 
     @staticmethod
-    def _sidecar(state: Path, *, gate: bool = False) -> None:
+    def _sidecar(state: Path, *, gate: bool = False, clearance: str | None = None) -> None:
         """Drop a sidecar for ``demo`` under ``<state>/sidecar/``."""
         sidecar_dir = state / "sidecar"
         sidecar_dir.mkdir(parents=True, exist_ok=True)
@@ -281,6 +281,8 @@ class TestSupervisorChildrenCheck:
         if gate:
             payload["gate_base_path"] = str(state / "gate")
             payload["gate_token"] = "tok123"
+        if clearance is not None:
+            payload["clearance"] = clearance
         (sidecar_dir / "demo.json").write_text(json.dumps(payload))
 
     def _verdict(
@@ -326,6 +328,24 @@ class TestSupervisorChildrenCheck:
         verdict = self._verdict(monkeypatch, tmp_path, ("clearance", "signer", "vault", "verdict"))
         assert verdict.severity == "error"
         assert "gate" in verdict.detail
+
+    def test_clearance_off_expects_no_clearance_arm(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """``clearance: off`` launches no verdict or clearance child, so neither is missing."""
+        self._sidecar(tmp_path, clearance="off")
+        verdict = self._verdict(monkeypatch, tmp_path, ("signer", "vault"))
+        assert verdict.severity == "ok"
+        assert "2 supervisor service(s) running" in verdict.detail
+
+    def test_muted_clearance_still_expects_its_children(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """``mute`` runs the hub (it starts muted), so a dead clearance child is still missing."""
+        self._sidecar(tmp_path, clearance="mute")
+        verdict = self._verdict(monkeypatch, tmp_path, ("signer", "vault", "verdict"))
+        assert verdict.severity == "error"
+        assert "clearance" in verdict.detail
 
     def test_no_sidecar_is_not_a_failure(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch

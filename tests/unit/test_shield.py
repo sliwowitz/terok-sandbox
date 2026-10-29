@@ -6,35 +6,62 @@
 
 from __future__ import annotations
 
-from pathlib import Path
-from unittest.mock import MagicMock, patch
+import fnmatch
+import tempfile
+from datetime import date, timedelta
+from pathlib import Path, PurePosixPath
+from typing import Any
+from unittest.mock import MagicMock, PropertyMock, patch
 
 import pytest
 from terok_shield import (
+    AllowResult,
     EnvironmentCheck,
+    ExecError,
+    HarvestEntry,
+    HarvestReport,
     NftNotFoundError,
+    OverrideRevocation,
+    RotationRisk,
+    SecurityTierRefusal,
     Shield,
     ShieldMode,
     ShieldNeedsSetup,
+    ShieldReading,
     ShieldState,
 )
 
+from terok_sandbox._util._apparmor import render_addendum
 from terok_sandbox.config import SandboxConfig
 from terok_sandbox.integrations.shield import (
     _DISABLED_WARNING,
+    TIER_ALLOWLIST,
     DnsTier,
     ShieldHooks,
     ShieldManager,
     check_environment,
 )
+from terok_sandbox.paths import sandbox_live_root
 from tests.constants import (
+    DESTINATION_IP,
+    FAKE_CONTAINER_ID,
+    FAKE_CONTAINER_SHORT_ID,
     GATE_PORT,
     MOCK_BASE,
     MOCK_CONFIG_ROOT,
+    MOCK_HOST_BIN,
     MOCK_TASK_DIR,
+    PROMOTED_DOMAIN,
+    SECURITY_TIER_DOMAIN,
 )
 
 CUSTOM_GATE_PORT = GATE_PORT + 1
+
+OVERRIDE_REASON = "vendor SDK reaches the provider API directly"
+"""Why a test break-glass is granted — shield requires one, sandbox passes it through."""
+
+WINDOW_SECONDS_LEFT = 130
+"""Whole seconds left on an open bypass window, as shield's countdown reports them."""
 
 
 def make_mock_shield(
@@ -421,6 +448,22 @@ def test_check_environment_disabled_returns_synthetic_result() -> None:
     assert any("disable_firewall_no_protection" in issue for issue in result.issues)
 
 
+def test_manager_check_environment_under_the_kill_switch_builds_no_shield() -> None:
+    """A manager asked directly answers from config, as the free probe does — no Shield is built.
+
+    terok and the executor hold managers of their own, so this branch is reached
+    without the free function's early return in front of it.
+    """
+    manager = ShieldManager(MOCK_TASK_DIR, SandboxConfig(shield_disabled=True))
+    with patch.object(ShieldManager, "shield", new_callable=PropertyMock) as shield:
+        result = manager.check_environment()
+    shield.assert_not_called()
+    assert result == check_environment(cfg=SandboxConfig(shield_disabled=True))
+    assert not result.ok
+    assert result.health == "disabled"
+    assert any("disable_firewall_no_protection" in issue for issue in result.issues)
+
+
 def test_pre_start_preserves_typed_setup_failure() -> None:
     """Typed setup errors survive the adapter for pre-stop handling."""
     mock_shield = make_mock_shield()
@@ -494,3 +537,510 @@ def test_install_then_uninstall_round_trip(tmp_path: Path, monkeypatch) -> None:
     # The directory itself is left in place (other tools may share it);
     # only our files are gone.
     assert list(target_dir.iterdir()) == []
+
+
+# ── the timed allow-all window ───────────────────────────────────────────
+
+
+def test_bypass_delegates_and_returns_the_duration_granted() -> None:
+    """``bypass`` passes the duration through and reports what shield granted."""
+    mock_shield = make_mock_shield()
+    mock_shield.bypass.return_value = "5m"
+    manager = ShieldManager(MOCK_TASK_DIR, SandboxConfig())
+    with patch.object(ShieldManager, "shield", new=mock_shield):
+        assert manager.bypass("ctr", "5m") == "5m"
+    mock_shield.bypass.assert_called_once_with("ctr", "5m")
+
+
+def test_bypass_with_no_duration_lets_shield_apply_its_configured_one() -> None:
+    """Sandbox does not second-guess the default — shield owns it."""
+    mock_shield = make_mock_shield()
+    manager = ShieldManager(MOCK_TASK_DIR, SandboxConfig())
+    with patch.object(ShieldManager, "shield", new=mock_shield):
+        manager.bypass("ctr")
+    mock_shield.bypass.assert_called_once_with("ctr", None)
+
+
+def test_bypass_off_closes_the_window() -> None:
+    """``bypass_off`` hands the close straight through to shield."""
+    mock_shield = make_mock_shield()
+    manager = ShieldManager(MOCK_TASK_DIR, SandboxConfig())
+    with patch.object(ShieldManager, "shield", new=mock_shield):
+        manager.bypass_off("ctr")
+    mock_shield.bypass_off.assert_called_once_with("ctr")
+
+
+def test_disabled_bypass_refuses_rather_than_pretending() -> None:
+    """With the kill-switch set there is no window to open, and saying so beats a no-op."""
+    manager = ShieldManager(MOCK_TASK_DIR, SandboxConfig(shield_disabled=True))
+    with pytest.raises(RuntimeError, match="shield is disabled"):
+        manager.bypass("ctr")
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        pytest.param(RuntimeError("ctr is down: raise the shield first"), id="not-up"),
+        pytest.param(ValueError("Invalid window duration: '0s'"), id="bad-duration"),
+    ],
+)
+def test_bypass_lets_shields_refusals_through_unchanged(error: Exception) -> None:
+    """Shield's own refusals — a posture other than UP, a duration it cannot arm — reach
+    the caller as shield raised them; sandbox's kill-switch refusal is a separate one."""
+    mock_shield = make_mock_shield()
+    mock_shield.bypass.side_effect = error
+    manager = ShieldManager(MOCK_TASK_DIR, SandboxConfig())
+    with (
+        patch.object(ShieldManager, "shield", new=mock_shield),
+        pytest.raises(type(error)) as raised,
+    ):
+        manager.bypass("ctr")
+    assert raised.value is error
+
+
+@pytest.mark.parametrize(
+    ("method_name", "args", "closed"),
+    [
+        pytest.param("bypass_off", ("ctr",), None, id="bypass-off"),
+        pytest.param(
+            "revoke_override",
+            ("ctr", SECURITY_TIER_DOMAIN),
+            OverrideRevocation(target=SECURITY_TIER_DOMAIN, closed=(DESTINATION_IP,)),
+            id="revoke-override",
+        ),
+    ],
+)
+def test_disabled_narrowing_changes_still_reach_the_real_shield(
+    method_name: str, args: tuple[str, ...], closed: OverrideRevocation | None
+) -> None:
+    """A close only ever narrows egress, so the kill-switch never swallows one.
+
+    A container started before the switch was thrown can still have a window open
+    or an override in force — the reads say so — and a close dropped in silence
+    would leave that door open while reading as shut.
+    """
+    mock_shield = make_mock_shield()
+    getattr(mock_shield, method_name).return_value = closed
+    manager = ShieldManager(MOCK_TASK_DIR, SandboxConfig(shield_disabled=True))
+    with patch.object(ShieldManager, "shield", new=mock_shield):
+        assert getattr(manager, method_name)(*args) is closed
+    getattr(mock_shield, method_name).assert_called_once_with(*args)
+
+
+@pytest.mark.parametrize(
+    ("method_name", "args", "error"),
+    [
+        pytest.param(
+            "bypass_off",
+            ("ctr",),
+            ExecError(["nft"], 1, "Error: No such file or directory"),
+            id="bypass-off-no-ruleset",
+        ),
+        pytest.param(
+            "revoke_override",
+            ("ctr", SECURITY_TIER_DOMAIN),
+            RuntimeError(f"ctr has no override of {SECURITY_TIER_DOMAIN} to revoke"),
+            id="revoke-override-none-in-force",
+        ),
+    ],
+)
+def test_disabled_narrowing_change_with_nothing_to_close_fails_visibly(
+    method_name: str, args: tuple[str, ...], error: Exception
+) -> None:
+    """On a container launched under the kill-switch there is nothing to close, and
+    shield's own refusal says so — it reaches the caller unchanged, never as a success."""
+    mock_shield = make_mock_shield()
+    getattr(mock_shield, method_name).side_effect = error
+    manager = ShieldManager(MOCK_TASK_DIR, SandboxConfig(shield_disabled=True))
+    close = getattr(manager, method_name)
+    with (
+        patch.object(ShieldManager, "shield", new=mock_shield),
+        pytest.raises(type(error)) as raised,
+    ):
+        close(*args)
+    assert raised.value is error
+
+
+def test_disabled_bypass_remaining_still_queries_the_real_shield() -> None:
+    """A container started before the kill-switch can still have a window open."""
+    mock_shield = make_mock_shield()
+    mock_shield.bypass_remaining.return_value = WINDOW_SECONDS_LEFT
+    manager = ShieldManager(MOCK_TASK_DIR, SandboxConfig(shield_disabled=True))
+    with patch.object(ShieldManager, "shield", new=mock_shield):
+        assert manager.bypass_remaining("ctr") == WINDOW_SECONDS_LEFT
+
+
+def test_bypass_duration_reaches_the_shield_config() -> None:
+    """``shield.bypass_duration`` is threaded into ShieldConfig, not re-read by shield."""
+    with (
+        patch("terok_shield.run.SubprocessRunner", autospec=True),
+        patch("terok_sandbox.paths.namespace_config_root", return_value=MOCK_CONFIG_ROOT),
+    ):
+        manager = ShieldManager(MOCK_TASK_DIR, SandboxConfig(shield_bypass_duration="45s"))
+        assert manager.shield.config.bypass_duration == "45s"
+
+
+def test_harvest_reads_the_audit_log_even_with_the_kill_switch_set() -> None:
+    """The log records what happened; a disabled shield does not unwrite it."""
+    mock_shield = make_mock_shield()
+    mock_shield.harvest.return_value = HarvestReport()
+    manager = ShieldManager(MOCK_TASK_DIR, SandboxConfig(shield_disabled=True))
+    with patch.object(ShieldManager, "shield", new=mock_shield):
+        assert manager.harvest() == HarvestReport()
+    mock_shield.harvest.assert_called_once_with()
+
+
+def test_harvest_hands_back_shields_report_whole() -> None:
+    """The report keeps what a bare entry list would lose: each entry's tier and remedies,
+    and whether audit was on at all — an empty harvest with audit off is no all-clear."""
+    entry = HarvestEntry(
+        action="blocked",
+        target=PROMOTED_DOMAIN,
+        count=1,
+        first_seen="",
+        last_seen="",
+        ports=(),
+        addresses=(DESTINATION_IP,),
+    )
+    report = HarvestReport(entries=(entry,), audit_enabled=False)
+    mock_shield = make_mock_shield()
+    mock_shield.harvest.return_value = report
+    manager = ShieldManager(MOCK_TASK_DIR, SandboxConfig())
+    with patch.object(ShieldManager, "shield", new=mock_shield):
+        harvested = manager.harvest()
+    assert harvested is report
+    assert harvested.audit_enabled is False
+    assert [e.tier for e in harvested] == [TIER_ALLOWLIST]
+
+
+# ── Operator grants: promotion and break-glass ───────────────────────────
+
+
+def test_allow_delegates_and_returns_the_allow_result() -> None:
+    """``allow`` is a pass-through: shield's ``AllowResult`` says how the grant landed."""
+    granted = AllowResult(target=PROMOTED_DOMAIN, ips=(DESTINATION_IP,))
+    mock_shield = make_mock_shield()
+    mock_shield.allow.return_value = granted
+    manager = ShieldManager(MOCK_TASK_DIR, SandboxConfig())
+    with patch.object(ShieldManager, "shield", new=mock_shield):
+        assert manager.allow("ctr", PROMOTED_DOMAIN) is granted
+    mock_shield.allow.assert_called_once_with("ctr", PROMOTED_DOMAIN)
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        pytest.param(
+            SecurityTierRefusal(SECURITY_TIER_DOMAIN, entry=SECURITY_TIER_DOMAIN),
+            id="security-tier-refusal",
+        ),
+        pytest.param(ShieldNeedsSetup("wildcards need the live tier"), id="static-tier-wildcard"),
+    ],
+)
+def test_allow_lets_shields_refusals_through_unchanged(error: Exception) -> None:
+    """The security tier's refusal reaches the caller as shield raised it — the very object,
+    so the promotion engine can name the entry that refused and offer the break-glass."""
+    mock_shield = make_mock_shield()
+    mock_shield.allow.side_effect = error
+    manager = ShieldManager(MOCK_TASK_DIR, SandboxConfig())
+    with (
+        patch.object(ShieldManager, "shield", new=mock_shield),
+        pytest.raises(type(error)) as raised,
+    ):
+        manager.allow("ctr", SECURITY_TIER_DOMAIN)
+    assert raised.value is error
+
+
+def test_override_threads_expiry_and_reason_into_shield() -> None:
+    """The break-glass carries its expiry and its reason through untouched; shield enforces both."""
+    expires = date.today() + timedelta(days=1)
+    mock_shield = make_mock_shield()
+    mock_shield.override.return_value = [DESTINATION_IP]
+    manager = ShieldManager(MOCK_TASK_DIR, SandboxConfig())
+    with patch.object(ShieldManager, "shield", new=mock_shield):
+        opened = manager.override("ctr", SECURITY_TIER_DOMAIN, expires, reason=OVERRIDE_REASON)
+    assert opened == [DESTINATION_IP]
+    mock_shield.override.assert_called_once_with(
+        "ctr", SECURITY_TIER_DOMAIN, expires, reason=OVERRIDE_REASON
+    )
+
+
+def test_revoke_override_returns_what_shield_closed() -> None:
+    """The revocation says what closed and whether it took hold live — sandbox adds nothing."""
+    revoked = OverrideRevocation(target=SECURITY_TIER_DOMAIN, closed=(DESTINATION_IP,))
+    mock_shield = make_mock_shield()
+    mock_shield.revoke_override.return_value = revoked
+    manager = ShieldManager(MOCK_TASK_DIR, SandboxConfig())
+    with patch.object(ShieldManager, "shield", new=mock_shield):
+        assert manager.revoke_override("ctr", SECURITY_TIER_DOMAIN) is revoked
+    mock_shield.revoke_override.assert_called_once_with("ctr", SECURITY_TIER_DOMAIN)
+
+
+@pytest.mark.parametrize(
+    ("method_name", "args", "kwargs"),
+    [
+        pytest.param("allow", ("ctr", PROMOTED_DOMAIN), {}, id="allow"),
+        pytest.param(
+            "override",
+            ("ctr", SECURITY_TIER_DOMAIN, date.max),
+            {"reason": OVERRIDE_REASON},
+            id="override",
+        ),
+    ],
+)
+def test_disabled_operator_changes_refuse_rather_than_pretend(
+    method_name: str, args: tuple[object, ...], kwargs: dict[str, object]
+) -> None:
+    """Under the kill-switch sandbox opens nothing, and says so instead of dropping the ask.
+
+    The refusal is a plain ``RuntimeError`` — never shield's ``SecurityTierRefusal`` —
+    so a caller tells "the shield is off" from "the tier refused it".  Closes are
+    another matter: see the narrowing-change tests above.
+    """
+    mock_shield = make_mock_shield()
+    manager = ShieldManager(MOCK_TASK_DIR, SandboxConfig(shield_disabled=True))
+    grant = getattr(manager, method_name)
+    with (
+        patch.object(ShieldManager, "shield", new=mock_shield),
+        pytest.raises(RuntimeError, match="shield is disabled") as raised,
+    ):
+        grant(*args, **kwargs)
+    assert not isinstance(raised.value, SecurityTierRefusal)
+    assert mock_shield.method_calls == []
+
+
+# ── One-listing reading of the live ruleset ──────────────────────────────
+
+
+@pytest.mark.parametrize("disabled", [False, True], ids=["enabled", "kill-switch"])
+def test_inspect_reads_the_live_ruleset_even_under_the_kill_switch(disabled: bool) -> None:
+    """Posture and window come back from one reading; a container started before the
+    kill-switch keeps its rules, so the switch does not stop the read."""
+    reading = ShieldReading(state=ShieldState.UP, bypass_remaining=WINDOW_SECONDS_LEFT)
+    mock_shield = make_mock_shield()
+    mock_shield.inspect.return_value = reading
+    manager = ShieldManager(MOCK_TASK_DIR, SandboxConfig(shield_disabled=disabled))
+    with patch.object(ShieldManager, "shield", new=mock_shield):
+        assert manager.inspect("ctr") is reading
+    mock_shield.inspect.assert_called_once_with("ctr")
+
+
+# ── File reads: no Shield wire-up, kill-switch or not ────────────────────
+
+
+def test_rotation_risk_reads_the_recorded_bundle(tmp_path: Path) -> None:
+    """Nothing recorded reads as no risk; a static tier pins the allowlisted names it resolved."""
+    from terok_shield.state import StateBundle
+
+    manager = ShieldManager(tmp_path, SandboxConfig(shield_disabled=True))
+    assert manager.rotation_risk is None
+
+    bundle = StateBundle(manager.state_dir)
+    bundle.ensure_dirs()
+    bundle.dns_tier.write_text(f"{DnsTier.LOOKUP.value}\n")
+    bundle.write_tier("project_allow", f"+{PROMOTED_DOMAIN}\n+{DESTINATION_IP}\n")
+    with patch.object(ShieldManager, "shield", new_callable=PropertyMock) as shield:
+        risk = manager.rotation_risk
+    shield.assert_not_called()
+    # The literal address cannot rotate, so only the name is at risk.
+    assert risk == RotationRisk(tier=DnsTier.LOOKUP, allow=(PROMOTED_DOMAIN,))
+
+
+def test_rotation_risk_is_none_on_the_live_tier(tmp_path: Path) -> None:
+    """dnsmasq-live follows every name as it resolves — an allowlist there pins nothing."""
+    from terok_shield.state import StateBundle
+
+    manager = ShieldManager(tmp_path)
+    bundle = StateBundle(manager.state_dir)
+    bundle.ensure_dirs()
+    bundle.dns_tier.write_text(f"{DnsTier.DNSMASQ_LIVE.value}\n")
+    bundle.write_tier("project_allow", f"+{PROMOTED_DOMAIN}\n")
+    assert manager.rotation_risk is None
+
+
+def test_container_short_id_reads_what_the_hook_recorded(tmp_path: Path) -> None:
+    """The hub's key, not the podman name: ``None`` before the first start, the
+    12-character lowercase short id after — under the kill-switch too."""
+    from terok_shield.state import StateBundle
+
+    manager = ShieldManager(tmp_path, SandboxConfig(shield_disabled=True))
+    assert manager.container_short_id is None
+
+    bundle = StateBundle(manager.state_dir)
+    bundle.ensure_dirs()
+    bundle.container_id.write_text(f"{FAKE_CONTAINER_ID}\n")
+    with patch.object(ShieldManager, "shield", new_callable=PropertyMock) as shield:
+        assert manager.container_short_id == FAKE_CONTAINER_SHORT_ID
+    shield.assert_not_called()
+
+
+# ── Host-level environment probe: a state dir the addendum covers (#1246) ──
+
+
+def _addendum_file_glob(live_root: Path) -> PurePosixPath:
+    """The ``owner <glob> rwk`` path the rendered AppArmor addendum grants dnsmasq."""
+    (rule,) = (
+        line for line in render_addendum(live_root).splitlines() if line.startswith("owner ")
+    )
+    return PurePosixPath(rule.split()[1])
+
+
+def _apparmor_glob_matches(path: Path, glob: PurePosixPath) -> bool:
+    """``fnmatch`` *path* against *glob* one component at a time, the way AppArmor's ``*`` matches.
+
+    A whole-path ``fnmatch`` lets ``*`` run across ``/``; AppArmor's never
+    does, so a state dir one level too deep or too shallow must not pass.
+    """
+    parts = PurePosixPath(path).parts
+    return len(parts) == len(glob.parts) and all(
+        fnmatch.fnmatchcase(part, pattern) for part, pattern in zip(parts, glob.parts, strict=True)
+    )
+
+
+def test_check_environment_probes_a_created_state_dir_the_addendum_covers() -> None:
+    """The host probe stands in for a task: a state dir that exists, where the addendum reaches.
+
+    An uncreated one let shield's AppArmor probe fail open and report the
+    dnsmasq tier on hosts where every real launch falls to a static tier
+    (terok-ai/terok#1246).  Afterwards nothing is left in the tasks tree.
+    """
+    probed: list[Path] = []
+
+    def probe(manager: ShieldManager) -> EnvironmentCheck:
+        assert manager.state_dir.is_dir()
+        probed.append(manager.state_dir)
+        return EnvironmentCheck(dns_tier=DnsTier.LOOKUP.value)
+
+    with patch.object(ShieldManager, "check_environment", autospec=True, side_effect=probe):
+        result = check_environment(SandboxConfig())
+
+    assert result == EnvironmentCheck(dns_tier=DnsTier.LOOKUP.value)
+    (state_dir,) = probed
+    live_root = sandbox_live_root()
+    assert _apparmor_glob_matches(state_dir, _addendum_file_glob(live_root).parent)
+    assert not state_dir.exists()
+    assert list((live_root / "tasks").iterdir()) == []
+
+
+def test_host_probe_runs_dnsmasq_on_a_file_the_addendum_grants() -> None:
+    """Through shield's own probe: ``dnsmasq --test`` really runs, on a file the
+    addendum's ``dnsmasq.*`` rule covers — the access a launch needs, tested as a launch has it."""
+    from terok_shield.dns.apparmor import dnsmasq_can_read_state_dir
+
+    probe_files: list[Path] = []
+
+    def probe(manager: ShieldManager) -> EnvironmentCheck:
+        runner = MagicMock()
+        runner.run.side_effect = lambda *_a, **_kw: probe_files.extend(manager.state_dir.iterdir())
+        assert dnsmasq_can_read_state_dir(runner, str(MOCK_HOST_BIN / "dnsmasq"), manager.state_dir)
+        return EnvironmentCheck()
+
+    with patch.object(ShieldManager, "check_environment", autospec=True, side_effect=probe):
+        check_environment(SandboxConfig())
+
+    (probe_file,) = probe_files
+    assert _apparmor_glob_matches(probe_file, _addendum_file_glob(sandbox_live_root()))
+
+
+def test_check_environment_cleans_up_when_the_probe_raises() -> None:
+    """The stand-in goes however the probe ends — an operator's tasks tree keeps no debris."""
+    probed: list[Path] = []
+
+    def probe(manager: ShieldManager) -> EnvironmentCheck:
+        probed.append(manager.state_dir)
+        raise RuntimeError("probe failed")
+
+    cfg = SandboxConfig()
+    with (
+        patch.object(ShieldManager, "check_environment", autospec=True, side_effect=probe),
+        pytest.raises(RuntimeError, match="probe failed"),
+    ):
+        check_environment(cfg)
+
+    (state_dir,) = probed
+    assert not state_dir.exists()
+    assert list((sandbox_live_root() / "tasks").iterdir()) == []
+
+
+def test_check_environment_leaves_a_concurrent_probe_alone() -> None:
+    """Cleanup removes its own stand-in only; a concurrent probe's, beside it in ``tasks/``, stays."""
+    others: list[Path] = []
+
+    def probe(manager: ShieldManager) -> EnvironmentCheck:
+        other = manager.state_dir.parents[2] / "_host-probe-concurrent" / "host" / "shield"
+        other.mkdir(parents=True)
+        others.append(other)
+        return EnvironmentCheck()
+
+    with patch.object(ShieldManager, "check_environment", autospec=True, side_effect=probe):
+        check_environment(SandboxConfig())
+
+    (other,) = others
+    assert other.is_dir()
+    assert list((sandbox_live_root() / "tasks").iterdir()) == [other.parents[1]]
+
+
+def test_a_probe_ending_mid_setup_never_pushes_another_onto_the_fallback() -> None:
+    """Probes overlap — terok checks from more than one worker.  One that ends just as
+    another sets up must not pull a directory from under it: that probe would land on
+    the fallback, whose uncreated state dir reads as the dnsmasq tier (#1246 again)."""
+    probed: list[Path] = []
+    overlapped: list[bool] = []
+    real_temporary_directory = tempfile.TemporaryDirectory
+
+    def probe(manager: ShieldManager) -> EnvironmentCheck:
+        assert manager.state_dir.is_dir()
+        probed.append(manager.state_dir)
+        return EnvironmentCheck()
+
+    def overlapping(*args: Any, **kwargs: Any) -> tempfile.TemporaryDirectory[str]:
+        # The outer probe is setting up: a whole second probe runs, start to
+        # finish, before the outer one makes its own directory.
+        if not overlapped:
+            overlapped.append(True)
+            check_environment(SandboxConfig())
+        return real_temporary_directory(*args, **kwargs)
+
+    with (
+        patch.object(ShieldManager, "check_environment", autospec=True, side_effect=probe),
+        patch.object(tempfile, "TemporaryDirectory", new=overlapping),
+    ):
+        check_environment(SandboxConfig())
+
+    inner, outer = probed
+    live_root = sandbox_live_root()
+    assert inner != outer
+    assert live_root in outer.parents
+    assert not inner.exists()
+    assert not outer.exists()
+    assert list((live_root / "tasks").iterdir()) == []
+
+
+def test_check_environment_falls_back_to_a_bare_temp_dir_when_sandbox_live_is_unwritable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """With sandbox-live unwritable the probe runs as it always did: a temp dir whose state
+    dir is never created, so shield fails open rather than crying AppArmor."""
+    blocker = tmp_path / "not-a-directory"
+    blocker.write_text("")
+    monkeypatch.setenv("TEROK_SANDBOX_LIVE_DIR", str(blocker / "sandbox-live"))
+    probed: list[Path] = []
+
+    def probe(manager: ShieldManager) -> EnvironmentCheck:
+        assert manager.state_dir.parent.is_dir()
+        assert not manager.state_dir.exists()
+        probed.append(manager.state_dir)
+        return EnvironmentCheck()
+
+    with patch.object(ShieldManager, "check_environment", autospec=True, side_effect=probe):
+        check_environment(SandboxConfig())
+
+    (state_dir,) = probed
+    assert blocker not in state_dir.parents
+    assert not state_dir.parent.exists()
+
+
+def test_disabled_check_environment_touches_no_disk() -> None:
+    """The kill-switch answers from config alone — no stand-in task dir is made for it."""
+    check_environment(cfg=SandboxConfig(shield_disabled=True))
+    assert not (sandbox_live_root() / "tasks").exists()

@@ -14,6 +14,7 @@ a real listener blocking.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import os
 import shlex
@@ -24,10 +25,13 @@ import subprocess
 import sys
 import textwrap
 import time
+from collections.abc import Iterator
+from dataclasses import replace
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from terok_clearance import container_mutes, set_container_mute
 
 from terok_sandbox.supervisor.children import (
     _RUNNERS,
@@ -47,7 +51,17 @@ from terok_sandbox.supervisor.children import (
     run_child,
 )
 from terok_sandbox.supervisor.sidecar import SidecarConfig, SupervisorPaths
-from tests.constants import LOCALHOST, SYSTEM_RUNTIME_ROOT
+from tests.constants import (
+    FAKE_CONTAINER_ID,
+    FAKE_CONTAINER_NAME,
+    FAKE_CONTAINER_SHORT_ID,
+    LOCALHOST,
+    SYSTEM_RUNTIME_ROOT,
+)
+
+#: How long the live-hub test waits for the hub to bind, and how often it looks.
+_HUB_BIND_TIMEOUT_S = 5.0
+_HUB_BIND_POLL_S = 0.01
 
 
 @pytest.fixture(autouse=True)
@@ -181,6 +195,9 @@ class TestSelinuxSocketContext:
                 reader_socket: Path,
                 verdict_client: object,
                 socket_context: object = None,
+                container: str | None = None,
+                aliases: object = (),
+                muted: object = (),
             ) -> None:
                 captured.update(
                     ctx=socket_context,
@@ -212,6 +229,122 @@ class TestSelinuxSocketContext:
         assert captured["reader_socket"].parent.parent.name == "events"  # type: ignore[union-attr]
         assert captured["clearance_socket"].name == "hub.sock"  # type: ignore[union-attr]
         assert captured["clearance_socket"].parent.parent.name == "clearance"  # type: ignore[union-attr]
+
+
+@pytest.fixture
+def short_runtime(tmp_path_factory: pytest.TempPathFactory) -> Path:
+    """A short runtime root, so a live hub's sockets fit AF_UNIX's 108-byte ``sun_path``.
+
+    Production keeps the runtime dir short (``/run/user/<uid>/…``).  A test's
+    own ``tmp_path`` nests deep enough to overrun the limit, so the root sits
+    directly under pytest's base temp instead, which pytest cleans up.
+    """
+    return tmp_path_factory.mktemp("hub")
+
+
+@pytest.fixture
+def identity_paths(tmp_path: Path, short_runtime: Path) -> SupervisorPaths:
+    """Paths for a container whose name, full id and short id are three different strings."""
+    return SupervisorPaths.for_container(
+        container_id=FAKE_CONTAINER_ID,
+        container_name=FAKE_CONTAINER_NAME,
+        sidecar_path=tmp_path / "state" / "sidecar" / f"{FAKE_CONTAINER_NAME}.json",
+        runtime_dir=short_runtime / "sandbox",
+    )
+
+
+def _identity_cfg(tmp_path: Path, clearance: str) -> SidecarConfig:
+    """The identity tests' sidecar: their container's name, and *clearance* as set."""
+    return replace(_socket_cfg(tmp_path, clearance=clearance), container_name=FAKE_CONTAINER_NAME)
+
+
+@contextlib.contextmanager
+def _notifier_stubbed() -> Iterator[None]:
+    """Stub the desktop notifier and its subscriber, so the clearance child drives only the hub."""
+    with (
+        patch(
+            "terok_sandbox.integrations.clearance.create_notifier",
+            new=AsyncMock(return_value=MagicMock(disconnect=AsyncMock())),
+        ),
+        patch(
+            "terok_sandbox.integrations.clearance.EventSubscriber",
+            return_value=MagicMock(start=AsyncMock(), stop=AsyncMock()),
+        ),
+    ):
+        yield
+
+
+async def _hub_bound(socket_path: Path, child: asyncio.Task[None]) -> None:
+    """Wait for the hub's varlink socket; re-raise the child's failure if it died first."""
+    deadline = time.monotonic() + _HUB_BIND_TIMEOUT_S
+    while not socket_path.exists():
+        if child.done():
+            child.result()
+            raise AssertionError("clearance child returned before binding its hub")
+        if time.monotonic() > deadline:
+            raise AssertionError(f"clearance hub never bound {socket_path}")
+        await asyncio.sleep(_HUB_BIND_POLL_S)
+
+
+class TestClearanceHubIdentity:
+    """The hub knows its container by the short id — never the name — and starts muted on ``mute``.
+
+    The failure this guards is silent: a hub keyed by anything but the short id
+    the shield reader stamps on its events never matches one, so a mute is
+    accepted, echoed back, and silences nothing.  The container's name, full id
+    and short id are three different strings here, so any mix-up shows.
+    """
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("clearance", "muted"),
+        [("prompt", ()), ("mute", (FAKE_CONTAINER_SHORT_ID,))],
+    )
+    async def test_hub_is_keyed_and_seeded_by_the_short_id(
+        self,
+        tmp_path: Path,
+        identity_paths: SupervisorPaths,
+        clearance: str,
+        muted: tuple[str, ...],
+    ) -> None:
+        """Key = short id; aliases = full id and name; the launch mute = the short id or nothing.
+
+        ``autospec`` holds the call to the real constructor's signature, so a
+        renamed or misspelt keyword fails here rather than in a live supervisor.
+        """
+        with (
+            patch("terok_sandbox.integrations.clearance.ClearanceHub", autospec=True) as hub_cls,
+            patch("terok_sandbox.integrations.clearance.VerdictClient", return_value=MagicMock()),
+            _notifier_stubbed(),
+        ):
+            await _run_clearance(_identity_cfg(tmp_path, clearance), identity_paths, _preset_stop())
+        kwargs = hub_cls.call_args.kwargs
+        assert kwargs["container"] == FAKE_CONTAINER_SHORT_ID
+        assert tuple(kwargs["aliases"]) == (FAKE_CONTAINER_ID, FAKE_CONTAINER_NAME)
+        assert tuple(kwargs["muted"]) == muted
+
+    @pytest.mark.asyncio
+    async def test_live_hub_holds_the_launch_mute_under_the_short_id(
+        self, tmp_path: Path, identity_paths: SupervisorPaths
+    ) -> None:
+        """Through the real hub: ``Mutes()`` answers the short id an orchestrator
+        compares against, and an unmute naming the container by its podman name
+        lands on that same key instead of muting a stranger."""
+        _ensure_socket_dirs("clearance", identity_paths)
+        hub_socket = identity_paths.clearance_socket
+        stop = asyncio.Event()
+        with _notifier_stubbed():
+            child = asyncio.create_task(
+                _run_clearance(_identity_cfg(tmp_path, "mute"), identity_paths, stop)
+            )
+            try:
+                await _hub_bound(hub_socket, child)
+                assert await container_mutes(hub_socket) == {FAKE_CONTAINER_SHORT_ID}
+                assert await set_container_mute(hub_socket, FAKE_CONTAINER_NAME, False) is False
+                assert await container_mutes(hub_socket) == frozenset()
+            finally:
+                stop.set()
+                await child
 
 
 class TestGateRunner:

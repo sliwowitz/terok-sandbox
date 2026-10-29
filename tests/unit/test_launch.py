@@ -60,6 +60,7 @@ from terok_sandbox.podman_args import (
     reject_managed_volumes,
     validate_passthrough_args,
 )
+from terok_sandbox.supervisor.sidecar import _LOCK_NAME as SIDECAR_LOCK_NAME
 
 
 def _make_cfg(tmp_path: Path, services_mode: str = "socket") -> SandboxConfig:
@@ -538,6 +539,26 @@ class TestWriteSidecar:
         assert payload["task_id"] == "42"
         assert payload["dossier_path"] == str(tmp_path / "dossier.json")
 
+    def test_clearance_defaults_to_prompt(self, tmp_path: Path) -> None:
+        """With no ``services.clearance`` configured, the sidecar says ``prompt`` outright."""
+        cfg = _make_cfg(tmp_path, services_mode="socket")
+        path = write_sidecar("myc", cfg=cfg, per_container=_socket_resources(tmp_path))
+        assert path is not None
+        assert json.loads(path.read_text())["clearance"] == "prompt"
+
+    @pytest.mark.parametrize("value", ["prompt", "mute", "off"])
+    def test_clearance_round_trips_to_the_supervisor(self, tmp_path: Path, value: str) -> None:
+        """``cfg.clearance`` lands beside ``ipc_mode`` and the supervisor reads it back unchanged."""
+        from terok_sandbox.supervisor.sidecar import load_sidecar
+
+        cfg = dataclasses.replace(_make_cfg(tmp_path, services_mode="socket"), clearance=value)
+        path = write_sidecar("myc", cfg=cfg, per_container=_socket_resources(tmp_path))
+        assert path is not None
+        assert json.loads(path.read_text())["clearance"] == value
+        loaded = load_sidecar(path)
+        assert loaded is not None
+        assert loaded.clearance == value
+
     def test_sidecar_not_world_readable(self, tmp_path: Path) -> None:
         """The payload can carry a live gate token → 0600, even on re-launch.
 
@@ -570,6 +591,37 @@ class TestWriteSidecar:
         result = write_sidecar("myc", cfg=cfg, per_container=_socket_resources(tmp_path))
         assert result is None
         assert victim.read_text() == "precious"
+        assert "sidecar write failed" in capsys.readouterr().err
+
+    def test_failed_relaunch_write_keeps_the_previous_sidecar(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture
+    ) -> None:
+        """Atomic replace: a relaunch whose write fails midway leaves the old sidecar whole.
+
+        A truncated sidecar would cost the next start its whole supervisor —
+        vault, gate and signer with it — so the new content is renamed into
+        place only once it is fully on disk.
+        """
+        cfg = _make_cfg(tmp_path, services_mode="socket")
+        path = write_sidecar(
+            "myc",
+            cfg=cfg,
+            per_container=_socket_resources(tmp_path),
+            gate_base_path=str(cfg.gate_base_path),
+            gate_token="terok-g-abc",
+        )
+        assert path is not None
+        before = path.read_bytes()
+        with patch(
+            "terok_sandbox.supervisor.sidecar.json.dump", side_effect=OSError("no space left")
+        ):
+            result = write_sidecar("myc", cfg=cfg, per_container=_socket_resources(tmp_path))
+        assert result is None
+        assert path.read_bytes() == before
+        # Nothing beside the sidecar but the directory's lock file — no temp file left.
+        assert sorted(entry.name for entry in path.parent.iterdir()) == sorted(
+            [SIDECAR_LOCK_NAME, "myc.json"]
+        )
         assert "sidecar write failed" in capsys.readouterr().err
 
     @pytest.mark.parametrize("name", ["", ".", "..", "a/b", "a\\b", "../escape"])
@@ -700,11 +752,17 @@ class TestRemoveContainerState:
         """Missing state is a no-op, not an error."""
         remove_container_state("ghost", cfg=_make_cfg(tmp_path))
 
-    @pytest.mark.parametrize("name", ["", ".", "..", "a/b", "a\\b"])
+    @pytest.mark.parametrize("name", ["", ".", "..", "a/b", "a\\b", "a\0b"])
     def test_invalid_name_raises(self, tmp_path: Path, name: str) -> None:
-        """A path-shaped name must never reach the unlink/rmtree."""
-        with pytest.raises(ValueError, match="invalid container name"):
+        """A path-shaped or NUL-carrying name is refused before anything is removed."""
+        with (
+            patch("terok_sandbox.launch.remove_sidecar") as remove,
+            patch("terok_sandbox.launch.shutil.rmtree") as rmtree,
+            pytest.raises(ValueError, match="unsafe container name"),
+        ):
             remove_container_state(name, cfg=_make_cfg(tmp_path))
+        remove.assert_not_called()
+        rmtree.assert_not_called()
 
 
 class TestComposeAbortsOnSidecarFailure:

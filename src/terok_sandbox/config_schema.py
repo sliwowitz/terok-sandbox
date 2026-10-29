@@ -35,13 +35,26 @@ their own sections.  The topmost layer (terok) flips back to
 from __future__ import annotations
 
 import re
+import sys
 from collections.abc import Sequence
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Literal, get_args
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from .podman_args import validate_passthrough_args
+
+_BYPASS_DURATION_RE = re.compile(r"0*[1-9]\d*[smhd]")
+"""Format check for ``shield.bypass_duration`` — mirrors terok-shield's own.
+
+One non-zero count and one unit, the grammar shield accepts when it arms
+the window: nft reads ``timeout 0s`` as *never*, so a zero count would be
+a window that never closes.  Spelled here because this foundation module
+may not import terok-shield; a test pins the two grammars together.
+"""
+
+_DEFAULT_BYPASS_DURATION = "5m"
+"""``shield.bypass_duration`` when unset — and when what is set is unusable."""
 
 _MEMORY_RE = re.compile(r"\d+(\.\d+)? ?[kKmMgGtTpP]?[iI]?[bB]?")
 """Format check for ``run.memory`` — mirrors ``docker/go-units.sizeRegex``,
@@ -135,6 +148,18 @@ ServicesMode = Literal["tcp", "socket"]
 `RawServicesSection.model_fields['mode']` so downstream modules
 (sandbox's [`SandboxConfig`][terok_sandbox.config.SandboxConfig], terok's
 ``make_sandbox_config``) can annotate without re-declaring the shape."""
+
+ClearanceMode = Literal["prompt", "mute", "off"]
+"""Type alias for the ``services.clearance`` Literal — who is asked about a refusal.
+
+Re-exported so downstream modules (sandbox's
+[`SandboxConfig`][terok_sandbox.config.SandboxConfig] and sidecar, terok's
+project schema and ``make_sandbox_config``) annotate the knob without
+re-declaring its values.  What each value does is documented on
+[`RawServicesSection`][terok_sandbox.config_schema.RawServicesSection]."""
+
+_DEFAULT_CLEARANCE: ClearanceMode = "prompt"
+"""``services.clearance`` when unset — and when what is set is not a mode."""
 
 
 # ── Owned top-level sections ──────────────────────────────────────────
@@ -249,8 +274,39 @@ class RawShieldSection(BaseModel):
         default=None,
         description="dnsmasq binary to run; found on the host PATH when unset",
     )
+    bypass_duration: str = Field(
+        default=_DEFAULT_BYPASS_DURATION,
+        description=(
+            "How long the timed bypass window stays open when no duration is named:"
+            " a non-zero count and one unit, such as ``30s``, ``5m`` or ``2h``."
+            f"  An unusable value warns and falls back to ``{_DEFAULT_BYPASS_DURATION}``"
+        ),
+    )
     down_on_task_run: bool = True
     on_task_restart: Literal["retain", "up"] = "retain"
+
+    @field_validator("bypass_duration", mode="before")
+    @classmethod
+    def _usable_bypass_duration(cls, value: Any) -> Any:
+        """Keep a duration shield can arm; otherwise warn and take the default — for this key alone.
+
+        Shield refuses an unusable duration only when a window is armed with
+        none named, so without this check a typo (``5min``) or a zero
+        (``0s``) would load cleanly and surface as an error when an operator
+        opens a window.  Checked here, it shows at load.  It costs this key
+        alone, not the section: failing validation would reset the whole
+        ``shield:`` section to its defaults — the kill-switch, ``audit`` and
+        ``dnsmasq_path`` with it — and in terok, whose global config
+        composes this section, the whole file.
+        """
+        if isinstance(value, str) and _BYPASS_DURATION_RE.fullmatch(value):
+            return value
+        print(
+            f"warning: invalid shield.bypass_duration ({value!r} is not a non-zero nft"
+            f" timeout such as '5m' or '2h') — falling back to {_DEFAULT_BYPASS_DURATION!r}",
+            file=sys.stderr,
+        )
+        return _DEFAULT_BYPASS_DURATION
 
 
 SERVICES_TCP_OPTOUT_YAML = "services: {mode: tcp}"
@@ -259,13 +315,86 @@ so setup, sickbay, tests and docs stay in sync."""
 
 
 class RawServicesSection(BaseModel):
-    """The ``services:`` section — transport mode for host ↔ container IPC."""
+    """The ``services:`` section — the per-container services and how a task reaches them.
+
+    ``mode`` picks the host ↔ container IPC transport.  ``clearance`` picks
+    who is asked about a connection the shield refused:
+
+    * ``prompt`` (the default) — the operator, live.  The container's
+      supervisor runs the clearance hub, which turns each refusal into a
+      desktop prompt (or a row in a clearance UI), and the verdict server
+      that applies an operator's allow or deny.
+    * ``mute`` — nobody, from the container's first moment.  Both children
+      still run, but the hub starts with the container muted, so not even
+      the first refusal is put to anyone.  The shield still refuses every
+      blocked connection, and an operator can unmute the running task.
+    * ``off`` — nobody, and nothing listening.  The supervisor starts neither
+      child: refusals stay enforced, no prompt is raised, and no verdict
+      path exists that could widen the firewall.  The task costs two fewer
+      processes.
+
+    Under ``mute`` and ``off`` the audit log is the only record a refusal
+    leaves: the shield records each refused target there while
+    ``shield.audit`` is on (the default), repeats folded into one line per
+    target for a short while.  With audit off, a refusal nobody is asked
+    about leaves no record at all.
+
+    A change applies at the next start of the task: create, recreate, or a
+    terok restart.  The value travels to the supervisor in the container's
+    sidecar, which every start re-reads; creation writes it, and a restart
+    rewrites that one field from current config before the start
+    ([`Sandbox.clearance_refresh`][terok_sandbox.Sandbox.clearance_refresh]).
+    A running task keeps the mode it started with, and a bare ``podman
+    start`` replays whatever the sidecar last recorded.
+    """
 
     model_config = ConfigDict(extra="forbid")
 
     mode: ServicesMode = "socket"
     """Transport for host↔container IPC.  Default ``socket`` since 0.7.3;
     set to ``tcp`` to opt out.  See ``docs/selinux.md``."""
+
+    clearance: ClearanceMode = Field(
+        default=_DEFAULT_CLEARANCE,
+        description=(
+            "Who is asked about a connection the shield refused.  ``prompt``:"
+            " the operator, live, through the clearance hub.  ``mute``: nobody"
+            " — the hub starts with the task muted; the shield still refuses"
+            " every blocked connection, and the operator can unmute the"
+            " running task.  ``off``: no clearance hub or verdict server runs"
+            " — refusals stay enforced, nobody is asked, and nothing can allow"
+            " a destination from a prompt.  Under ``mute`` and ``off`` the"
+            " audit log is a refusal's only record, kept while ``shield.audit``"
+            " is on (the default); with audit off, nothing records it."
+            "  A change applies at the next start of the task: create, recreate,"
+            " or a terok restart."
+            f"  An unknown value warns and falls back to ``{_DEFAULT_CLEARANCE}``."
+        ),
+    )
+
+    @field_validator("clearance", mode="before")
+    @classmethod
+    def _known_clearance(cls, value: Any) -> Any:
+        """Keep a known mode; otherwise warn and take ``prompt`` — for this key alone.
+
+        Rejecting the value would fail the whole ``services:`` section, and
+        its readers fall back to the section's defaults: ``mode`` would be
+        reset with it — a typo here quietly undoing an operator's ``tcp``
+        opt-out — and in terok, whose global config composes this section,
+        the whole file.  So an unknown value warns at load and reads as
+        ``prompt``: the operator is asked rather than silenced by a value
+        nobody chose.  Nothing is guessed at: ``Mute`` or a YAML boolean is
+        not taken for the mode it resembles.
+        """
+        modes = get_args(ClearanceMode)
+        if isinstance(value, str) and value in modes:
+            return value
+        print(
+            f"warning: invalid services.clearance ({value!r} is not one of"
+            f" {', '.join(modes)}) — falling back to {_DEFAULT_CLEARANCE!r}",
+            file=sys.stderr,
+        )
+        return _DEFAULT_CLEARANCE
 
 
 class RawVaultSection(BaseModel):
@@ -654,6 +783,7 @@ def gate_use_personal_ssh_default() -> bool:
 
 __all__ = [
     "SERVICES_TCP_OPTOUT_YAML",
+    "ClearanceMode",
     "RawCredentialsSection",
     "RawGateServerSection",
     "RawNetworkSection",
