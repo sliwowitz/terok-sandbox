@@ -3,7 +3,7 @@
 
 """The volatile session cache and the non-blocking desktop-keyring read.
 
-Locks the two guarantees the TUI-freeze fix introduced: an desktop-keyring
+Locks the two guarantees the TUI-freeze fix introduced: a desktop-keyring
 read can never block its caller (locked collections are skipped, wedged
 backends time out), and the cache tier degrades to a tmpfs session file
 on hosts where the kernel key facility is unusable.

@@ -67,29 +67,29 @@ class TestUpdateSection:
     def test_new_file_is_private(self, tmp_path: Path) -> None:
         """A config file created here gets 0600, in a directory created 0700."""
         path = tmp_path / "terok" / "config.yml"
-        update_section(path, "credentials", {"use_keyring": True})
+        update_section(path, "credentials", {"use_desktop_keyring": True})
         assert os.stat(path).st_mode & 0o777 == 0o600
         assert os.stat(path.parent).st_mode & 0o777 == 0o700
 
     def test_existing_file_keeps_its_mode(self, tmp_path: Path) -> None:
         """The operator's config stays theirs: the mode they set survives an update."""
         path = tmp_path / "config.yml"
-        path.write_text("credentials:\n  use_keyring: false\n")
+        path.write_text("credentials:\n  use_desktop_keyring: false\n")
         os.chmod(path, 0o644)
-        update_section(path, "credentials", {"use_keyring": True})
-        assert "use_keyring: true" in path.read_text()
+        update_section(path, "credentials", {"use_desktop_keyring": True})
+        assert "use_desktop_keyring: true" in path.read_text()
         assert os.stat(path).st_mode & 0o777 == 0o644
 
     def test_symlinked_file_stays_a_link(self, tmp_path: Path) -> None:
         """A dotfiles-managed config is updated through its link, not replaced by a copy."""
         target = tmp_path / "dotfiles" / "config.yml"
         target.parent.mkdir()
-        target.write_text("credentials:\n  use_keyring: false\n")
+        target.write_text("credentials:\n  use_desktop_keyring: false\n")
         link = tmp_path / "config.yml"
         link.symlink_to(target)
-        update_section(link, "credentials", {"use_keyring": True})
+        update_section(link, "credentials", {"use_desktop_keyring": True})
         assert link.is_symlink()
-        assert "use_keyring: true" in target.read_text()
+        assert "use_desktop_keyring: true" in target.read_text()
 
 
 class TestWriteSecretText:

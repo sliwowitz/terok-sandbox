@@ -1450,7 +1450,7 @@ def _drifted_cfg(tmp_path: Path, services_mode: ServicesMode) -> SandboxConfig:
     """Today's config for `_tcp_cfg`'s ``state_dir``, drifted in everything a sidecar records.
 
     Only ``state_dir`` is shared, because the sidecar's path derives from it.
-    The ports, the runtime and vault dirs and the keyring policy all differ,
+    The ports, the runtime and vault dirs and the desktop-keyring policy all differ,
     and for ``socket`` the transport too: a refresh that rebuilt any field
     from config, rather than keep the file's, would show.
     """
@@ -1463,7 +1463,7 @@ def _drifted_cfg(tmp_path: Path, services_mode: ServicesMode) -> SandboxConfig:
         token_broker_port=vault_port,
         ssh_signer_port=signer_port,
         gate_port=gate_port,
-        credentials_use_keyring=True,
+        credentials_use_desktop_keyring=True,
         clearance="prompt",
     )
 

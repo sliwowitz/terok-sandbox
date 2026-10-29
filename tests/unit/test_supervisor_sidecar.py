@@ -464,7 +464,7 @@ def _launch_payload(tmp_path: Path) -> dict[str, object]:
         "db_path": str(tmp_path / "vault" / "credentials.db"),
         "routes_path": str(tmp_path / "vault" / "routes.json"),
         "vault_systemd_creds_file": str(tmp_path / "vault" / "vault.passphrase.cred"),
-        "credentials_use_keyring": False,
+        "credentials_use_desktop_keyring": False,
         "credentials_passphrase_command": None,
         "scope_id": "proj",
         "project_id": "proj",

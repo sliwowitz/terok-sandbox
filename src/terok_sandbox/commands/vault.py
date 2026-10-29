@@ -469,7 +469,7 @@ def handle_vault_to_desktop_keyring(*, cfg: SandboxConfig | None = None) -> None
             " source copies were kept"
         )
 
-    # Switch the config's tier wiring atomically: flip use_desktop_keyring on,
+    # Switch the config's tier wiring in one update: flip use_desktop_keyring on,
     # drop the plaintext + helper fallbacks so the chain can't re-resolve
     # via a stale lower tier.
     _, config_path = config_file_paths()[-1]
