@@ -273,7 +273,7 @@ class _TokenDB:
         """Best-effort close on garbage collection."""
         try:
             self._conn.close()
-        except Exception:  # noqa: BLE001  # nosec B110 — best-effort __del__ close on GC
+        except Exception:  # noqa: BLE001  # nosec B110 - best-effort __del__ close on GC
             pass
 
 
@@ -1062,7 +1062,7 @@ def _build_app(
 # ---------------------------------------------------------------------------
 
 
-from dataclasses import dataclass  # noqa: E402 — keep close to use sites below
+from dataclasses import dataclass  # noqa: E402 - keep close to use sites below
 
 
 @dataclass(frozen=True)

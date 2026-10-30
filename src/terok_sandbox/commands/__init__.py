@@ -147,7 +147,7 @@ _LAZY: dict[str, str] = {
     "_run_credentials_setup_phase": "credentials:_run_credentials_setup_phase",
     "credentials_provisioned": "credentials:credentials_provisioned",
     "plan_provisioning": "credentials:plan_provisioning",
-    "provision_passphrase_tier": "credentials:provision_passphrase_tier",  # nosec: B105 — export-map import paths, never secrets
+    "provision_passphrase_tier": "credentials:provision_passphrase_tier",  # nosec: B105 - export-map import paths, never secrets
     # doctor
     "DOCTOR_COMMANDS": "doctor:DOCTOR_COMMANDS",
     "_handle_doctor": "doctor:_handle_doctor",
@@ -190,14 +190,14 @@ _LAZY: dict[str, str] = {
     "_handle_supervise_child": "supervisor:_handle_supervise_child",
     # vault
     "VAULT_COMMANDS": "vault:VAULT_COMMANDS",
-    "PassphraseChangeResult": "vault:PassphraseChangeResult",  # nosec: B105 — export-map import paths, never secrets
+    "PassphraseChangeResult": "vault:PassphraseChangeResult",  # nosec: B105 - export-map import paths, never secrets
     "SessionProvisionResult": "vault:SessionProvisionResult",
     "TierRewrite": "vault:TierRewrite",
     "_forget_config_tier_updates": "vault:_forget_config_tier_updates",
     "_handle_vault_list": "vault:_handle_vault_list",
     "_handle_vault_lock": "vault:_handle_vault_lock",
     "_handle_vault_unlock": "vault:_handle_vault_unlock",
-    "change_passphrase": "vault:change_passphrase",  # nosec: B105 — export-map import paths, never secrets
+    "change_passphrase": "vault:change_passphrase",  # nosec: B105 - export-map import paths, never secrets
     "handle_vault_seal": "vault:handle_vault_seal",
     "handle_vault_to_desktop_keyring": "vault:handle_vault_to_desktop_keyring",
     "provision_session_passphrase": "vault:provision_session_passphrase",

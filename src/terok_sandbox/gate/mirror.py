@@ -82,7 +82,7 @@ import os
 import re
 import shlex
 import shutil
-import subprocess  # nosec B404 — driving git for upstream mirror operations
+import subprocess  # nosec B404 - driving git for upstream mirror operations
 import tempfile
 import threading
 from collections.abc import Callable
@@ -283,7 +283,7 @@ def _git(
     check: bool = False,
 ) -> subprocess.CompletedProcess[str]:
     """Run a git subcommand inside *gate_dir* with captured text output."""
-    return subprocess.run(  # nosec B603 B607 — argv built from fixed verbs + repo-relative paths — binary PATH lookup is the cross-distro contract
+    return subprocess.run(  # nosec B603 B607 - argv built from fixed verbs + repo-relative paths - binary PATH lookup is the cross-distro contract
         ["git", "-C", str(gate_dir), *args],
         executable=require_host_tool("git"),
         capture_output=True,
@@ -582,7 +582,7 @@ class GitGate:
                 )
         except subprocess.TimeoutExpired:
             errors.append("Sync timed out")
-        except Exception as e:  # noqa: BLE001 — boundary: report, don't crash callers
+        except Exception as e:  # noqa: BLE001 - boundary: report; don't crash callers
             errors.append(str(e))
         return migrated, errors, notes, applied, pending, gate_only
 
@@ -1208,12 +1208,12 @@ class GitGate:
                 "--date=iso",
             ]
 
-            result = subprocess.run(  # nosec B603 — resolved host git, internally assembled argv
+            result = subprocess.run(  # nosec B603 - resolved host git, internally assembled argv
                 cmd, executable=require_host_tool("git"), capture_output=True, text=True, env=env
             )
             if result.returncode != 0 and self._default_branch:
                 cmd[5] = "HEAD"
-                result = subprocess.run(  # nosec B603 — resolved host git, internally assembled argv
+                result = subprocess.run(  # nosec B603 - resolved host git, internally assembled argv
                     cmd,
                     executable=require_host_tool("git"),
                     capture_output=True,
@@ -1344,14 +1344,14 @@ class GitGate:
         handling here.
         """
         # Ensure origin points to current bare mirror
-        subprocess.run(  # nosec B603 B607 — argv built from fixed verbs + repo-relative paths — binary PATH lookup is the cross-distro contract
+        subprocess.run(  # nosec B603 B607 - argv built from fixed verbs + repo-relative paths - binary PATH lookup is the cross-distro contract
             ["git", "-C", str(cache_dir), "remote", "set-url", "origin", gate_file_url],
             executable=require_host_tool("git"),
             check=True,
             capture_output=True,
             timeout=10,
         )
-        subprocess.run(  # nosec B603 B607 — argv built from fixed verbs + repo-relative paths — binary PATH lookup is the cross-distro contract
+        subprocess.run(  # nosec B603 B607 - argv built from fixed verbs + repo-relative paths - binary PATH lookup is the cross-distro contract
             ["git", "-C", str(cache_dir), "fetch", "--all", "--prune"],
             executable=require_host_tool("git"),
             check=True,
@@ -1362,7 +1362,7 @@ class GitGate:
         # ``clone`` creates it, and the mirror's default branch can
         # move after the cache was cloned.  Re-resolve it explicitly
         # or the branch alignment below targets a stale default.
-        subprocess.run(  # nosec B603 B607 — argv built from fixed verbs + repo-relative paths — binary PATH lookup is the cross-distro contract
+        subprocess.run(  # nosec B603 B607 - argv built from fixed verbs + repo-relative paths - binary PATH lookup is the cross-distro contract
             ["git", "-C", str(cache_dir), "remote", "set-head", "origin", "--auto"],
             executable=require_host_tool("git"),
             check=True,
@@ -1376,7 +1376,7 @@ class GitGate:
         # files under a branch that no longer exists upstream.  ``-B``
         # resets the branch to the remote tip and ``-f`` discards local
         # edits — together, the hard reset this refresh always performed.
-        subprocess.run(  # nosec B603 B607 — argv built from fixed verbs + repo-relative paths — binary PATH lookup is the cross-distro contract
+        subprocess.run(  # nosec B603 B607 - argv built from fixed verbs + repo-relative paths - binary PATH lookup is the cross-distro contract
             ["git", "-C", str(cache_dir), "checkout", "-q", "-f", "-B", branch, f"origin/{branch}"],
             executable=require_host_tool("git"),
             check=True,
@@ -1384,14 +1384,14 @@ class GitGate:
             timeout=30,
         )
         # Remove untracked/ignored files so the cache stays pristine.
-        subprocess.run(  # nosec B603 B607 — argv built from fixed verbs + repo-relative paths — binary PATH lookup is the cross-distro contract
+        subprocess.run(  # nosec B603 B607 - argv built from fixed verbs + repo-relative paths - binary PATH lookup is the cross-distro contract
             ["git", "-C", str(cache_dir), "clean", "-ffdx"],
             executable=require_host_tool("git"),
             check=True,
             capture_output=True,
             timeout=30,
         )
-        current = subprocess.run(  # nosec B603 B607 — argv built from fixed verbs + repo-relative paths — binary PATH lookup is the cross-distro contract
+        current = subprocess.run(  # nosec B603 B607 - argv built from fixed verbs + repo-relative paths - binary PATH lookup is the cross-distro contract
             ["git", "-C", str(cache_dir), "symbolic-ref", "--short", "HEAD"],
             executable=require_host_tool("git"),
             check=True,
@@ -1417,14 +1417,14 @@ class GitGate:
                 shutil.rmtree(cache_dir)
             cache_dir.parent.mkdir(parents=True, exist_ok=True)
             logger.info("Creating clone cache at %s", cache_dir)
-            subprocess.run(  # nosec B603 B607 — argv built from fixed verbs + repo-relative paths — binary PATH lookup is the cross-distro contract
+            subprocess.run(  # nosec B603 B607 - argv built from fixed verbs + repo-relative paths - binary PATH lookup is the cross-distro contract
                 ["git", "clone", gate_file_url, str(cache_dir)],
                 executable=require_host_tool("git"),
                 check=True,
                 capture_output=True,
                 timeout=300,
             )
-            subprocess.run(  # nosec B603 B607 — argv built from fixed verbs + repo-relative paths — binary PATH lookup is the cross-distro contract
+            subprocess.run(  # nosec B603 B607 - argv built from fixed verbs + repo-relative paths - binary PATH lookup is the cross-distro contract
                 ["git", "-C", str(cache_dir), "rev-parse", "--verify", "HEAD"],
                 executable=require_host_tool("git"),
                 check=True,
@@ -1528,7 +1528,7 @@ class _EphemeralSigner:
                     db_path=str(cfg.db_path),
                     passphrase=passphrase,
                 )
-            except Exception as exc:  # noqa: BLE001 — surface bind failure
+            except Exception as exc:  # noqa: BLE001 - surface bind failure
                 start_error.append(exc)
                 ready.set()
                 return
@@ -1599,11 +1599,11 @@ def _db_has_keys_for_scope(cfg: SandboxConfig, scope: str, passphrase: str) -> b
 
     try:
         db = CredentialDB(cfg.db_path, passphrase=passphrase)
-    except Exception:  # noqa: BLE001 — fail-soft to the friendly GateAuthNotConfigured
+    except Exception:  # noqa: BLE001 - fail-soft to the friendly GateAuthNotConfigured
         return False
     try:
         return bool(db.list_ssh_keys_for_scope(scope))
-    except Exception:  # noqa: BLE001 — same rationale (e.g. schema not bootstrapped)
+    except Exception:  # noqa: BLE001 - same rationale (e.g. schema not bootstrapped)
         return False
     finally:
         db.close()
@@ -1633,7 +1633,7 @@ def _query_upstream_head_ref(gate_dir: str, env: dict) -> str | None:
     Returns ``None`` when upstream is unreachable or advertises no
     symref (very old servers) — callers treat that as "cannot heal".
     """
-    result = subprocess.run(  # nosec B603 B607 — argv built from fixed verbs + repo-relative paths — binary PATH lookup is the cross-distro contract
+    result = subprocess.run(  # nosec B603 B607 - argv built from fixed verbs + repo-relative paths - binary PATH lookup is the cross-distro contract
         ["git", "-C", gate_dir, "ls-remote", "--symref", "origin", "HEAD"],
         executable=require_host_tool("git"),
         capture_output=True,
@@ -1657,7 +1657,7 @@ def _resolve_origin_default_branch(cache_dir: Path) -> str:
     just resolved, e.g. ``refs/remotes/origin/main`` → ``main``.  The
     prefix strip keeps slashed branch names (``release/1.0``) intact.
     """
-    head_ref = subprocess.run(  # nosec B603 B607 — argv built from fixed verbs + repo-relative paths — binary PATH lookup is the cross-distro contract
+    head_ref = subprocess.run(  # nosec B603 B607 - argv built from fixed verbs + repo-relative paths - binary PATH lookup is the cross-distro contract
         ["git", "-C", str(cache_dir), "symbolic-ref", "refs/remotes/origin/HEAD"],
         executable=require_host_tool("git"),
         check=True,
@@ -1727,7 +1727,7 @@ def _normalise_fresh_gate(gate_dir: Path | str) -> None:
         if not f"refs/{ref}".startswith(keep)
     ]
     if commands:
-        subprocess.run(  # nosec B603 B607 — argv built from fixed verbs + repo-relative paths — binary PATH lookup is the cross-distro contract
+        subprocess.run(  # nosec B603 B607 - argv built from fixed verbs + repo-relative paths - binary PATH lookup is the cross-distro contract
             ["git", "-C", str(gate_dir), "update-ref", "--stdin"],
             executable=require_host_tool("git"),
             input="\n".join(commands) + "\n",
@@ -1791,7 +1791,7 @@ def _clone_gate_mirror(upstream_url: str, gate_dir: Path, env: dict) -> None:
     """Clone the upstream repository as a bare mirror into *gate_dir*."""
     cmd = ["git", "clone", "--mirror", upstream_url, str(gate_dir)]
     try:
-        subprocess.run(cmd, executable=require_host_tool("git"), check=True, env=env)  # nosec B603 — argv is a fixed list controlled by this module
+        subprocess.run(cmd, executable=require_host_tool("git"), check=True, env=env)  # nosec B603 - argv is a fixed list controlled by this module
     except FileNotFoundError:
         raise SystemExit("git not found on host; please install git")
     except subprocess.CalledProcessError as e:
@@ -1807,7 +1807,7 @@ def _init_remoteless_gate(gate_dir: Path) -> None:
     """
     gate_dir.mkdir(parents=True, exist_ok=True)
     try:
-        subprocess.run(  # nosec B603 B607 — argv built from fixed verbs + repo-relative paths — binary PATH lookup is the cross-distro contract
+        subprocess.run(  # nosec B603 B607 - argv built from fixed verbs + repo-relative paths - binary PATH lookup is the cross-distro contract
             ["git", "init", "--bare", str(gate_dir)],
             executable=require_host_tool("git"),
             check=True,
@@ -1830,7 +1830,7 @@ def _get_upstream_head(upstream_url: str, branch: str, env: dict) -> dict | None
     """
     try:
         cmd = ["git", "ls-remote", upstream_url, f"refs/heads/{branch}"]
-        result = subprocess.run(  # nosec B603 — resolved host git, internally assembled argv
+        result = subprocess.run(  # nosec B603 - resolved host git, internally assembled argv
             cmd,
             executable=require_host_tool("git"),
             capture_output=True,
@@ -1875,7 +1875,7 @@ def _get_gate_branch_head(gate_dir: Path, branch: str, env: dict) -> str | None:
             return None
 
         cmd = ["git", "-C", str(gate_dir), "rev-parse", f"refs/heads/{branch}"]
-        result = subprocess.run(  # nosec B603 — resolved host git, internally assembled argv
+        result = subprocess.run(  # nosec B603 - resolved host git, internally assembled argv
             cmd, executable=require_host_tool("git"), capture_output=True, text=True, env=env
         )
 
@@ -1909,7 +1909,7 @@ def _count_commits_range(
             "--count",
             f"{from_ref}..{to_ref}",
         ]
-        result = subprocess.run(  # nosec B603 — resolved host git, internally assembled argv
+        result = subprocess.run(  # nosec B603 - resolved host git, internally assembled argv
             cmd, executable=require_host_tool("git"), capture_output=True, text=True, env=env
         )
         if result.returncode == 0:

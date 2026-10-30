@@ -28,7 +28,7 @@ change itself, and can diff it against the host afterwards.
 from __future__ import annotations
 
 import shlex
-import subprocess  # nosec B404 — runs the bundled, audited installer via sudo
+import subprocess  # nosec B404 - runs the bundled, audited installer via sudo
 import sys
 from contextlib import nullcontext
 from dataclasses import dataclass

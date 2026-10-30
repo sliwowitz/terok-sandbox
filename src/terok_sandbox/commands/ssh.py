@@ -439,7 +439,7 @@ def _handle_ssh_link(
     try:
         # Existence check up front so a stale id surfaces here rather
         # than as a raw foreign-key error from assign_ssh_key.
-        key_exists = db._conn.execute(  # noqa: SLF001 — one-shot read
+        key_exists = db._conn.execute(  # noqa: SLF001 - one-shot read
             "SELECT 1 FROM ssh_keys WHERE id = ?", (key_id,)
         ).fetchone()
         if not key_exists:

@@ -26,7 +26,7 @@ supervisor starts neither, ``mute`` and the hub starts with the
 container muted.
 """
 
-from terok_clearance import (  # noqa: F401 — re-exported public API
+from terok_clearance import (  # noqa: F401 - re-exported public API
     ALL_NOTIFY_CATEGORIES,
     NOTIFY_BLOCKED,
     NOTIFY_VERDICT,

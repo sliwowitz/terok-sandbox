@@ -21,7 +21,7 @@ import os
 import re
 import select
 import socket
-import subprocess  # nosec B404 — podman CLI orchestration
+import subprocess  # nosec B404 - podman CLI orchestration
 import sys
 import threading
 import time
@@ -100,7 +100,7 @@ def unshielded_network_args(gate_port: int | None) -> list[str]:
 def _detect_rootless_network_mode() -> str:
     """Return ``"pasta"`` or ``"slirp4netns"``; falls back to the latter."""
     try:
-        out = subprocess.run(  # nosec B603 B607 — argv built from fixed verbs + caller-controlled scope/container names — binary PATH lookup is the cross-distro contract
+        out = subprocess.run(  # nosec B603 B607 - argv built from fixed verbs + caller-controlled scope/container names - binary PATH lookup is the cross-distro contract
             ["podman", "info", "-f", "{{.Host.RootlessNetworkCmd}}"],
             executable=require_host_tool("podman"),
             capture_output=True,
@@ -176,7 +176,7 @@ def default_seccomp_profile(*, runtime: str | None = None) -> Path:
         "{{.Host.OCIRuntime.Name}}\n{{.Host.Security.SECCOMPProfilePath}}",
     ]
     try:
-        result = subprocess.run(  # nosec B603 — managed argv, executable resolved from trusted host paths
+        result = subprocess.run(  # nosec B603 - managed argv, executable resolved from trusted host paths
             cmd,
             executable=require_host_tool("podman"),
             capture_output=True,
@@ -265,7 +265,7 @@ class PodmanContainer:
     def state(self) -> str | None:
         """Lifecycle state (``"running"``, ``"exited"``, ...) or ``None``."""
         try:
-            out = subprocess.check_output(  # nosec B603 B607 — argv built from fixed verbs + caller-controlled scope/container names — binary PATH lookup is the cross-distro contract
+            out = subprocess.check_output(  # nosec B603 B607 - argv built from fixed verbs + caller-controlled scope/container names - binary PATH lookup is the cross-distro contract
                 ["podman", "inspect", "-f", "{{.State.Status}}", self.name],
                 executable=require_host_tool("podman"),
                 stderr=subprocess.DEVNULL,
@@ -280,7 +280,7 @@ class PodmanContainer:
     def running(self) -> bool:
         """Shortcut: ``state == "running"``."""
         try:
-            out = subprocess.check_output(  # nosec B603 B607 — argv built from fixed verbs + caller-controlled scope/container names — binary PATH lookup is the cross-distro contract
+            out = subprocess.check_output(  # nosec B603 B607 - argv built from fixed verbs + caller-controlled scope/container names - binary PATH lookup is the cross-distro contract
                 ["podman", "inspect", "-f", "{{.State.Running}}", self.name],
                 executable=require_host_tool("podman"),
                 stderr=subprocess.DEVNULL,
@@ -299,7 +299,7 @@ class PodmanContainer:
         RFC 3339 output (whose sub-second precision varies by version).
         """
         try:
-            out = subprocess.check_output(  # nosec B603 B607 — argv built from fixed verbs + caller-controlled scope/container names — binary PATH lookup is the cross-distro contract
+            out = subprocess.check_output(  # nosec B603 B607 - argv built from fixed verbs + caller-controlled scope/container names - binary PATH lookup is the cross-distro contract
                 ["podman", "inspect", "-f", "{{.State.StartedAt.Unix}}", self.name],
                 executable=require_host_tool("podman"),
                 stderr=subprocess.DEVNULL,
@@ -317,7 +317,7 @@ class PodmanContainer:
     def image(self) -> Image | None:
         """Handle to the image this container was created from, or ``None``."""
         try:
-            out = subprocess.check_output(  # nosec B603 B607 — argv built from fixed verbs + caller-controlled scope/container names — binary PATH lookup is the cross-distro contract
+            out = subprocess.check_output(  # nosec B603 B607 - argv built from fixed verbs + caller-controlled scope/container names - binary PATH lookup is the cross-distro contract
                 ["podman", "inspect", "-f", "{{.Image}}", self.name],
                 executable=require_host_tool("podman"),
                 stderr=subprocess.DEVNULL,
@@ -336,7 +336,7 @@ class PodmanContainer:
         for large containers while overlay diffs are computed.
         """
         try:
-            out = subprocess.check_output(  # nosec B603 B607 — argv built from fixed verbs + caller-controlled scope/container names — binary PATH lookup is the cross-distro contract
+            out = subprocess.check_output(  # nosec B603 B607 - argv built from fixed verbs + caller-controlled scope/container names - binary PATH lookup is the cross-distro contract
                 [
                     "podman",
                     "container",
@@ -364,7 +364,7 @@ class PodmanContainer:
     def id(self) -> str | None:
         """Full container ID (podman ``.Id``), or ``None`` when the container is absent."""
         try:
-            out = subprocess.check_output(  # nosec B603 B607 — argv built from fixed verbs + caller-controlled scope/container names — binary PATH lookup is the cross-distro contract
+            out = subprocess.check_output(  # nosec B603 B607 - argv built from fixed verbs + caller-controlled scope/container names - binary PATH lookup is the cross-distro contract
                 ["podman", "inspect", "-f", "{{.Id}}", self.name],
                 executable=require_host_tool("podman"),
                 stderr=subprocess.DEVNULL,
@@ -387,7 +387,7 @@ class PodmanContainer:
         the other handle properties follow).
         """
         try:
-            out = subprocess.check_output(  # nosec B603 B607 — argv built from fixed verbs + caller-controlled scope/container names — binary PATH lookup is the cross-distro contract
+            out = subprocess.check_output(  # nosec B603 B607 - argv built from fixed verbs + caller-controlled scope/container names - binary PATH lookup is the cross-distro contract
                 ["podman", "inspect", "-f", "{{json .Mounts}}", self.name],
                 executable=require_host_tool("podman"),
                 stderr=subprocess.DEVNULL,
@@ -413,7 +413,7 @@ class PodmanContainer:
         properties follow.
         """
         try:
-            out = subprocess.check_output(  # nosec B603 B607 — argv built from fixed verbs + caller-controlled scope/container names — binary PATH lookup is the cross-distro contract
+            out = subprocess.check_output(  # nosec B603 B607 - argv built from fixed verbs + caller-controlled scope/container names - binary PATH lookup is the cross-distro contract
                 ["podman", "inspect", "-f", "{{json .Config.Env}}", self.name],
                 executable=require_host_tool("podman"),
                 stderr=subprocess.DEVNULL,
@@ -443,7 +443,7 @@ class PodmanContainer:
         """
         log_debug(f"PodmanContainer.start({self.name})")
         try:
-            proc = subprocess.run(  # nosec B603 B607 — argv built from fixed verbs + caller-controlled scope/container names — binary PATH lookup is the cross-distro contract
+            proc = subprocess.run(  # nosec B603 B607 - argv built from fixed verbs + caller-controlled scope/container names - binary PATH lookup is the cross-distro contract
                 ["podman", "start", self.name],
                 executable=require_host_tool("podman"),
                 check=False,
@@ -482,7 +482,7 @@ class PodmanContainer:
         """
         log_debug(f"PodmanContainer.stop({self.name}, timeout={timeout})")
         try:
-            proc = subprocess.Popen(  # nosec B603 B607 — argv built from fixed verbs + caller-controlled scope/container names — binary PATH lookup is the cross-distro contract
+            proc = subprocess.Popen(  # nosec B603 B607 - argv built from fixed verbs + caller-controlled scope/container names - binary PATH lookup is the cross-distro contract
                 ["podman", "stop", "--time", str(timeout), self.name],
                 executable=require_host_tool("podman"),
                 stdout=subprocess.DEVNULL,
@@ -560,7 +560,7 @@ class PodmanContainer:
         a failed probe as a stopped container.
         """
         try:
-            out = subprocess.check_output(  # nosec B603 B607 — argv built from fixed verbs + caller-controlled scope/container names — binary PATH lookup is the cross-distro contract
+            out = subprocess.check_output(  # nosec B603 B607 - argv built from fixed verbs + caller-controlled scope/container names - binary PATH lookup is the cross-distro contract
                 ["podman", "inspect", "-f", "{{.State.Status}}", self.name],
                 executable=require_host_tool("podman"),
                 stderr=subprocess.DEVNULL,
@@ -587,7 +587,7 @@ class PodmanContainer:
         ``podman wait`` failures or non-numeric output.
         """
         try:
-            proc = subprocess.run(  # nosec B603 B607 — argv built from fixed verbs + caller-controlled scope/container names — binary PATH lookup is the cross-distro contract
+            proc = subprocess.run(  # nosec B603 B607 - argv built from fixed verbs + caller-controlled scope/container names - binary PATH lookup is the cross-distro contract
                 ["podman", "wait", self.name],
                 executable=require_host_tool("podman"),
                 check=False,
@@ -618,7 +618,7 @@ class PodmanContainer:
         container contents at *dest* are preserved and augmented.
         """
         src_arg = f"{src}/." if src.is_dir() else str(src)
-        subprocess.run(  # nosec B603 B607 — argv built from fixed verbs + caller-controlled scope/container names — binary PATH lookup is the cross-distro contract
+        subprocess.run(  # nosec B603 B607 - argv built from fixed verbs + caller-controlled scope/container names - binary PATH lookup is the cross-distro contract
             ["podman", "cp", src_arg, f"{self.name}:{dest}"],
             executable=require_host_tool("podman"),
             check=True,
@@ -701,7 +701,7 @@ class PodmanImage:
     def id(self) -> str | None:
         """Resolved image ID, or ``None`` when the image is absent."""
         try:
-            out = subprocess.check_output(  # nosec B603 B607 — argv built from fixed verbs + caller-controlled scope/container names — binary PATH lookup is the cross-distro contract
+            out = subprocess.check_output(  # nosec B603 B607 - argv built from fixed verbs + caller-controlled scope/container names - binary PATH lookup is the cross-distro contract
                 ["podman", "inspect", "-f", "{{.Id}}", self.ref],
                 executable=require_host_tool("podman"),
                 stderr=subprocess.DEVNULL,
@@ -735,7 +735,7 @@ class PodmanImage:
     def exists(self) -> bool:
         """Return ``True`` if the image is present locally."""
         try:
-            result = subprocess.run(  # nosec B603 B607 — argv built from fixed verbs + caller-controlled scope/container names — binary PATH lookup is the cross-distro contract
+            result = subprocess.run(  # nosec B603 B607 - argv built from fixed verbs + caller-controlled scope/container names - binary PATH lookup is the cross-distro contract
                 ["podman", "image", "exists", self.ref],
                 executable=require_host_tool("podman"),
                 capture_output=True,
@@ -748,7 +748,7 @@ class PodmanImage:
     def labels(self) -> dict[str, str]:
         """Return the OCI ``Config.Labels`` as a flat string dict."""
         try:
-            result = subprocess.run(  # nosec B603 B607 — argv built from fixed verbs + caller-controlled scope/container names — binary PATH lookup is the cross-distro contract
+            result = subprocess.run(  # nosec B603 B607 - argv built from fixed verbs + caller-controlled scope/container names - binary PATH lookup is the cross-distro contract
                 ["podman", "inspect", "--format", "{{json .Config.Labels}}", self.ref],
                 executable=require_host_tool("podman"),
                 capture_output=True,
@@ -772,7 +772,7 @@ class PodmanImage:
     def history(self) -> list[str]:
         """Return the ``CreatedBy`` string of each layer, top to bottom."""
         try:
-            result = subprocess.run(  # nosec B603 B607 — argv built from fixed verbs + caller-controlled scope/container names — binary PATH lookup is the cross-distro contract
+            result = subprocess.run(  # nosec B603 B607 - argv built from fixed verbs + caller-controlled scope/container names - binary PATH lookup is the cross-distro contract
                 [
                     "podman",
                     "image",
@@ -801,7 +801,7 @@ class PodmanImage:
         reaping live state).
         """
         try:
-            result = subprocess.run(  # nosec B603 B607 — argv built from fixed verbs + caller-controlled scope/container names — binary PATH lookup is the cross-distro contract
+            result = subprocess.run(  # nosec B603 B607 - argv built from fixed verbs + caller-controlled scope/container names - binary PATH lookup is the cross-distro contract
                 ["podman", "image", "rm", self.ref],
                 executable=require_host_tool("podman"),
                 capture_output=True,
@@ -831,7 +831,7 @@ class PodmanLogStream:
         if tail is not None:
             cmd.extend(["--tail", str(tail)])
         cmd.append(container_name)
-        self._proc = subprocess.Popen(  # noqa: S603 — cmd built above  # nosec B603 — argv is a fixed list controlled by this module
+        self._proc = subprocess.Popen(  # noqa: S603 - cmd built above  # nosec B603 - argv is a fixed list controlled by this module
             cmd,
             executable=require_host_tool("podman"),
             stdout=subprocess.PIPE,
@@ -946,7 +946,7 @@ class PodmanEventStream:
 
     def __init__(self, prefix: str) -> None:
         self._prefix = prefix
-        self._proc = subprocess.Popen(  # noqa: S603  # nosec B603 B607 — fixed argv; podman PATH lookup is the cross-distro contract
+        self._proc = subprocess.Popen(  # noqa: S603  # nosec B603 B607 - fixed argv; podman PATH lookup is the cross-distro contract
             ["podman", "events", "--filter", "type=container", "--format", "{{json .}}"],
             executable=require_host_tool("podman"),
             stdout=subprocess.PIPE,
@@ -1057,7 +1057,7 @@ class PodmanRuntime:
         are lazy (fresh inspect on property access).
         """
         try:
-            out = subprocess.check_output(  # nosec B603 B607 — argv built from fixed verbs + caller-controlled scope/container names — binary PATH lookup is the cross-distro contract
+            out = subprocess.check_output(  # nosec B603 B607 - argv built from fixed verbs + caller-controlled scope/container names - binary PATH lookup is the cross-distro contract
                 [
                     "podman",
                     "ps",
@@ -1090,7 +1090,7 @@ class PodmanRuntime:
         if dangling_only:
             cmd[2:2] = ["--filter", "dangling=true"]
         try:
-            result = subprocess.run(  # nosec B603 — argv is a fixed list controlled by this module
+            result = subprocess.run(  # nosec B603 - argv is a fixed list controlled by this module
                 cmd,
                 executable=require_host_tool("podman"),
                 capture_output=True,
@@ -1141,7 +1141,7 @@ class PodmanRuntime:
             f"PodmanRuntime.exec({container.name}, cmd[0]={cmd[0]!r}, "
             f"argc={len(cmd)}, timeout={timeout})"
         )
-        proc = subprocess.run(  # nosec B603 B607 — argv built from fixed verbs + caller-controlled scope/container names — binary PATH lookup is the cross-distro contract
+        proc = subprocess.run(  # nosec B603 B607 - argv built from fixed verbs + caller-controlled scope/container names - binary PATH lookup is the cross-distro contract
             ["podman", "exec", container.name, *cmd],
             executable=require_host_tool("podman"),
             capture_output=True,
@@ -1189,7 +1189,7 @@ class PodmanRuntime:
             argv += ["-e", f"{k}={v}"]
         argv += [container.name, *cmd]
 
-        proc = subprocess.Popen(  # noqa: S603 — argv built above  # nosec B603 — argv is a fixed list controlled by this module
+        proc = subprocess.Popen(  # noqa: S603 - argv built above  # nosec B603 - argv is a fixed list controlled by this module
             argv,
             executable=require_host_tool("podman"),
             stdin=subprocess.PIPE,
@@ -1228,7 +1228,7 @@ class PodmanRuntime:
             name = container.name
             try:
                 log_debug(f"force_remove: podman rm -f {name} (start)")
-                proc = subprocess.run(  # nosec B603 B607 — argv built from fixed verbs + caller-controlled scope/container names — binary PATH lookup is the cross-distro contract
+                proc = subprocess.run(  # nosec B603 B607 - argv built from fixed verbs + caller-controlled scope/container names - binary PATH lookup is the cross-distro contract
                     ["podman", "rm", "-f", name],
                     executable=require_host_tool("podman"),
                     check=False,
@@ -1294,7 +1294,7 @@ class PodmanRuntime:
             for as long as the runtime is busy (terok#1134).
         """
         try:
-            out = subprocess.check_output(  # nosec B603 B607 — argv built from fixed verbs + caller-controlled scope/container names — binary PATH lookup is the cross-distro contract
+            out = subprocess.check_output(  # nosec B603 B607 - argv built from fixed verbs + caller-controlled scope/container names - binary PATH lookup is the cross-distro contract
                 [
                     "podman",
                     "ps",
@@ -1365,7 +1365,7 @@ class PodmanRuntime:
         part of the [`ContainerRuntime`][terok_sandbox.ContainerRuntime] protocol.
         """
         try:
-            out = subprocess.check_output(  # nosec B603 B607 — argv built from fixed verbs + caller-controlled scope/container names — binary PATH lookup is the cross-distro contract
+            out = subprocess.check_output(  # nosec B603 B607 - argv built from fixed verbs + caller-controlled scope/container names - binary PATH lookup is the cross-distro contract
                 [
                     "podman",
                     "ps",
@@ -1571,7 +1571,7 @@ def _stream_initial_logs(
     def _read_loop() -> None:
         proc: subprocess.Popen | None = None
         try:
-            proc = subprocess.Popen(  # nosec B603 B607 — argv built from fixed verbs + caller-controlled scope/container names — binary PATH lookup is the cross-distro contract
+            proc = subprocess.Popen(  # nosec B603 B607 - argv built from fixed verbs + caller-controlled scope/container names - binary PATH lookup is the cross-distro contract
                 ["podman", "logs", "-f", container_name],
                 executable=require_host_tool("podman"),
                 stdout=subprocess.PIPE,

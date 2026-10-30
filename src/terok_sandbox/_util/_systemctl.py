@@ -32,7 +32,7 @@ the caller cares about the output, not the success/failure outcome.
 
 from __future__ import annotations
 
-import subprocess  # nosec B404 — systemctl is a trusted host binary
+import subprocess  # nosec B404 - systemctl is a trusted host binary
 
 from terok_util import find_host_tool
 
@@ -94,7 +94,7 @@ def query(verb: str, *args: str, timeout: float = 5.0) -> subprocess.CompletedPr
         return subprocess.CompletedProcess(args=[], returncode=127, stdout="", stderr="")
     argv = [executable, "--user", verb, *args]
     try:
-        return subprocess.run(  # nosec B603 — argv is a fixed prefix + caller-controlled verb/args
+        return subprocess.run(  # nosec B603 - argv is a fixed prefix + caller-controlled verb/args
             argv,
             capture_output=True,
             text=True,

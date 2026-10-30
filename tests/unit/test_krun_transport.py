@@ -37,7 +37,7 @@ class _StubContainer:
 def _make_transport(*, port: int = 12345, host: str = "127.0.0.1") -> TcpSSHTransport:
     """Build a transport whose resolver returns a fixed endpoint."""
     return TcpSSHTransport(
-        identity_file=Path("/tmp/host.key"),  # noqa: S108 — test-only path
+        identity_file=Path("/tmp/host.key"),  # noqa: S108 - test-only path
         endpoint_resolver=lambda _ctr: TcpEndpoint(port=port, host=host),
     )
 

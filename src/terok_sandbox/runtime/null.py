@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import socket
 from collections.abc import Callable, Mapping
-from pathlib import Path  # noqa: TC003 — used in a Protocol argument type
+from pathlib import Path  # noqa: TC003 - used in a Protocol argument type
 from typing import BinaryIO
 
 from .protocol import (

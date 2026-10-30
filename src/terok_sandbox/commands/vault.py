@@ -475,14 +475,14 @@ def handle_vault_to_desktop_keyring(*, cfg: SandboxConfig | None = None) -> None
     _, config_path = config_file_paths()[-1]
     updates = {
         "use_desktop_keyring": True,
-        "passphrase": None,  # nosec: B105 — removing a legacy config key
-        "passphrase_command": None,  # nosec: B105 — removing the helper wiring
+        "passphrase": None,  # nosec: B105 - removing a legacy config key
+        "passphrase_command": None,  # nosec: B105 - removing the helper wiring
     }
     try:
         _yaml_update_section(config_path, "credentials", updates)
         if not _config.credentials_use_desktop_keyring():
             raise RuntimeError("desktop keyring is still disabled")
-    except Exception as exc:  # noqa: BLE001 — config errors must not expose secret YAML values
+    except Exception as exc:  # noqa: BLE001 - config errors must not expose secret YAML values
         raise SystemExit(
             "desktop keyring copy verified, but could not enable it in configuration"
             f" ({type(exc).__name__}); temporary and sealed copies were not removed."
@@ -746,7 +746,7 @@ def change_passphrase(
             " there first (or remove passphrase_command from config.yml), then"
             " re-run the change."
         )
-    if new == "":  # nosec: B105 — rejecting the empty sentinel, not comparing a secret
+    if new == "":  # nosec: B105 - rejecting the empty sentinel, not comparing a secret
         raise ValueError("refusing an empty passphrase (SQLCipher reads it as no encryption)")
     if cfg.db_path.exists() and is_plaintext_sqlite(cfg.db_path):
         raise RuntimeError(
@@ -886,7 +886,7 @@ def _rewrite_tier(cfg: SandboxConfig, tier: PassphraseTier, passphrase: str) -> 
                 ),
             )
         return TierRewrite(tier, ok=False, detail="tier cannot be rewritten programmatically")
-    except Exception as exc:  # noqa: BLE001 — the DB is already rekeyed; report every tier
+    except Exception as exc:  # noqa: BLE001 - the DB is already rekeyed; report every tier
         return TierRewrite(tier, ok=False, detail=f"tier rewrite failed ({type(exc).__name__})")
 
 
@@ -1172,7 +1172,7 @@ def _handle_vault_list(
 
     try:
         db = cfg.open_credential_db(prompt_on_tty=True)
-    except (Exception, SystemExit) as exc:  # noqa: BLE001 — bubble out as a friendly message
+    except (Exception, SystemExit) as exc:  # noqa: BLE001 - bubble out as a friendly message
         print(f"vault unreachable: {type(exc).__name__}: {exc}", file=sys.stderr)
         print(
             "hint: run `terok-sandbox vault unlock` if the passphrase isn't provisioned.",

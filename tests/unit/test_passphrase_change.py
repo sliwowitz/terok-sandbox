@@ -685,7 +685,7 @@ class TestChangeOrExit:
         cfg = _cfg(tmp_path)
 
         def _locked(*_a: object, **_kw: object) -> None:
-            raise Exception("database is locked")  # noqa: TRY002 — sqlite's own shape
+            raise Exception("database is locked")  # noqa: TRY002 - sqlite's own shape
 
         monkeypatch.setattr(vault_cmd, "change_passphrase", _locked)
 

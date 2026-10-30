@@ -66,7 +66,7 @@ def _make_gate(scope: str = "proj", **overrides: object) -> GitGate:
     """Construct a ``GitGate`` with an SSH upstream and the given overrides."""
     kwargs: dict[str, object] = {
         "scope": scope,
-        "gate_path": Path("/tmp/test-gate.git"),  # noqa: S108 — never written
+        "gate_path": Path("/tmp/test-gate.git"),  # noqa: S108 - never written
         "upstream_url": "git@github.com:example/repo.git",
     }
     kwargs.update(overrides)

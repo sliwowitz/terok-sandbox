@@ -776,7 +776,7 @@ def gate_use_personal_ssh_default() -> bool:
         return False
     try:
         section = RawSSHSection.model_validate(raw)
-    except Exception:  # noqa: BLE001 — malformed config falls back to safe default
+    except Exception:  # noqa: BLE001 - malformed config falls back to safe default
         return False
     return bool(section.use_personal)
 

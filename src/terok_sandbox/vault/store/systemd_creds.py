@@ -63,7 +63,7 @@ import json
 import os
 import re
 import socket
-import subprocess  # nosec: B404 — sealed credential lifecycle requires the systemd-creds CLI
+import subprocess  # nosec: B404 - sealed credential lifecycle requires the systemd-creds CLI
 import tempfile
 from pathlib import Path
 from typing import Literal
@@ -170,7 +170,7 @@ def seal(passphrase: str, credential_path: Path, *, key_mode: KeyMode = "auto") 
     parent.mkdir(parents=True, exist_ok=True, mode=0o700)
 
     try:
-        result = subprocess.run(  # nosec: B603 — fixed argv shape, absolute path, captured output
+        result = subprocess.run(  # nosec: B603 - fixed argv shape, absolute path, captured output
             [
                 exe,
                 "encrypt",
@@ -360,7 +360,7 @@ def unseal(credential_path: Path) -> str | None:
     if exe is None:
         return None
     try:
-        result = subprocess.run(  # nosec: B603 — fixed argv, absolute path, internally-owned target
+        result = subprocess.run(  # nosec: B603 - fixed argv, absolute path, internally-owned target
             [
                 exe,
                 "decrypt",
@@ -436,7 +436,7 @@ def has_tpm2() -> bool:
     if not is_available():
         return False
     try:
-        result = subprocess.run(  # nosec: B603 — absolute path, fixed argv, no user input
+        result = subprocess.run(  # nosec: B603 - absolute path, fixed argv, no user input
             [_require_exe(), "has-tpm2"],
             capture_output=True,
             timeout=_PROBE_TIMEOUT,
@@ -474,7 +474,7 @@ def _version_for_executable(exe: str | None) -> int | None:
     if exe is None:
         return None
     try:
-        result = subprocess.run(  # nosec: B603 — absolute path, fixed argv, no user input
+        result = subprocess.run(  # nosec: B603 - absolute path, fixed argv, no user input
             [exe, "--version"],
             capture_output=True,
             text=True,

@@ -36,7 +36,7 @@ from __future__ import annotations
 import contextlib
 import json
 import os
-import subprocess  # nosec B404 — re-invokes our own installed OCI hook
+import subprocess  # nosec B404 - re-invokes our own installed OCI hook
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -282,7 +282,7 @@ def respawn_supervisor(
     if container_pid is not None:
         state["pid"] = container_pid
     with contextlib.suppress(OSError, subprocess.SubprocessError):
-        subprocess.run(  # nosec B603 — fixed argv, our own installed hook script
+        subprocess.run(  # nosec B603 - fixed argv, our own installed hook script
             argv,
             input=json.dumps(state),
             text=True,

@@ -74,16 +74,16 @@ _LAZY: dict[str, str] = {
     "yaml_update_section": "_yaml:update_section",
     # CLI registry + vault passphrase workflows
     "CommandTree": "commands:CommandTree",
-    "PassphraseChangeResult": "commands:PassphraseChangeResult",  # nosec: B105 — export-map import paths, never secrets
+    "PassphraseChangeResult": "commands:PassphraseChangeResult",  # nosec: B105 - export-map import paths, never secrets
     "ProvisioningPlan": "commands:ProvisioningPlan",
     "TierProvisionResult": "commands:TierProvisionResult",
     "TierRewrite": "commands:TierRewrite",
-    "change_passphrase": "commands:change_passphrase",  # nosec: B105 — export-map import paths, never secrets
+    "change_passphrase": "commands:change_passphrase",  # nosec: B105 - export-map import paths, never secrets
     "credentials_provisioned": "commands:credentials_provisioned",
     "handle_vault_seal": "commands:handle_vault_seal",
     "handle_vault_to_desktop_keyring": "commands:handle_vault_to_desktop_keyring",
     "plan_provisioning": "commands:plan_provisioning",
-    "provision_passphrase_tier": "commands:provision_passphrase_tier",  # nosec: B105 — export-map import paths, never secrets
+    "provision_passphrase_tier": "commands:provision_passphrase_tier",  # nosec: B105 - export-map import paths, never secrets
     "provision_session_passphrase": "commands:provision_session_passphrase",
     "purge_passphrase_tiers": "commands:purge_passphrase_tiers",
     "sandbox_uninstall": "commands:_handle_sandbox_uninstall",

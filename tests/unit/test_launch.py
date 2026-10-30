@@ -1185,7 +1185,7 @@ class TestEdgeCases:
         real_init = ShieldManager.__init__
 
         def capturing_init(
-            self,  # noqa: ANN001 — bound instance
+            self,  # noqa: ANN001 - bound instance
             task_dir: Path,
             c: SandboxConfig | None = None,
             **kwargs: object,

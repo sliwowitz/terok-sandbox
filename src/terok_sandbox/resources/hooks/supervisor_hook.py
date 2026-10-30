@@ -54,7 +54,7 @@ from pathlib import Path
 
 # Sibling-module import — same convention shield's hooks use.
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-import _supervisor_state  # noqa: E402 — sys.path bootstrap precedes import
+import _supervisor_state  # noqa: E402 - sys.path bootstrap precedes import
 
 #: OCI annotation key carrying the absolute sidecar JSON path.  The
 #: hook descriptor's ``when`` matches on the same key; if it's absent
@@ -134,7 +134,7 @@ def main() -> None:
 
     try:
         _dispatch(stage, container_id, sidecar_path, host_uid, container_pid)
-    except Exception as exc:  # noqa: BLE001 — soft-fail every path
+    except Exception as exc:  # noqa: BLE001 - soft-fail every path
         _supervisor_state.log(f"terok-sandbox supervisor hook: {exc}")
 
 

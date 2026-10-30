@@ -27,7 +27,7 @@ import os
 import re
 import socket
 import stat
-import subprocess  # nosec B404 — spawning git http-backend (CGI)
+import subprocess  # nosec B404 - spawning git http-backend (CGI)
 import threading
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
@@ -206,7 +206,7 @@ def git_http_backend() -> Path | None:
     reports an unknown subcommand when the CGI is absent.
     """
     try:
-        exec_path = subprocess.run(  # nosec B603 B607 — fixed argv, PATH lookup is the cross-distro contract
+        exec_path = subprocess.run(  # nosec B603 B607 - fixed argv, PATH lookup is the cross-distro contract
             ["git", "--exec-path"],
             executable=require_host_tool("git"),
             capture_output=True,
@@ -351,7 +351,7 @@ def _make_handler_class(
             )
 
             try:
-                proc = subprocess.Popen(  # nosec B603 B607 — argv built from fixed verbs + repo-relative paths — binary PATH lookup is the cross-distro contract
+                proc = subprocess.Popen(  # nosec B603 B607 - argv built from fixed verbs + repo-relative paths - binary PATH lookup is the cross-distro contract
                     ["git", "http-backend"],
                     executable=require_host_tool("git"),
                     stdin=subprocess.PIPE,

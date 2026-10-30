@@ -400,7 +400,7 @@ class PortRegistry:
                 )
         if created:
             try:
-                os.chmod(self.registry_dir, 0o1777)  # nosec B103 — shared multi-user dir
+                os.chmod(self.registry_dir, 0o1777)  # nosec B103 - shared multi-user dir
             except PermissionError:
                 pass  # pre-provisioned by admin — already writable
         self._dir_ensured = True
