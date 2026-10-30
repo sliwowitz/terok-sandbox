@@ -257,7 +257,7 @@ def run_supervisor_install_phase(*, root: Path | None = None) -> bool:
     with _stage_line("Supervisor hooks") as s:
         try:
             install_supervisor_hooks(root=root)
-        except Exception as exc:  # noqa: BLE001 — aggregator uniformity
+        except Exception as exc:  # noqa: BLE001 - aggregator uniformity
             s.fail(str(exc))
             return False
         s.ok("installed (OCI hook + wrapper)")
@@ -292,7 +292,7 @@ def run_shield_install_phase() -> bool:
     with _stage_line("Shield hooks") as s:
         try:
             ShieldHooks.install()
-        except Exception as exc:  # noqa: BLE001 — aggregator reports all failures uniformly
+        except Exception as exc:  # noqa: BLE001 - aggregator reports all failures uniformly
             s.fail(str(exc))
             return False
 
@@ -317,7 +317,7 @@ def run_shield_uninstall_phase() -> bool:
     with _stage_line("Shield hooks") as s:
         try:
             ShieldHooks.uninstall()
-        except Exception as exc:  # noqa: BLE001 — aggregator uniform error surface
+        except Exception as exc:  # noqa: BLE001 - aggregator uniform error surface
             s.fail(str(exc))
             return False
         s.ok("removed")

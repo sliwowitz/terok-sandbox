@@ -51,7 +51,7 @@ translates the runc failure into a hint.
 from __future__ import annotations
 
 import json
-import subprocess  # nosec B404 — podman CLI probe, matching the podman backend module
+import subprocess  # nosec B404 - podman CLI probe, matching the podman backend module
 import sys
 from itertools import batched
 from pathlib import Path
@@ -589,7 +589,7 @@ def _cdi_spec_paths() -> list[Path]:
     doesn't expose ``Host.CDISpecs`` (older versions).
     """
     try:
-        proc = subprocess.run(  # nosec B603 B607 — podman CLI invocation matches existing pattern in this module
+        proc = subprocess.run(  # nosec B603 B607 - podman CLI invocation matches existing pattern in this module
             ["podman", "info", "--format", "{{json .Host.CDISpecs}}"],
             executable=require_host_tool("podman"),
             capture_output=True,

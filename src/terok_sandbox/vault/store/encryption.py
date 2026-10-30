@@ -23,7 +23,7 @@ import os
 import secrets
 import shlex
 import sqlite3
-import subprocess  # nosec B404 — operator-supplied passphrase_command helper — operator-supplied passphrase_command helper + systemd-creds
+import subprocess  # nosec B404 - operator-supplied passphrase_command helper - operator-supplied passphrase_command helper + systemd-creds
 import sys
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import closing, contextmanager
@@ -42,7 +42,7 @@ if TYPE_CHECKING:
 
 DESKTOP_KEYRING_SERVICE = "terok-sandbox"
 DESKTOP_KEYRING_USERNAME = "credentials-db"
-_SECRET_SERVICE_NO_PROMPT = "/"  # nosec B105 — D-Bus null object path, not a secret
+_SECRET_SERVICE_NO_PROMPT = "/"  # nosec B105 - D-Bus null object path, not a secret
 
 #: ``token_urlsafe(32)`` ≈ 43 chars of URL-safe Base64 — 256 bits of
 #: entropy from a 62-char alphabet plus ``-``/``_``, both shell-safe.
@@ -351,7 +351,7 @@ def load_passphrase_from_desktop_keyring(*, allow_prompt: bool = False) -> str |
         if blocked is not None:
             return None
         return _read()
-    except Exception:  # noqa: BLE001 — timeout or backend error: the tier degrades
+    except Exception:  # noqa: BLE001 - timeout or backend error: the tier degrades
         return None
 
 
@@ -680,7 +680,7 @@ def load_passphrase_from_command(
     if not argv:
         return None
     try:
-        result = subprocess.run(  # noqa: S603 — argv is operator-configured  # nosec B603 — argv is a fixed list controlled by this module — argv is a fixed list controlled by this module
+        result = subprocess.run(  # noqa: S603 - argv is operator-configured  # nosec B603 - argv is a fixed list controlled by this module - argv is a fixed list controlled by this module
             argv, capture_output=True, text=True, timeout=timeout, check=False
         )
     except OSError as exc:

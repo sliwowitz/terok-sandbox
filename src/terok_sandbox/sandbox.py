@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import io
 import shlex
-import subprocess  # nosec B404 — container exec for ready-marker probing — container exec for ready-marker probing
+import subprocess  # nosec B404 - container exec for ready-marker probing - container exec for ready-marker probing
 import sys
 import tarfile
 import warnings
@@ -817,7 +817,7 @@ class Sandbox:
         try:
             kwargs["executable"] = require_host_tool("podman")
             try:
-                subprocess.run(cmd, **kwargs)  # nosec B603 — managed podman argv
+                subprocess.run(cmd, **kwargs)  # nosec B603 - managed podman argv
             except subprocess.CalledProcessError as exc:
                 if not init_fallback or not init_binary_unavailable(exc):
                     raise
@@ -829,7 +829,7 @@ class Sandbox:
                     "Process reaping and shutdown may degrade. Install catatonit "
                     "or configure Podman's init_path.",
                 )
-                subprocess.run(fallback_cmd, **kwargs)  # nosec B603 — same argv, init disabled
+                subprocess.run(fallback_cmd, **kwargs)  # nosec B603 - same argv, init disabled
         except FileNotFoundError:
             raise SystemExit("podman not found; please install podman")
         except subprocess.CalledProcessError as exc:
@@ -945,7 +945,7 @@ class Sandbox:
         try:
             if warning := outdated_container_warning(container_name, handle.env):
                 print(warning, file=sys.stderr)
-        except Exception as exc:  # noqa: BLE001 — diagnostics must never fail a start
+        except Exception as exc:  # noqa: BLE001 - diagnostics must never fail a start
             print(
                 f"warning: protocol check errored for {container_name!r}: {exc}",
                 file=sys.stderr,
@@ -969,7 +969,7 @@ class Sandbox:
                 find_container_id=lambda: self._runtime.container(container_name).id,
             )
             warn_unsupervised(status)
-        except Exception as exc:  # noqa: BLE001 — diagnostics must never fail a launch
+        except Exception as exc:  # noqa: BLE001 - diagnostics must never fail a launch
             print(
                 f"warning: supervision check errored for {container_name!r}: {exc}", file=sys.stderr
             )

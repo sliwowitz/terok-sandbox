@@ -179,7 +179,7 @@ def _live_container_ids() -> frozenset[str] | None:
     if podman is None:
         return None
     try:
-        out = subprocess.run(  # noqa: S603  # nosec B603 — fixed argv, no user input
+        out = subprocess.run(  # noqa: S603  # nosec B603 - fixed argv, no user input
             [podman, "ps", "--all", "--no-trunc", "--format", "json"],
             capture_output=True,
             text=True,

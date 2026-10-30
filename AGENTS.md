@@ -35,6 +35,14 @@ those run on a dedicated test machine.
 - SPDX copyright: author name "Jiri Vyskocil".  Add a new
   `SPDX-FileCopyrightText` line only for a previously unlisted
   contributor making a substantive change.
+- Machine-read comments are ASCII-only: a comment that a tool parses —
+  a suppression marker (`# noqa`, `# nosec`, `# type: ignore`,
+  `# pragma: no cover`, `# NOSONAR`) or another directive (`# fmt: off`,
+  `# pylint: disable`) — uses ASCII only, its reason included.  Write
+  `# noqa: BLE001 - reason` with a plain hyphen.  Keep commas out of a
+  `noqa` reason: SonarCloud reads a comma as the start of another rule
+  code, so use a semicolon.  Ordinary comments may use any UTF-8, and
+  docstrings are welcome to use proper typography.
 - Public API surface: ``__init__.py`` + ``__all__`` is the contract.
   Symbols listed in ``__all__`` are stable across minor releases;
   anything underscore-prefixed or absent from ``__all__`` is internal

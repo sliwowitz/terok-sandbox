@@ -20,7 +20,7 @@ import os
 import shlex
 import shutil
 import socket as _socket
-import subprocess  # nosec B404 — podman inspect helper, fixed argv
+import subprocess  # nosec B404 - podman inspect helper, fixed argv
 import sys
 import time
 from dataclasses import dataclass
@@ -259,7 +259,7 @@ def _rollback_compose_state(
     if plan.scope is not None:
         try:
             db = cfg.open_credential_db()
-        except Exception:  # noqa: BLE001 — best-effort: nothing to revoke if the vault won't open
+        except Exception:  # noqa: BLE001 - best-effort: nothing to revoke if the vault won't open
             db = None
         if db is not None:
             try:
@@ -723,7 +723,7 @@ def _podman_container_names() -> frozenset[str] | None:
     if podman is None:
         return None
     try:
-        result = subprocess.run(  # noqa: S603  # nosec B603 — fixed argv, no user input
+        result = subprocess.run(  # noqa: S603  # nosec B603 - fixed argv, no user input
             [podman, "ps", "--all", "--format", "{{.Names}}"],
             capture_output=True,
             text=True,
@@ -882,7 +882,7 @@ def _resolve_container_id(container: str) -> str | None:
     if podman is None:
         return None
     try:
-        result = subprocess.run(  # nosec B603 — argv fully constructed
+        result = subprocess.run(  # nosec B603 - argv fully constructed
             [podman, "inspect", "-f", "{{.Id}}", container],
             capture_output=True,
             text=True,

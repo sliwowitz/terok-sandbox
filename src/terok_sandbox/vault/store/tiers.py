@@ -51,7 +51,7 @@ class PassphraseTier(StrEnum):
     unlocks non-interactively, yet still spares the operator from
     re-running a helper or re-typing a prompt on every open."""
 
-    PASSPHRASE_COMMAND = "passphrase-command"  # nosec: B105 — a tier label, not a secret
+    PASSPHRASE_COMMAND = "passphrase-command"  # nosec: B105 - a tier label, not a secret
     """Operator-supplied helper command that prints the passphrase
     (``pass show …``, ``bw get …``, ``op read …``, cloud secret CLIs)."""
 

@@ -24,7 +24,7 @@ from __future__ import annotations
 
 import contextlib
 import os
-import subprocess  # nosec B404 — the user manager's verbs, fixed argv
+import subprocess  # nosec B404 - the user manager's verbs, fixed argv
 import sys
 import time
 from pathlib import Path
@@ -152,7 +152,7 @@ def _systemctl(*args: str) -> int:
     if binary is None:
         return 1
     try:
-        return subprocess.run(  # nosec B603 — resolved host tool, fixed verbs
+        return subprocess.run(  # nosec B603 - resolved host tool, fixed verbs
             [binary, "--user", "--quiet", *args], check=False
         ).returncode
     except OSError:

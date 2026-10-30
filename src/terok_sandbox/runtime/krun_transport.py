@@ -56,10 +56,10 @@ from __future__ import annotations
 
 import re
 import shlex
-import subprocess  # nosec B404 — orchestrates the system ssh CLI
+import subprocess  # nosec B404 - orchestrates the system ssh CLI
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
-from pathlib import Path  # noqa: TC003 — used in dataclass field type
+from pathlib import Path  # noqa: TC003 - used in dataclass field type
 from typing import BinaryIO
 
 from terok_util import require_host_tool
@@ -177,7 +177,7 @@ class TcpSSHTransport:
         endpoint = self._resolver(container)
         remote_str = _remote_command(cmd)
         argv = [*self._ssh_argv(endpoint), "--", remote_str]
-        proc = subprocess.run(  # nosec B603 — argv built from fixed verbs + caller-controlled scope/container names
+        proc = subprocess.run(  # nosec B603 - argv built from fixed verbs + caller-controlled scope/container names
             argv,
             capture_output=True,
             text=True,
@@ -215,7 +215,7 @@ class TcpSSHTransport:
         remote_str = _remote_command(cmd, env=env)
         argv = [*self._ssh_argv(endpoint), "--", remote_str]
 
-        proc = subprocess.Popen(  # noqa: S603 — argv built above  # nosec B603 — argv is built from fixed verbs + caller-controlled scope/container names
+        proc = subprocess.Popen(  # noqa: S603 - argv built above  # nosec B603 - argv is built from fixed verbs + caller-controlled scope/container names
             argv,
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
@@ -334,7 +334,7 @@ def podman_port_resolver(
         # exception type across "no mapping", "unparseable output", and
         # "podman didn't answer".
         try:
-            out = subprocess.check_output(  # nosec B603 B607 — argv built from fixed verbs + caller-controlled scope/container names — binary PATH lookup is the cross-distro contract
+            out = subprocess.check_output(  # nosec B603 B607 - argv built from fixed verbs + caller-controlled scope/container names - binary PATH lookup is the cross-distro contract
                 argv,
                 executable=require_host_tool("podman"),
                 text=True,

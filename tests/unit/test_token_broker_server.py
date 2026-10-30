@@ -2259,7 +2259,7 @@ class TestUpstreamHandshakeRejection:
             try:
                 async with session.ws_connect(server.make_url("/ws")):
                     raise AssertionError("upstream accepted an upgrade it should refuse")
-            except Exception as exc:  # noqa: BLE001 — the exception is the result
+            except Exception as exc:  # noqa: BLE001 - the exception is the result
                 return exc
 
     async def test_a_decoding_session_loses_the_upstream_status(

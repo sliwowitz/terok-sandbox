@@ -37,7 +37,7 @@ pytestmark = [pytest.mark.needs_vault, pytest.mark.needs_podman]
 
 _CURL_IMAGE = "terok-sandbox-itest:latest"
 _CONTAINER_PREFIX = "terok-sandbox-itest"
-_REAL_KEY = "sk-ant-real-secret-001"  # nosec B105 — fixture value, not a real credential
+_REAL_KEY = "sk-ant-real-secret-001"  # nosec B105 - fixture value, not a real credential
 # Generous build ceiling: a slow runner (a krun microVM, or a loaded crun
 # host) building this image can take minutes; only a hung build should trip it.
 _BUILD_TIMEOUT_S = 900

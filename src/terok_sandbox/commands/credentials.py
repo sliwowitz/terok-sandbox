@@ -156,7 +156,7 @@ def provision_passphrase_tier(
             f" expected one of: {', '.join(sorted(PROVISIONABLE_TIERS))}"
         )
     tier = PassphraseTier(tier)
-    if passphrase == "":  # nosec: B105 — rejecting the empty sentinel, not comparing a secret
+    if passphrase == "":  # nosec: B105 - rejecting the empty sentinel, not comparing a secret
         # The desktop-keyring and systemd-creds writers refuse an empty value
         # themselves; guard the session-cache tier to the same standard
         # so no branch can report success while leaving nothing usable.
@@ -743,7 +743,7 @@ def _persist_mode_choice(mode: PassphraseTier) -> None:
         _yaml_update_section(config_path, "credentials", {"use_desktop_keyring": True})
         if not _config.credentials_use_desktop_keyring():
             raise RuntimeError("desktop keyring is still disabled")
-    except Exception as exc:  # noqa: BLE001 — YAML diagnostics can contain secret values
+    except Exception as exc:  # noqa: BLE001 - YAML diagnostics can contain secret values
         raise RuntimeError(
             "could not enable the desktop keyring in configuration"
             f" ({type(exc).__name__}); check config.yml before retrying"

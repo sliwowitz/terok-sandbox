@@ -182,7 +182,7 @@ class TestPumpStreamHelper:
             # its first frame).  A non-buffered ``os.fdopen`` here would
             # hide the bug; we want the buffered wrapper that Popen uses.
             os.write(w_fd, b"hello-world")
-            src = open(r_fd, "rb", closefd=True)  # noqa: SIM115 — owned by the pump thread until EOF
+            src = open(r_fd, "rb", closefd=True)  # noqa: SIM115 - owned by the pump thread until EOF
             r_fd = -1  # ownership transferred
             dst = io.BytesIO()
             t = threading.Thread(target=_pump_stream, args=(src, dst), kwargs={"label": "buf"})
@@ -193,7 +193,7 @@ class TestPumpStreamHelper:
                 if dst.getvalue() == b"hello-world":
                     break
                 time.sleep(0.01)
-            else:  # pragma: no cover — only fires when the pump regresses
+            else:  # pragma: no cover - only fires when the pump regresses
                 raise AssertionError(f"pump didn't deliver short payload; dst={dst.getvalue()!r}")
             os.close(w_fd)  # signal EOF so the pump can exit
             w_fd = -1

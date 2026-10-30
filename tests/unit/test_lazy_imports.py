@@ -20,7 +20,7 @@ from __future__ import annotations
 import importlib.metadata
 import json
 import os
-import subprocess  # nosec B404 — fixed argv, no shell, running our own interpreter
+import subprocess  # nosec B404 - fixed argv, no shell, running our own interpreter
 import sys
 from pathlib import Path
 
@@ -56,7 +56,7 @@ def _heavy_leaves_after(snippet: str) -> list[str]:
         **os.environ,
         "PYTHONPATH": os.pathsep.join([_SRC_ROOT, os.environ.get("PYTHONPATH", "")]),
     }
-    result = subprocess.run(  # noqa: S603 — fixed interpreter + inline code, no shell
+    result = subprocess.run(  # noqa: S603 - fixed interpreter + inline code; no shell
         [sys.executable, "-c", code],
         capture_output=True,
         text=True,
@@ -113,7 +113,7 @@ def _command_modules_after(argv: list[str]) -> list[str]:
         **os.environ,
         "PYTHONPATH": os.pathsep.join([_SRC_ROOT, os.environ.get("PYTHONPATH", "")]),
     }
-    result = subprocess.run(  # noqa: S603 — fixed interpreter + inline code, no shell
+    result = subprocess.run(  # noqa: S603 - fixed interpreter + inline code; no shell
         [sys.executable, "-c", code],
         capture_output=True,
         text=True,
@@ -163,7 +163,7 @@ def test_version_still_resolves_lazily() -> None:
         "except SystemExit:\n"
         "    pass"
     )
-    result = subprocess.run(  # noqa: S603 — fixed interpreter + inline code, no shell
+    result = subprocess.run(  # noqa: S603 - fixed interpreter + inline code; no shell
         [sys.executable, "-c", code],
         capture_output=True,
         text=True,

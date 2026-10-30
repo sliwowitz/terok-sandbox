@@ -109,7 +109,7 @@ def port_registry_dir() -> Path:
     val = _read_config_paths().get("port_registry_dir")
     if val:
         return Path(val).expanduser().resolve()
-    return Path("/tmp/terok-ports")  # nosec B108 — intentional shared registry
+    return Path("/tmp/terok-ports")  # nosec B108 - intentional shared registry
 
 
 def runtime_root() -> Path:

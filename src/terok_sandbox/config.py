@@ -43,7 +43,7 @@ if TYPE_CHECKING:
     from .vault.store.tiers import PassphraseTier
 
 from .podman_args import (
-    CONTAINER_RUNTIME_DIR as CONTAINER_RUNTIME_DIR,  # noqa: E402 — re-export; definition moved to the argv-policy leaf
+    CONTAINER_RUNTIME_DIR as CONTAINER_RUNTIME_DIR,  # noqa: E402 - re-export; definition moved to the argv-policy leaf
 )
 
 

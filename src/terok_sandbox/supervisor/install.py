@@ -35,7 +35,7 @@ import json
 import os
 import shutil
 import signal
-import subprocess  # nosec B404 — isolated installation-bound Python probe
+import subprocess  # nosec B404 - isolated installation-bound Python probe
 import sys
 from pathlib import Path
 
@@ -146,7 +146,7 @@ def check_supervisor_hooks(
         if not Path(sys.executable).is_file() or not os.access(sys.executable, os.X_OK):
             raise ValueError("Supervisor bootstrap Python missing; run setup")
         if live:
-            subprocess.run(  # nosec B603 — current interpreter, fixed isolated probe
+            subprocess.run(  # nosec B603 - current interpreter, fixed isolated probe
                 [sys.executable, "-I", "-S", "-c", "pass"],
                 check=True,
                 capture_output=True,

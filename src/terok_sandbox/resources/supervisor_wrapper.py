@@ -90,7 +90,7 @@ def main() -> int:
     rc = 1
     while attempts < _MAX_ATTEMPTS:
         try:
-            rc = subprocess.call(argv)  # noqa: S603  # nosec B603 — fixed verb list, positionals validated above
+            rc = subprocess.call(argv)  # noqa: S603  # nosec B603 - fixed verb list, positionals validated above
         except FileNotFoundError:
             # Baked entry point vanished after install — fail controlled
             # rather than letting the wrapper crash mid-restart-loop.

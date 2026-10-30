@@ -46,36 +46,36 @@ from typing import TYPE_CHECKING
 
 from terok_shield import (
     AllowResult,
-    DnsTier,  # noqa: F401 — re-exported
-    EnvironmentCheck,  # noqa: F401 — re-exported
-    HarvestEntry,  # noqa: F401 — re-exported
+    DnsTier,  # noqa: F401 - re-exported
+    EnvironmentCheck,  # noqa: F401 - re-exported
+    HarvestEntry,  # noqa: F401 - re-exported
     HarvestReport,
     HooksInstaller,
     OverrideRevocation,
     RotationRisk,
-    SecurityTierRefusal,  # noqa: F401 — re-exported; ``allow`` lets it propagate unchanged
+    SecurityTierRefusal,  # noqa: F401 - re-exported; ``allow`` lets it propagate unchanged
     Shield,
     ShieldConfig,
     ShieldMode,
     ShieldReading,
     ShieldRuntime,
-    ShieldState,  # noqa: F401 — re-exported
+    ShieldState,  # noqa: F401 - re-exported
     recorded_container_id,
     recorded_rotation_risk,
-    validate_target,  # noqa: F401 — re-exported for callers that keep host lists of their own
+    validate_target,  # noqa: F401 - re-exported for callers that keep host lists of their own
 )
 from terok_shield.container import (
-    ShieldAnnotations,  # noqa: F401 — re-exported
-    resolve_annotations as resolve_container_annotations,  # noqa: F401 — re-exported
-    resolve_shield_version as resolve_container_shield_version,  # noqa: F401 — re-exported
-    resolve_state_dir as resolve_container_state_dir,  # noqa: F401 — re-exported
+    ShieldAnnotations,  # noqa: F401 - re-exported
+    resolve_annotations as resolve_container_annotations,  # noqa: F401 - re-exported
+    resolve_shield_version as resolve_container_shield_version,  # noqa: F401 - re-exported
+    resolve_state_dir as resolve_container_state_dir,  # noqa: F401 - re-exported
 )
 
 # The identifiers a harvest classifies each target by — the tier standing in
 # the way, the remedies that could lift it.  Shield publishes them from its
 # ``harvest`` module only, not its facade; they ride this adapter so a
 # promotion engine matches on shield's values instead of spelling them.
-from terok_shield.harvest import (  # noqa: F401 — re-exported
+from terok_shield.harvest import (  # noqa: F401 - re-exported
     REMEDY_HOST_PORT,
     REMEDY_OVERRIDE,
     REMEDY_PROJECT,
@@ -92,23 +92,23 @@ from terok_shield.harvest import (  # noqa: F401 — re-exported
 # (so the package's top-level import stays light); pull it from the owning
 # submodule for a concrete callable type.
 from terok_shield.hooks.install import (
-    ensure_user_hooks_dir_configured,  # noqa: F401 — re-exported with concrete type
-    user_hooks_dir_configured,  # noqa: F401 — public readiness predicate
+    ensure_user_hooks_dir_configured,  # noqa: F401 - re-exported with concrete type
+    user_hooks_dir_configured,  # noqa: F401 - public readiness predicate
 )
 
 # Several symbols are exposed via the top-level ``terok_shield.__getattr__``
 # lazy importer which returns ``object`` to type-checkers — that breaks
 # both ``except`` narrowing on the error classes and concrete typing on
 # the prereqs dataclasses.  Pull them straight from the owning submodules.
-from terok_shield.prereqs import (  # noqa: F401 — re-exported with concrete types
+from terok_shield.prereqs import (  # noqa: F401 - re-exported with concrete types
     BinaryCheck,
     check_firewall_binaries,
     check_krun_binaries,
 )
-from terok_shield.profiles import UnknownProfileError  # noqa: F401 — re-exported for the CLI
+from terok_shield.profiles import UnknownProfileError  # noqa: F401 - re-exported for the CLI
 from terok_shield.run import NftNotFoundError  # noqa: F401
 from terok_shield.state import (
-    BUNDLE_VERSION as BUNDLE_VERSION,  # noqa: F401 — re-exported
+    BUNDLE_VERSION as BUNDLE_VERSION,  # noqa: F401 - re-exported
     recorded_dns_tier,  # concrete type; the top-level lazy re-export is ``object``
 )
 from terok_util import SetupCheck
@@ -119,7 +119,7 @@ from ..paths import sandbox_live_root
 if TYPE_CHECKING:
     from collections.abc import Iterator
 
-    from terok_shield import HOOK_ENTRYPOINT_NAME  # noqa: F401 — re-export typing
+    from terok_shield import HOOK_ENTRYPOINT_NAME  # noqa: F401 - re-export typing
 
 #: Warning emitted by every kill-switch-aware [`ShieldManager`][terok_sandbox.integrations.shield.ShieldManager]
 #: method when ``shield_disabled`` is set.  DANGEROUS TRANSITIONAL OVERRIDE —
