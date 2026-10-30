@@ -57,6 +57,14 @@ backend as the kernel keyring or a tmpfs session file.
     Stored desktop-keyring entries and kernel-keyring cache identities
     are unchanged; this rename does not require moving the passphrase.
 
+Invalid or unreadable credentials configuration blocks passphrase-source
+access instead of enabling defaults. The diagnostic names the full global
+configuration path. If validation fails after merging configuration layers,
+it lists their source paths; it does not mean every listed file is invalid.
+Library callers receive `CredentialsConfigError` with those paths in
+`config_paths`, so they can distinguish global configuration failures from
+project configuration failures.
+
 !!! note "The plaintext `credentials.passphrase` tier was removed"
     Configs that still set it are rejected with migration directions:
     move the value into its own file (mode 600) and point

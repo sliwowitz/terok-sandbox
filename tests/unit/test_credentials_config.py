@@ -14,7 +14,7 @@ from pathlib import Path
 import pytest
 from terok_util import read_config_section
 
-from terok_sandbox import config
+from terok_sandbox import CredentialsConfigError, config
 from terok_sandbox._yaml import update_section
 from terok_sandbox.commands.credentials import _persist_mode_choice
 from terok_sandbox.vault.store.tiers import PassphraseTier
@@ -33,13 +33,145 @@ def _restore_credentials_reader(monkeypatch: pytest.MonkeyPatch) -> None:
     )
 
 
-def test_ambiguous_config_key_is_rejected(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+@pytest.mark.parametrize("new_key_present", [False, True])
+def test_ambiguous_config_key_is_rejected(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, new_key_present: bool
+) -> None:
     """The old key cannot silently opt into the desktop keyring after a rename."""
     config_file = tmp_path / "config.yml"
+    config_file.write_text(
+        "credentials:\n  use_keyring: false\n"
+        + ("  use_desktop_keyring: false\n" if new_key_present else "")
+    )
+    monkeypatch.setenv("TEROK_CONFIG_FILE", str(config_file))
+    with pytest.raises(CredentialsConfigError, match="credentials configuration") as error:
+        config.credentials_use_desktop_keyring()
+
+    assert error.value.config_paths == (config_file,)
+    assert str(config_file) in str(error.value)
+    assert "Rename credentials.use_keyring to credentials.use_desktop_keyring" in str(error.value)
+    assert isinstance(error.value, RuntimeError)
+
+
+@pytest.mark.parametrize("path_form", ["relative", "symlink"])
+def test_configuration_error_paths_are_absolute_without_resolving_symlinks(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, path_form: str
+) -> None:
+    """Diagnostics point to the configured file, even through a relative path or symlink."""
+    config_file = tmp_path / "config.yml"
+    config_file.write_text("credentials:\n  use_keyring: false\n")
+    if path_form == "symlink":
+        config_link = tmp_path / "linked-config.yml"
+        config_link.symlink_to(config_file)
+        config_file = config_link
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("TEROK_CONFIG_FILE", config_file.name)
+
+    with pytest.raises(CredentialsConfigError) as error:
+        config.SandboxConfig()
+
+    assert error.value.config_paths == (config_file,)
+    assert str(config_file) in str(error.value)
+
+
+def test_configuration_error_escapes_filename_controls(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Source filenames cannot inject terminal escapes or misleading diagnostic lines."""
+    config_file = tmp_path / "config\x1b[31m\n.yml"
     config_file.write_text("credentials:\n  use_keyring: false\n")
     monkeypatch.setenv("TEROK_CONFIG_FILE", str(config_file))
-    with pytest.raises(RuntimeError, match="Cannot read or validate credentials configuration"):
-        config.credentials_use_desktop_keyring()
+
+    with pytest.raises(CredentialsConfigError) as error:
+        config.SandboxConfig()
+
+    assert error.value.config_paths == (config_file,)
+    assert repr(str(config_file)) in str(error.value)
+    assert str(config_file) not in str(error.value)
+    assert "\x1b" not in str(error.value)
+
+
+@pytest.mark.parametrize("failing_scope", ["system", "user"])
+@pytest.mark.parametrize("failure", ["invalid-yaml", "unreadable", "directory"])
+def test_layer_loading_failure_identifies_only_its_source(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, failing_scope: str, failure: str
+) -> None:
+    """A failing file is not confused with another loaded or higher-priority source."""
+    paths = [(scope, tmp_path / f"{scope}.yml") for scope in ("system", "user")]
+    for _, path in paths:
+        path.write_text("credentials:\n  use_desktop_keyring: false\n")
+    failing_path = dict(paths)[failing_scope]
+    if failure == "invalid-yaml":
+        failing_path.write_text(f"credentials: [\n  {_SECRET_SENTINEL}\n")
+    elif failure == "directory":
+        failing_path.unlink()
+        failing_path.mkdir()
+    else:
+        read_text = Path.read_text
+
+        def deny_read(path: Path, *args: object, **kwargs: object) -> str:
+            """Deny the selected layer while leaving the other readable."""
+            if path == failing_path:
+                raise PermissionError(_SECRET_SENTINEL)
+            return read_text(path, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "read_text", deny_read)
+    monkeypatch.setattr("terok_sandbox.paths.config_file_paths", lambda: paths)
+
+    with pytest.raises(CredentialsConfigError) as error:
+        config.SandboxConfig()
+
+    assert error.value.config_paths == (failing_path,)
+    assert str(failing_path) in str(error.value)
+    assert _SECRET_SENTINEL not in "".join(traceback.format_exception(error.value))
+
+
+def test_merged_validation_failure_lists_loaded_sources_without_stale_migration_hint(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Merged policy failures name their sources without blaming the last file alone."""
+    system_file = tmp_path / "system.yml"
+    user_file = tmp_path / "user.yml"
+    missing_file = tmp_path / "missing.yml"
+    system_file.write_text(f"credentials:\n  use_keyring: false\n  {_SECRET_SENTINEL}: false\n")
+    user_file.write_text("credentials:\n  use_keyring: null\n")
+    monkeypatch.setattr(
+        "terok_sandbox.paths.config_file_paths",
+        lambda: [("system", system_file), ("user", user_file), ("missing", missing_file)],
+    )
+
+    with pytest.raises(CredentialsConfigError) as error:
+        config.SandboxConfig()
+
+    assert error.value.config_paths == (system_file, user_file)
+    assert all(str(path) in str(error.value) for path in error.value.config_paths)
+    assert str(missing_file) not in str(error.value)
+    assert "credentials.use_keyring" not in str(error.value)
+    assert _SECRET_SENTINEL not in "".join(traceback.format_exception(error.value))
+
+
+@pytest.mark.parametrize(
+    ("system_setting", "user_setting"),
+    [
+        ("use_desktop_keyring: false\n  use_keyring: false", "use_keyring: null"),
+        (f"use_desktop_keyring: {_SECRET_SENTINEL}", "use_desktop_keyring: false"),
+    ],
+    ids=["removed-key-deleted", "invalid-value-overridden"],
+)
+def test_invalid_lower_layer_can_be_repaired_by_a_higher_layer(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, system_setting: str, user_setting: str
+) -> None:
+    """Validation applies to effective policy, not individual configuration layers."""
+    system_file = tmp_path / "system.yml"
+    user_file = tmp_path / "user.yml"
+    system_file.write_text(f"credentials:\n  {system_setting}\n")
+    user_file.write_text(f"credentials:\n  {user_setting}\n")
+    monkeypatch.setattr(
+        "terok_sandbox.paths.config_file_paths",
+        lambda: [("system", system_file), ("user", user_file)],
+    )
+
+    assert config.SandboxConfig().credentials_use_desktop_keyring is False
 
 
 @pytest.mark.parametrize("external_update", [False, True], ids=["same-process", "child-process"])
@@ -128,10 +260,19 @@ def test_credentials_follow_layered_config_and_null_deletion(
         f"credentials: [{_SECRET_SENTINEL}]\n",
         f"credentials:\n  use_desktop_keyring: {_SECRET_SENTINEL}\n",
         f"credentials:\n  unknown_setting: {_SECRET_SENTINEL}\n",
+        f"credentials:\n  {_SECRET_SENTINEL}: false\n",
         f"credentials:\n  passphrase: {_SECRET_SENTINEL}\n",
         f"[{_SECRET_SENTINEL}]\n",
     ],
-    ids=["invalid-yaml", "wrong-shape", "invalid-value", "unknown-key", "plaintext", "non-mapping"],
+    ids=[
+        "invalid-yaml",
+        "wrong-shape",
+        "invalid-value",
+        "unknown-key",
+        "secret-key",
+        "plaintext",
+        "non-mapping",
+    ],
 )
 def test_invalid_configuration_never_enables_a_source_or_discloses_values(
     tmp_path: Path,
@@ -144,9 +285,12 @@ def test_invalid_configuration_never_enables_a_source_or_discloses_values(
     config_file.write_text(content)
     monkeypatch.setenv("TEROK_CONFIG_FILE", str(config_file))
 
-    with pytest.raises(RuntimeError, match="credentials configuration") as error:
+    with pytest.raises(CredentialsConfigError, match="credentials configuration") as error:
         config.SandboxConfig()
 
+    assert error.value.config_paths == (config_file,)
+    assert str(config_file) in str(error.value)
+    assert "credentials.use_keyring" not in str(error.value)
     assert _SECRET_SENTINEL not in "".join(traceback.format_exception(error.value))
     captured = capsys.readouterr()
     assert _SECRET_SENTINEL not in captured.out + captured.err

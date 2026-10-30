@@ -47,6 +47,30 @@ from .podman_args import (
 )
 
 
+class CredentialsConfigError(RuntimeError):
+    """Global configuration prevents safe access to passphrase sources.
+
+    ``config_paths`` identifies the failing file for read/parse failures,
+    or the loaded global configuration sources for merged validation
+    failures. Diagnostics never include configuration values.
+    """
+
+    def __init__(self, config_paths: tuple[Path, ...], *, uses_removed_key: bool = False) -> None:
+        """Record absolute source paths and an optional fixed migration hint."""
+        self.config_paths = tuple(path.absolute() for path in config_paths)
+        message = (
+            "Cannot read or validate credentials configuration; "
+            "check global configuration before accessing passphrase sources:\n"
+            + "\n".join(f"  {str(path)!r}" for path in self.config_paths)
+        )
+        if uses_removed_key:
+            message += (
+                "\nRename credentials.use_keyring to credentials.use_desktop_keyring; "
+                "the old key is no longer supported."
+            )
+        super().__init__(message)
+
+
 def _validate_section[T: BaseModel](schema_cls: type[T], section: str) -> T:
     """Validate *section* against *schema_cls*; warn + return schema defaults on error.
 
@@ -114,8 +138,9 @@ def _credentials_section() -> RawCredentialsSection:
     passphrase source that the operator disabled.
 
     Raises:
-        RuntimeError: Configuration cannot be read or validated. The message
-            excludes parser diagnostics, which can contain secret values.
+        CredentialsConfigError: Global configuration cannot be read or
+            validated. The message identifies its source files without
+            parser diagnostics, which can contain secret values.
     """
     from ruamel.yaml.error import YAMLError
     from terok_util import ConfigStack
@@ -124,12 +149,12 @@ def _credentials_section() -> RawCredentialsSection:
     from .config_schema import RawCredentialsSection
     from .paths import config_file_paths
 
-    try:
-        stack = ConfigStack()
-        for label, path in config_file_paths():
-            if path == Path(os.devnull):
-                # The CLI's --raw mode explicitly requests schema defaults.
-                continue
+    stack = ConfigStack()
+    for label, path in config_file_paths():
+        if path == Path(os.devnull):
+            # The CLI's --raw mode explicitly requests schema defaults.
+            continue
+        try:
             try:
                 mode = path.stat().st_mode
             except FileNotFoundError:
@@ -137,11 +162,16 @@ def _credentials_section() -> RawCredentialsSection:
             if not stat.S_ISREG(mode):
                 raise ValueError("Configuration must be a regular file")
             stack.push(load_yaml_scope(label, path))
-        return RawCredentialsSection.model_validate(stack.resolve().get("credentials", {}))
-    except (OSError, ValueError, YAMLError):
-        raise RuntimeError(
-            "Cannot read or validate credentials configuration; "
-            "check config.yml before accessing passphrase sources."
+        except (OSError, ValueError, YAMLError):
+            raise CredentialsConfigError((path,)) from None
+
+    credentials = stack.resolve().get("credentials", {})
+    try:
+        return RawCredentialsSection.model_validate(credentials)
+    except ValidationError:
+        raise CredentialsConfigError(
+            tuple(scope.source for scope in stack.scopes if scope.source is not None),
+            uses_removed_key=isinstance(credentials, dict) and "use_keyring" in credentials,
         ) from None
 
 

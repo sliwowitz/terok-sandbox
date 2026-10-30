@@ -92,6 +92,7 @@ _LAZY: dict[str, str] = {
     "CONTAINER_GATE_SOCKET": "podman_args:CONTAINER_GATE_SOCKET",
     "CONTAINER_SSH_SIGNER_SOCKET": "podman_args:CONTAINER_SSH_SIGNER_SOCKET",
     "CONTAINER_VAULT_SOCKET": "podman_args:CONTAINER_VAULT_SOCKET",
+    "CredentialsConfigError": "config:CredentialsConfigError",
     "SandboxConfig": "config:SandboxConfig",
     # Config schema view / fragments
     "ClearanceMode": "config_schema:ClearanceMode",
@@ -304,7 +305,7 @@ if TYPE_CHECKING:
         provision_passphrase_tier,
         purge_passphrase_tiers,
     )
-    from .config import CONTAINER_RUNTIME_DIR, SandboxConfig
+    from .config import CONTAINER_RUNTIME_DIR, CredentialsConfigError, SandboxConfig
     from .config_schema import (
         SERVICES_TCP_OPTOUT_YAML,
         ClearanceMode,
@@ -455,6 +456,7 @@ __all__ = [
     "CONTAINER_VAULT_SOCKET",
     "ClearanceMode",
     "ConfigScope",
+    "CredentialsConfigError",
     "RawRunSection",
     "RawSSHSection",
     "SERVICES_TCP_OPTOUT_YAML",
