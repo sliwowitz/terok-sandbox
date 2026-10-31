@@ -102,6 +102,8 @@ def test_matching_failure_gets_local_nonrepair_hint(storage: dict) -> None:
         "acl",
         "acl-unknown",
         "empty-map",
+        "invalid-gid-map",
+        "relative-store",
         "outside-store",
     ],
 )
@@ -129,8 +131,14 @@ def test_ambiguous_or_valid_configurations_get_no_hint(storage: dict, case: str)
             storage["acl"].side_effect = OSError(errno.EOPNOTSUPP, "unknown ACL support")
         case "empty-map":
             storage["info"]["host"]["idMappings"]["gidmap"] = []
+        case "invalid-gid-map":
+            storage["info"]["host"]["idMappings"]["gidmap"] = [{"host_id": -1, "size": 1}]
+        case "relative-store":
+            storage["info"]["store"]["graphRoot"] = storage["root"].name
         case "outside-store":
-            storage["info"]["store"]["graphRoot"] = str(storage["root"] / "different")
+            different = storage["root"] / "different"
+            different.mkdir()
+            storage["info"]["store"]["graphRoot"] = str(different)
     assert storage_permission_hint(error, "task") == ""
     if case == "unrelated":
         storage["run"].assert_not_called()
