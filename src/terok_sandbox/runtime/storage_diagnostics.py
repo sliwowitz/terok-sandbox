@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: 2026 Jiri Vyskocil
 # SPDX-License-Identifier: Apache-2.0
 
-"""Explain a rootfs traversal failure only when local storage evidence supports it."""
+"""Report local storage metadata after a rootfs permission failure, without diagnosing it."""
 
 from __future__ import annotations
 
@@ -23,19 +23,26 @@ _PROBE_TIMEOUT = 3
 _ACCESS_ACL = "system.posix_acl_access"
 
 
-def storage_permission_hint(stderr: str, container_name: str) -> str:
-    """Return a best-effort hint after a remapped-root storage traversal failure.
+def storage_permission_diagnostics(stderr: str) -> str:
+    """Report restrictive storage ancestors with unmapped host owners or groups.
 
-    Never launch a probe container or modify files. Require the matching OCI
-    error, a local rootless store, remapped container root, and a private
-    user-owned ancestor with an unmapped group and no access ACL. Unknown
-    formats, ACLs and probe failures leave the original error alone.
+    One bounded Podman info query identifies the relevant local rootless store.
+    Modes, numeric IDs, mapping status and ACL presence are observations, not
+    a cause or repair recommendation. Unavailable fields stay unknown; probe
+    failures leave the original error alone. Never inspect or launch a container.
     """
     match = _ROOTFS_DENIED.search(stderr)
-    if match is None or os.geteuid() == 0:
+    if match is None:
         return ""
     try:
-        info = _podman_json("info", "--format", "json")
+        result = subprocess.run(  # nosec B603 - fixed read-only Podman command
+            [require_host_tool("podman"), "info", "--format", "json"],
+            capture_output=True,
+            text=True,
+            check=True,
+            timeout=_PROBE_TIMEOUT,
+        )
+        info = json.loads(result.stdout)
         host = info["host"]
         if host["security"]["rootless"] is not True or host["serviceIsRemote"] is not False:
             return ""
@@ -45,75 +52,58 @@ def storage_permission_hint(stderr: str, container_name: str) -> str:
         root = root.resolve(strict=True)
         if root not in Path(match[1]).resolve().parents:
             return ""
-        mappings = _podman_json(
-            "inspect", "--format", "{{json .HostConfig.IDMappings}}", container_name
-        )
-        if not _root_is_remapped(mappings["UidMap"]):
+        mappings = host["idMappings"]
+        if not isinstance(mappings, dict):
             return ""
-        groups = _host_ranges(host["idMappings"]["gidmap"])
-        if not groups:
-            return ""
+        observations = []
         for directory in (root, *root.parents):
-            if _private_unmapped_group(directory, groups):
-                return (
-                    "\n\nHint: a private ancestor of Podman's storage has a group outside its "
-                    f"rootless mapping: {sanitize_tty(str(directory))}. "
-                    "This can prevent remapped container root from traversing it. "
-                    "Check this directory's intended group and ACLs locally. "
-                    "Do not recursively chown/chmod container storage."
+            try:
+                metadata = directory.stat()
+            except OSError:
+                continue
+            if not stat.S_ISDIR(metadata.st_mode) or metadata.st_mode & stat.S_IXOTH:
+                continue
+            owner = _mapping_status(metadata.st_uid, mappings.get("uidmap"))
+            group = _mapping_status(metadata.st_gid, mappings.get("gidmap"))
+            if "unmapped" in (owner, group):
+                observations.append(
+                    f"  {sanitize_tty(str(directory))}: mode={stat.S_IMODE(metadata.st_mode):04o}, "
+                    f"owner UID={metadata.st_uid} ({owner}), group GID={metadata.st_gid} ({group}), "
+                    f"access ACL={_acl_status(directory)}"
                 )
+        if observations:
+            return (
+                "\n\nStorage diagnostics (host IDs vs Podman's rootless mappings; "
+                "not a confirmed cause):\n" + "\n".join(observations)
+            )
     except (OSError, subprocess.SubprocessError, ValueError, KeyError, TypeError, RuntimeError):
         # Diagnostics must never replace the launch error with a probe error.
         return ""
     return ""
 
 
-def _podman_json(*args: str) -> dict:
-    """Read one bounded diagnostic response from the selected host Podman."""
-    result = subprocess.run(  # nosec B603 - fixed verbs with a container name, no shell
-        [require_host_tool("podman"), *args],
-        capture_output=True,
-        text=True,
-        check=True,
-        timeout=_PROBE_TIMEOUT,
-    )
-    return json.loads(result.stdout)
+def _mapping_status(identifier: int, entries: list[dict] | None) -> str:
+    """Compare a host ID with complete positive ranges, or report unknown data."""
+    try:
+        ranges = [(entry["host_id"], entry["size"]) for entry in entries or ()]
+        if not ranges or any(
+            type(start) is not int or type(size) is not int or start < 0 or size <= 0
+            for start, size in ranges
+        ):
+            return "unknown"
+        return (
+            "mapped"
+            if any(start <= identifier < start + size for start, size in ranges)
+            else "unmapped"
+        )
+    except (KeyError, TypeError):
+        return "unknown"
 
 
-def _root_is_remapped(entries: list[str]) -> bool:
-    """Require container UID zero to differ from the rootless namespace's owner."""
-    if not isinstance(entries, list) or any(not isinstance(entry, str) for entry in entries):
-        return False
-    for entry in entries:
-        container_id, parent_id, size = map(int, entry.split(":"))
-        if container_id == 0 and size > 0:
-            return parent_id > 0
-    return False
-
-
-def _host_ranges(entries: list[dict]) -> list[range]:
-    """Read positive host-GID ranges, refusing incomplete mapping evidence."""
-    ranges = []
-    for entry in entries:
-        start, size = entry["host_id"], entry["size"]
-        if type(start) is not int or type(size) is not int or start < 0 or size <= 0:
-            raise ValueError("Invalid Podman GID mapping")
-        ranges.append(range(start, start + size))
-    return ranges
-
-
-def _private_unmapped_group(directory: Path, groups: list[range]) -> bool:
-    """Recognize the reproduced mode/group case, not a general permission model."""
-    metadata = directory.stat()
-    if (
-        not stat.S_ISDIR(metadata.st_mode)
-        or metadata.st_uid != os.geteuid()
-        or metadata.st_mode & stat.S_IXOTH
-        or any(metadata.st_gid in group for group in groups)
-    ):
-        return False
+def _acl_status(directory: Path) -> str:
+    """Report ACL presence without trying to evaluate its access rules."""
     try:
         os.getxattr(directory, _ACCESS_ACL)
     except OSError as exc:
-        return exc.errno == errno.ENODATA
-    return False
+        return "absent" if exc.errno == errno.ENODATA else "unknown"
+    return "present"
