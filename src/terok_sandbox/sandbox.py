@@ -858,16 +858,25 @@ class Sandbox:
             # ``live`` volumes are bind-mounted (handled by _build_cmd);
             # only the rest get copied in here.
             present = tuple(v for v in spec.volumes if not v.live and v.host_path.exists())
-            # Drop overlay file mounts (a file landing inside a sibling
-            # dir mount); the dir-copy already wrote them, and podman cp
-            # refuses to overwrite.
-            dir_targets = tuple(v.container_path for v in present if v.host_path.is_dir())
+            directories = sorted(
+                (v for v in present if v.host_path.is_dir()),
+                key=lambda v: len(PurePosixPath(v.container_path).parts),
+            )
 
-            def _under_dir_mount(path: str) -> bool:
-                return any(path == d or path.startswith(d.rstrip("/") + "/") for d in dir_targets)
+            def _already_copied(volume: VolumeSpec) -> bool:
+                """Skip only files supplied by the last directory copy at their target."""
+                target = PurePosixPath(volume.container_path)
+                for directory in reversed(directories):
+                    parent = PurePosixPath(directory.container_path)
+                    if target.is_relative_to(parent):
+                        source = directory.host_path / target.relative_to(parent)
+                        if source.exists():
+                            return source == volume.host_path
+                return False
 
-            effective = tuple(
-                v for v in present if v.host_path.is_dir() or not _under_dir_mount(v.container_path)
+            effective = (
+                *directories,
+                *(v for v in present if not v.host_path.is_dir() and not _already_copied(v)),
             )
             self._ensure_parents(spec.container_name, effective)
             for vol in effective:

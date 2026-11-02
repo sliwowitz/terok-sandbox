@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import dataclasses
 import json
+import shutil
 import stat
 import subprocess
 from pathlib import Path
@@ -46,6 +47,7 @@ if TYPE_CHECKING:
     from terok_sandbox.config_schema import ServicesMode
 
 MOCK_HOST_DIR = MOCK_BASE / "host-dir"
+SEALED_CONFIG_TARGET = "/home/dev/.config/agent"
 
 
 def _make_spec(**overrides) -> RunSpec:
@@ -1164,6 +1166,88 @@ class TestSandboxSealed:
             Sandbox().run(spec)
 
         mock_copy.assert_not_called()
+
+    @pytest.mark.parametrize("native_exists", [False, True])
+    @pytest.mark.parametrize("overlay_first", [False, True])
+    def test_task_file_overlays_directory_contents(
+        self, tmp_path: Path, native_exists: bool, overlay_first: bool
+    ) -> None:
+        """A task file replaces the directory's native file regardless of volume order."""
+        shared = tmp_path / "shared"
+        shared.mkdir()
+        native = shared / "AGENTS.md"
+        if native_exists:
+            native.write_text("Native instructions")
+        task_file = tmp_path / "instructions.md"
+        task_file.write_text("Task instructions")
+        directory = VolumeSpec(shared, SEALED_CONFIG_TARGET)
+        overlay = VolumeSpec(
+            task_file, f"{SEALED_CONFIG_TARGET}/AGENTS.md", read_only=True, sharing=Sharing.PRIVATE
+        )
+        volumes = (overlay, directory) if overlay_first else (directory, overlay)
+        container_root = tmp_path / "container"
+
+        def copy_to(_container: str, source: Path, destination: str) -> None:
+            """Model Podman's directory merge and regular-file replacement semantics."""
+            target = container_root / destination.lstrip("/")
+            if source.is_dir():
+                shutil.copytree(source, target, dirs_exist_ok=True)
+            else:
+                shutil.copyfile(source, target)
+
+        with (
+            patch.object(Sandbox, "create"),
+            patch.object(Sandbox, "_ensure_parents"),
+            patch.object(Sandbox, "copy_to", side_effect=copy_to) as mock_copy,
+            patch.object(Sandbox, "start"),
+        ):
+            Sandbox().run(_make_spec(sealed=True, volumes=volumes))
+
+        assert mock_copy.call_args_list == [
+            call("test-ctr", shared, directory.container_path),
+            call("test-ctr", task_file, overlay.container_path),
+        ]
+        injected = container_root / overlay.container_path.lstrip("/")
+        assert injected.read_text() == "Task instructions"
+        if native_exists:
+            assert native.read_text() == "Native instructions"
+        else:
+            assert not native.exists()
+
+    @pytest.mark.parametrize("nested_file_exists", [False, True])
+    def test_only_redundant_file_overlays_are_skipped(
+        self, tmp_path: Path, nested_file_exists: bool
+    ) -> None:
+        """A deeper directory can replace a file that an outer directory already supplied."""
+        outer = tmp_path / "outer"
+        (outer / "nested").mkdir(parents=True)
+        source = outer / "nested" / "credentials"
+        source.write_text("Outer credentials")
+        nested = tmp_path / "nested"
+        nested.mkdir()
+        if nested_file_exists:
+            (nested / source.name).write_text("Different credentials")
+        outer_volume = VolumeSpec(outer, SEALED_CONFIG_TARGET)
+        nested_volume = VolumeSpec(nested, f"{SEALED_CONFIG_TARGET}/nested")
+        overlay = VolumeSpec(
+            source, f"{nested_volume.container_path}/{source.name}", read_only=True
+        )
+
+        with (
+            patch.object(Sandbox, "create"),
+            patch.object(Sandbox, "_ensure_parents"),
+            patch.object(Sandbox, "copy_to") as mock_copy,
+            patch.object(Sandbox, "start"),
+        ):
+            Sandbox().run(_make_spec(sealed=True, volumes=(overlay, nested_volume, outer_volume)))
+
+        expected = [
+            call("test-ctr", outer, outer_volume.container_path),
+            call("test-ctr", nested, nested_volume.container_path),
+        ]
+        if nested_file_exists:
+            expected.append(call("test-ctr", source, overlay.container_path))
+        assert mock_copy.call_args_list == expected
 
     def test_ensure_parents_creates_directory_tree(self, tmp_path: Path) -> None:
         """_ensure_parents injects a tar with all ancestor directories.
