@@ -196,6 +196,7 @@ prefix or read agent-controlled status files. Discovery errors and malformed or
 incomplete records raise rather than appearing as an empty host.
 
 `ContainerRuntime.force_stop(container_id, timeout=...)` targets a full ID and
-uses an immediate force-stop; command errors and timeouts propagate. An
-orchestrator should select ownership using trusted annotations and impose an
+sends SIGKILL directly, including to paused or stopping containers, without
+unpausing them first. Command errors and timeouts propagate. An orchestrator
+should select ownership using trusted annotations and impose an
 overall containment deadline, rather than serially waiting for other cleanup.

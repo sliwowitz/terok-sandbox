@@ -1117,11 +1117,11 @@ class PodmanRuntime:
         return result
 
     def force_stop(self, container_id: str, *, timeout: float = 10) -> None:
-        """Force an exact container ID to stop within the caller's deadline."""
+        """SIGKILL an exact container ID, including paused containers, within the deadline."""
         if not re.fullmatch(r"[0-9a-f]{64}", container_id):
             raise ValueError("force_stop requires a full container ID")
         subprocess.run(  # nosec B603 B607 - validated full ID; trusted host executable
-            ["podman", "stop", "--time", "0", container_id],
+            ["podman", "kill", "--signal", "KILL", container_id],
             executable=require_host_tool("podman"),
             capture_output=True,
             text=True,

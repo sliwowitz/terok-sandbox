@@ -90,20 +90,32 @@ def test_force_stop_requires_full_id_and_propagates_timeout(run):
     run.side_effect = subprocess.TimeoutExpired("podman", 2)
     with pytest.raises(subprocess.TimeoutExpired):
         PodmanRuntime().force_stop(_ID, timeout=2)
-    assert run.call_args.args[0] == ["podman", "stop", "--time", "0", _ID]
+    assert run.call_args.args[0] == ["podman", "kill", "--signal", "KILL", _ID]
     assert run.call_args.kwargs["timeout"] == 2
     assert run.call_args.kwargs["check"] is True
 
 
-def test_null_runtime_models_inventory_and_stop():
+def test_force_stop_uses_one_direct_sigkill_without_unpausing(run):
+    """Emergency kill must accept paused containers without opening a runnable window."""
+    PodmanRuntime().force_stop(_ID, timeout=2)
+    run.assert_called_once_with(
+        ["podman", "kill", "--signal", "KILL", _ID],
+        executable="podman",
+        capture_output=True,
+        text=True,
+        check=True,
+        timeout=2,
+    )
+
+
+@pytest.mark.parametrize("state", ["running", "paused", "stopping"])
+def test_null_runtime_models_inventory_and_stop(state):
     """The recording backend exercises the same identity-based API without Podman."""
     runtime = NullRuntime()
-    runtime.set_container_state("demo", "running")
+    runtime.set_container_state("demo", state)
     runtime.set_container_id("demo", _ID)
     runtime.set_container_annotations("demo", {"trusted": "annotation"})
-    assert runtime.inventory() == [
-        RuntimeContainer(_ID, "demo", "running", {"trusted": "annotation"})
-    ]
+    assert runtime.inventory() == [RuntimeContainer(_ID, "demo", state, {"trusted": "annotation"})]
     runtime.force_stop(_ID)
     assert runtime.inventory()[0].state == "exited"
     with pytest.raises(RuntimeError):
