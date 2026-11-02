@@ -41,6 +41,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from ..vault.context import BrokerContext
+
 if TYPE_CHECKING:
     from collections.abc import Iterator, Mapping
 
@@ -103,6 +105,7 @@ class SidecarConfig:
     ([`refresh_clearance`][terok_sandbox.supervisor.sidecar.refresh_clearance]).
     """
 
+    broker_context: BrokerContext
     container_name: str
     ipc_mode: str  # "socket" or "tcp"
     db_path: Path
@@ -338,6 +341,7 @@ def _build_config(raw: dict, sidecar_path: Path) -> SidecarConfig:
     wins, exactly as the old sequential guards did).
     """
     return SidecarConfig(
+        broker_context=_broker_context(raw),
         container_name=_safe_container_name(raw, sidecar_path),
         ipc_mode=_checked_ipc_mode(raw, sidecar_path),
         db_path=_required_absolute_path(raw, "db_path", sidecar_path),
@@ -360,6 +364,18 @@ def _build_config(raw: dict, sidecar_path: Path) -> SidecarConfig:
         allow_debugger=_optional_bool(raw, "allow_debugger"),
         clearance=_lenient_clearance(raw, sidecar_path),
     )
+
+
+def _broker_context(raw: dict) -> BrokerContext:
+    """Require the launcher's complete authorization identity before starting services."""
+    try:
+        context = raw["broker_context"]
+        if not isinstance(context, dict):
+            raise ValueError("context is not an object")
+        return BrokerContext(**context)
+    except (KeyError, TypeError, ValueError) as exc:
+        _logger.error("Missing or invalid broker context; recreate this legacy task container")
+        raise _BadSidecar from exc
 
 
 def _safe_container_name(raw: dict, sidecar_path: Path) -> str:

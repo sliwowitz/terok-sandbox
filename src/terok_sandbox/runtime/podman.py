@@ -40,6 +40,7 @@ from .protocol import (
     Image,
     LogStream,
     PortReservation,
+    RuntimeContainer,
 )
 from .storage_diagnostics import storage_permission_diagnostics
 
@@ -1051,6 +1052,82 @@ class PodmanPortReservation:
 
 class PodmanRuntime:
     """The default [`ContainerRuntime`][terok_sandbox.ContainerRuntime] — talks to the podman CLI."""
+
+    def inventory(self, *, timeout: float = 10) -> list[RuntimeContainer]:
+        """Read daemon identities and annotations without consulting task-controlled files.
+
+        Discovery has one deadline. A failed command, malformed result or
+        missing record raises rather than presenting an incomplete inventory.
+        """
+        deadline = time.monotonic() + timeout
+        executable = require_host_tool("podman")
+        listed = subprocess.run(  # nosec B603 B607 - fixed argv; executable resolved from trusted host paths
+            ["podman", "ps", "-aq", "--no-trunc"],
+            executable=executable,
+            capture_output=True,
+            text=True,
+            check=True,
+            timeout=timeout,
+        )
+        ids = listed.stdout.split()
+        if not ids:
+            return []
+        if any(not re.fullmatch(r"[0-9a-f]{64}", value) for value in ids):
+            raise RuntimeError("Podman returned an invalid container ID")
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise TimeoutError("Container inventory deadline expired")
+        inspected = subprocess.run(  # nosec B603 B607 - validated full IDs; trusted host executable
+            ["podman", "inspect", "--type", "container", *ids],
+            executable=executable,
+            capture_output=True,
+            text=True,
+            check=True,
+            timeout=remaining,
+        )
+        records = json.loads(inspected.stdout)
+        if not isinstance(records, list):
+            raise RuntimeError("Podman inventory is not a list")
+        result = []
+        for record in records:
+            try:
+                identity, name = record["Id"], record["Name"]
+                state = record["State"]["Status"]
+                annotations = record["Config"].get("Annotations")
+                if annotations is None:
+                    annotations = {}
+                if (
+                    identity not in ids
+                    or not isinstance(name, str)
+                    or not name
+                    or not isinstance(state, str)
+                    or not state
+                    or not isinstance(annotations, dict)
+                    or any(
+                        not isinstance(k, str) or not isinstance(v, str)
+                        for k, v in annotations.items()
+                    )
+                ):
+                    raise ValueError("invalid fields")
+            except (KeyError, TypeError, ValueError) as exc:
+                raise RuntimeError("Podman returned invalid containment metadata") from exc
+            result.append(RuntimeContainer(identity, name.lstrip("/"), state, annotations))
+        if len(result) != len(ids) or {item.id for item in result} != set(ids):
+            raise RuntimeError("Podman returned an incomplete container inventory")
+        return result
+
+    def force_stop(self, container_id: str, *, timeout: float = 10) -> None:
+        """Force an exact container ID to stop within the caller's deadline."""
+        if not re.fullmatch(r"[0-9a-f]{64}", container_id):
+            raise ValueError("force_stop requires a full container ID")
+        subprocess.run(  # nosec B603 B607 - validated full ID; trusted host executable
+            ["podman", "stop", "--time", "0", container_id],
+            executable=require_host_tool("podman"),
+            capture_output=True,
+            text=True,
+            check=True,
+            timeout=timeout,
+        )
 
     def container(self, name: str) -> Container:
         """Return a handle to the container named *name*."""

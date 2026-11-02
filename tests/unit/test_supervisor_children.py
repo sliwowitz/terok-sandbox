@@ -51,6 +51,7 @@ from terok_sandbox.supervisor.children import (
     run_child,
 )
 from terok_sandbox.supervisor.sidecar import SidecarConfig, SupervisorPaths
+from terok_sandbox.vault.context import BrokerContext
 from tests.constants import (
     FAKE_CONTAINER_ID,
     FAKE_CONTAINER_NAME,
@@ -101,6 +102,7 @@ def paths(tmp_path: Path) -> SupervisorPaths:
 
 def _socket_cfg(tmp_path: Path, **extra: object) -> SidecarConfig:
     return SidecarConfig(
+        broker_context=BrokerContext("proj", "t1", "default"),
         container_name="demo",
         ipc_mode="socket",
         db_path=tmp_path / "vault.db",
@@ -117,6 +119,7 @@ def _tcp_cfg(tmp_path: Path, **extra: object) -> SidecarConfig:
     kw: dict[str, object] = {"tcp_port": 22001, "ssh_signer_port": 22002}
     kw.update(extra)  # let callers override the ports (e.g. set one to None)
     return SidecarConfig(
+        broker_context=BrokerContext("proj", "t1", "default"),
         container_name="demo",
         ipc_mode="tcp",
         db_path=tmp_path / "vault.db",
@@ -387,6 +390,7 @@ class TestGateRunner:
             async def stop(self) -> None: ...
 
         cfg = SidecarConfig(
+            broker_context=BrokerContext("proj", "t1", "default"),
             container_name="demo",
             ipc_mode="tcp",
             db_path=tmp_path / "vault.db",
@@ -408,6 +412,7 @@ class TestGateRunner:
     ) -> None:
         """A wired gate in TCP mode with no allocated port fails its own start."""
         cfg = SidecarConfig(
+            broker_context=BrokerContext("proj", "t1", "default"),
             container_name="demo",
             ipc_mode="tcp",
             db_path=tmp_path / "vault.db",
@@ -527,6 +532,11 @@ class TestRunChildGuards:
             json.dumps(
                 {
                     "container_name": "demo",
+                    "broker_context": {
+                        "scope": "proj",
+                        "subject": "t1",
+                        "credential_set": "default",
+                    },
                     "ipc_mode": "socket",
                     "db_path": str(tmp_path / "vault.db"),
                     "runtime_dir": str(tmp_path / "rt"),
@@ -549,6 +559,11 @@ class TestRunChildGuards:
             json.dumps(
                 {
                     "container_name": "demo",
+                    "broker_context": {
+                        "scope": "proj",
+                        "subject": "t1",
+                        "credential_set": "default",
+                    },
                     "ipc_mode": "socket",
                     "db_path": str(tmp_path / "vault.db"),
                     "runtime_dir": str(tmp_path / "rt"),
@@ -575,6 +590,11 @@ class TestRunChildGuards:
             json.dumps(
                 {
                     "container_name": "demo",
+                    "broker_context": {
+                        "scope": "proj",
+                        "subject": "t1",
+                        "credential_set": "default",
+                    },
                     "ipc_mode": "socket",
                     "db_path": str(tmp_path / "vault.db"),
                     "runtime_dir": str(tmp_path / "rt" / "sandbox"),
@@ -605,6 +625,11 @@ class TestRunChildGuards:
             json.dumps(
                 {
                     "container_name": "demo",
+                    "broker_context": {
+                        "scope": "proj",
+                        "subject": "t1",
+                        "credential_set": "default",
+                    },
                     "ipc_mode": "socket",
                     "db_path": str(tmp_path / "vault.db"),
                     "runtime_dir": str(tmp_path / "rt" / "sandbox"),
@@ -632,6 +657,11 @@ class TestRunChildGuards:
             json.dumps(
                 {
                     "container_name": "demo",
+                    "broker_context": {
+                        "scope": "proj",
+                        "subject": "t1",
+                        "credential_set": "default",
+                    },
                     "ipc_mode": "socket",
                     "db_path": str(tmp_path / "vault.db"),
                     "runtime_dir": str(tmp_path / "rt" / "sandbox"),
@@ -717,7 +747,7 @@ class TestVaultRunner:
         with patch("terok_sandbox.vault.daemon.token_broker.VaultProxy", _StubVault):
             await _run_vault(_socket_cfg(tmp_path), paths, _preset_stop())
         assert captured["db_path"] == (tmp_path / "vault.db")
-        assert captured["scope_id"] == "proj"
+        assert captured["broker_context"] == BrokerContext("proj", "t1", "default")
         assert captured["routes_path"] == tmp_path / "routes.json"
         assert captured["passphrase"] == "test-passphrase"
         assert captured["stopped"] is True
@@ -975,6 +1005,7 @@ class TestConfinementWiring:
         sidecar = tmp_path / "demo.json"
         payload: dict[str, object] = {
             "container_name": "demo",
+            "broker_context": {"scope": "proj", "subject": "t1", "credential_set": "default"},
             "ipc_mode": "socket",
             "db_path": str(tmp_path / "vault.db"),
             "runtime_dir": str(tmp_path / "rt" / "sandbox"),
@@ -1032,6 +1063,11 @@ class TestConfinementWiring:
             json.dumps(
                 {
                     "container_name": "demo",
+                    "broker_context": {
+                        "scope": "proj",
+                        "subject": "t1",
+                        "credential_set": "default",
+                    },
                     "ipc_mode": "socket",
                     "db_path": str(tmp_path / "vault.db"),
                     "runtime_dir": str(tmp_path / "rt" / "sandbox"),
@@ -1075,6 +1111,11 @@ class TestConfinementWiring:
             json.dumps(
                 {
                     "container_name": "demo",
+                    "broker_context": {
+                        "scope": "proj",
+                        "subject": "t1",
+                        "credential_set": "default",
+                    },
                     "ipc_mode": "socket",
                     "db_path": str(tmp_path / "vault.db"),
                     "runtime_dir": str(tmp_path / "rt" / "sandbox"),
@@ -1108,6 +1149,11 @@ class TestConfinementWiring:
             json.dumps(
                 {
                     "container_name": "demo",
+                    "broker_context": {
+                        "scope": "proj",
+                        "subject": "t1",
+                        "credential_set": "default",
+                    },
                     "ipc_mode": "socket",
                     "db_path": str(tmp_path / "vault.db"),
                     "runtime_dir": str(tmp_path / "rt" / "sandbox"),
@@ -1170,6 +1216,11 @@ class TestPolicyConfinesOnTheLiveKernel:
             json.dumps(
                 {
                     "container_name": "demo",
+                    "broker_context": {
+                        "scope": "proj",
+                        "subject": "t1",
+                        "credential_set": "default",
+                    },
                     "ipc_mode": "socket",
                     "db_path": str(db_path),
                     "runtime_dir": str(runtime_dir),
@@ -1243,6 +1294,7 @@ class TestPolicyConfinesOnTheLiveKernel:
             from pathlib import Path
             from terok_util import hardening
             from terok_sandbox.config import SandboxConfig
+            from terok_sandbox import BrokerContext
             from terok_sandbox.launch import PerContainerResources, write_sidecar
             from terok_sandbox.supervisor import children
 
@@ -1259,6 +1311,7 @@ class TestPolicyConfinesOnTheLiveKernel:
             )
             sidecar = write_sidecar(
                 "demo",
+                broker_context=BrokerContext("proj", "t1", "default"),
                 cfg=cfg,
                 per_container=PerContainerResources(
                     container_runtime_dir=cfg.container_runtime_dir("demo"),
@@ -1399,6 +1452,11 @@ class TestPolicyConfinesOnTheLiveKernel:
             json.dumps(
                 {
                     "container_name": "demo",
+                    "broker_context": {
+                        "scope": "proj",
+                        "subject": "t1",
+                        "credential_set": "default",
+                    },
                     "ipc_mode": "tcp",
                     "db_path": str(tmp_path / "vault.db"),
                     "runtime_dir": str(runtime_dir),

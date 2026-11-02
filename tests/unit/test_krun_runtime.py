@@ -84,6 +84,15 @@ class TestKrunRuntime:
         rt = KrunRuntime(transport=FakeKrunTransport(), podman=NullRuntime())
         assert isinstance(rt, ContainerRuntime)
 
+    def test_containment_stays_on_host(self) -> None:
+        """Inventory and force-stop neither enter the guest nor lose their deadlines."""
+        podman = MagicMock()
+        runtime = KrunRuntime(transport=FakeKrunTransport(), podman=podman)
+        assert runtime.inventory(timeout=2) is podman.inventory.return_value
+        podman.inventory.assert_called_once_with(timeout=2)
+        runtime.force_stop("a" * 64, timeout=3)
+        podman.force_stop.assert_called_once_with("a" * 64, timeout=3)
+
     def test_exec_routes_to_transport(self) -> None:
         """`exec` delegates to the injected transport, not to podman."""
         transport = FakeKrunTransport()

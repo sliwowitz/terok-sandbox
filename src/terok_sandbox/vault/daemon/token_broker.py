@@ -59,9 +59,11 @@ from aiohttp import (
     web,
 )
 
+from ..context import BrokerContext
 from .audit import AuditWriter
 
 _logger = logging.getLogger("terok-vault")
+_AUTHORIZATION_POLL_INTERVAL = 0.1
 
 # Periodic OAuth refresh: the supervisor wakes every
 # ``_REFRESH_INTERVAL`` seconds, walks the refreshable credentials in
@@ -230,6 +232,28 @@ class _TokenDB:
         ).fetchone()
         return json.loads(row[0]) if row else None
 
+    def authorize(self, token: str, context: BrokerContext) -> dict | None:
+        """Resolve a live task grant without allowing the request to select another set."""
+        grant = self.lookup_token(token)
+        if grant is not None:
+            return grant if context.matches(grant) else None
+        provider = _marker_provider(token)
+        if provider is None:
+            return None
+        row = self._conn.execute(
+            "SELECT 1 FROM proxy_tokens WHERE scope = ? AND subject = ? "
+            "AND credential_set = ? AND provider = ? LIMIT 1",
+            (context.scope, context.subject, context.credential_set, provider),
+        ).fetchone()
+        if row is None:
+            return None
+        return {
+            "scope": context.scope,
+            "subject": context.subject,
+            "credential_set": context.credential_set,
+            "provider": provider,
+        }
+
     def load_ssh_keys_for_scope(self, scope: str) -> list[SSHKeyRecord]:
         """Return full SSH key records (including raw bytes) assigned to *scope*."""
         from ..store.db import SSHKeyRecord
@@ -283,6 +307,7 @@ class _TokenDB:
 # stood above the class bodies.
 _KEY_ROUTES = web.AppKey("routes", _RouteTable)
 _KEY_TOKEN_DB = web.AppKey("token_db", _TokenDB)
+_KEY_CONTEXT = web.AppKey("broker_context", BrokerContext)
 #: Directory for the cross-supervisor refresh ``flock`` files.  Seeded
 #: from the ambient runtime dir in ``_build_app`` (standalone callers)
 #: and overridden by ``VaultProxy.start`` with the lock dir resolved
@@ -329,11 +354,11 @@ def _extract_phantom_token(request: web.Request) -> str | None:
     return None
 
 
-def _static_oauth_token_info(token: str) -> dict | None:
-    """Return synthetic token metadata for shared OAuth marker tokens."""
+def _marker_provider(token: str) -> str | None:
+    """Interpret a shared OAuth marker as a provider selector, never authorization."""
     from . import CODEX_SHARED_OAUTH_MARKER, PHANTOM_CREDENTIALS_MARKER
 
-    # Keyed by the *provider* each shared-OAuth marker authenticates to — the
+    # Keyed by the *provider* each shared-OAuth marker selects — the
     # broker resolves routes off the bearer token, so these must match the
     # re-keyed routes.json/credentials vocabulary (claude→anthropic,
     # codex→openai), not the agent names the markers are named after.
@@ -341,16 +366,7 @@ def _static_oauth_token_info(token: str) -> dict | None:
         PHANTOM_CREDENTIALS_MARKER: "anthropic",
         CODEX_SHARED_OAUTH_MARKER: "openai",
     }
-    provider = static_markers.get(token)
-    if provider is None:
-        return None
-    _logger.debug("Accepting static phantom marker for %s OAuth", provider)
-    return {
-        "scope": "__static__",
-        "subject": "__static__",
-        "credential_set": "default",
-        "provider": provider,
-    }
+    return static_markers.get(token)
 
 
 def _path_matches_prefix(path: str, prefix: str) -> bool:
@@ -466,12 +482,15 @@ async def _proxy_websocket(
                 asyncio.create_task(_pump_websocket_frames(client_ws, upstream_ws)),
                 asyncio.create_task(_pump_websocket_frames(upstream_ws, client_ws)),
             }
-            done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
-            for task in pending:
-                task.cancel()
-            await asyncio.gather(*pending, return_exceptions=True)
-            for task in done:
-                task.result()
+            try:
+                done, _ = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+                for task in done:
+                    task.result()
+            finally:
+                for task in tasks:
+                    if not task.done():
+                        task.cancel()
+                await asyncio.gather(*tasks, return_exceptions=True)
             if not client_ws.closed:
                 await client_ws.close(code=upstream_ws.close_code or _WEBSOCKET_NORMAL_CLOSURE)
             return client_ws
@@ -678,6 +697,35 @@ async def _resolve_redirect(
 
 
 async def _handle_request(request: web.Request) -> web.StreamResponse:
+    """Bound HTTP and WebSocket authorization to live grants, including active streams.
+
+    Active requests recheck grants at the polling interval and disconnect
+    on the next check after revocation. New requests always validate
+    against the current grant table.
+    """
+    token = _extract_phantom_token(request)
+    task = asyncio.create_task(_forward_request(request))
+    try:
+        while not task.done():
+            done, _ = await asyncio.wait({task}, timeout=_AUTHORIZATION_POLL_INTERVAL)
+            if done:
+                break
+            if (
+                token is None
+                or request.app[_KEY_TOKEN_DB].authorize(token, request.app[_KEY_CONTEXT]) is None
+            ):
+                task.cancel()
+                if request.transport is not None:
+                    request.transport.close()
+                return web.Response(status=401, text="Authorization revoked")
+        return await task
+    finally:
+        if not task.done():
+            task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+
+
+async def _forward_request(request: web.Request) -> web.StreamResponse:
     """Authenticate, route by token, inject credentials, and forward to upstream."""
     started_at = time.monotonic()
     routes: _RouteTable = request.app[_KEY_ROUTES]
@@ -690,14 +738,11 @@ async def _handle_request(request: web.Request) -> web.StreamResponse:
         await _audit_request(request, None, 401, "missing_token", started_at)
         return web.Response(status=401, text="Missing authentication")
 
-    token_info = token_db.lookup_token(phantom)
+    token_info = token_db.authorize(phantom, request.app[_KEY_CONTEXT])
     if token_info is None:
-        if static_info := _static_oauth_token_info(phantom):
-            token_info = static_info
-        else:
-            _logger.warning("%s %s -> 401 Invalid token", request.method, request.path)
-            await _audit_request(request, None, 401, "invalid_token", started_at)
-            return web.Response(status=401, text="Invalid token")
+        _logger.warning("%s %s -> 401 Invalid token", request.method, request.path)
+        await _audit_request(request, None, 401, "invalid_token", started_at)
+        return web.Response(status=401, text="Invalid token")
 
     # 2. Route by token's provider
     provider = token_info["provider"]
@@ -1026,6 +1071,7 @@ def _build_app(
     routes_path: str,
     audit_path: Path | None = None,
     *,
+    broker_context: BrokerContext,
     passphrase: str | None = None,
 ) -> web.Application:
     """Construct the aiohttp application.
@@ -1038,11 +1084,14 @@ def _build_app(
     # auto_decompress=False keeps request bodies as opaque bytes too: the broker
     # forwards them with their Content-Encoding, so the agent's codec (zstd) never
     # has to be installed on the host.
+    if not isinstance(broker_context, BrokerContext):
+        raise ValueError("Missing broker context; recreate this task container")
     app = web.Application(
         client_max_size=_MAX_REQUEST_BODY_SIZE, handler_args={"auto_decompress": False}
     )
     app[_KEY_ROUTES] = _RouteTable(routes_path)
     app[_KEY_TOKEN_DB] = _TokenDB(db_path, passphrase=passphrase)
+    app[_KEY_CONTEXT] = broker_context
     # Default refresh-lock dir for standalone callers; VaultProxy.start
     # overrides this with the dir resolved from its injected runtime_dir.
     app[_KEY_LOCK_DIR] = _ambient_lock_dir()
@@ -1121,7 +1170,7 @@ class VaultProxy:
         self,
         *,
         db_path: Path | str,
-        scope_id: str | None,
+        broker_context: BrokerContext,
         bind: UnixBind | TcpBind,
         routes_path: Path | str | None = None,
         audit_path: Path | None = None,
@@ -1130,10 +1179,8 @@ class VaultProxy:
     ) -> None:
         """Wire the proxy to the credential DB and a transport.
 
-        *scope_id* is informational at present — the broker authorises
-        per-token via ``_TokenDB.lookup_token``,
-        not by scope.  Reserved for future per-supervisor scope-filtering
-        (e.g. refusing tokens outside the supervisor's container scope).
+        *broker_context* binds every request to the container's task and
+        credential set. A missing context requires container recreation.
 
         *routes_path* defaults to ``$XDG_CONFIG_HOME/terok/vault/routes.json``
         when omitted — the canonical location ``terok-executor`` writes
@@ -1151,7 +1198,9 @@ class VaultProxy:
         helper from inside the filesystem policy.
         """
         self._db_path = str(db_path)
-        self._scope_id = scope_id
+        if not isinstance(broker_context, BrokerContext):
+            raise ValueError("Missing broker context; recreate this task container")
+        self._broker_context = broker_context
         self._bind = bind
         if routes_path is None:
             from terok_sandbox.config import SandboxConfig
@@ -1172,9 +1221,9 @@ class VaultProxy:
         return self._bind
 
     @property
-    def scope_id(self) -> str | None:
-        """Return the scope the proxy was constructed with (informational)."""
-        return self._scope_id
+    def scope_id(self) -> str:
+        """Return the task scope the proxy enforces."""
+        return self._broker_context.scope
 
     async def start(self) -> None:
         """Build the aiohttp app and bring the listener up.
@@ -1191,6 +1240,7 @@ class VaultProxy:
             self._routes_path,
             audit_path=self._audit_path,
             passphrase=self._passphrase,
+            broker_context=self._broker_context,
         )
         self._refresh_lock_dir = self._compute_refresh_lock_dir()
         # The refresh loop reads the lock dir off the app, so pin the

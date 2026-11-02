@@ -139,6 +139,11 @@ depends_on = ["terok_sandbox.vault.daemon.token_broker"]
 
 # Vault.store — at-rest data layer.
 [[modules]]
+path = "terok_sandbox.vault.context"
+layer = "foundation"
+utility = true
+
+[[modules]]
 path = "terok_sandbox.vault.store"
 layer = "foundation"
 depends_on = []

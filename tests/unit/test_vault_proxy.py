@@ -18,6 +18,8 @@ from pathlib import Path
 
 import pytest
 
+from terok_sandbox.vault.context import BrokerContext
+
 
 class TestRefreshLock:
     """``acquire_refresh_lock`` / ``release_refresh_lock`` contract."""
@@ -171,7 +173,7 @@ class TestVaultProxyConstruction:
         bind = UnixBind(socket_path=tmp_path / "vault.sock")
         proxy = VaultProxy(
             db_path=tmp_path / "vault.db",
-            scope_id="proj-a",
+            broker_context=BrokerContext("proj-a", "t1", "default"),
             bind=bind,
             runtime_dir=runtime,
         )
@@ -189,11 +191,11 @@ class TestVaultProxyConstruction:
 
         proxy = VaultProxy(
             db_path=tmp_path / "vault.db",
-            scope_id=None,
+            broker_context=BrokerContext("proj", "t1", "default"),
             bind=TcpBind(host="127.0.0.1", port=43210),
             runtime_dir=tmp_path / "run",
         )
-        assert proxy.scope_id is None
+        assert proxy.scope_id == "proj"
         assert proxy._describe_bind() == "tcp://127.0.0.1:43210"
 
     def test_lock_dir_falls_back_to_ambient_without_runtime_dir(self, tmp_path: Path) -> None:
@@ -204,7 +206,7 @@ class TestVaultProxyConstruction:
 
         proxy = VaultProxy(
             db_path=tmp_path / "vault.db",
-            scope_id=None,
+            broker_context=BrokerContext("proj", "t1", "default"),
             bind=UnixBind(socket_path=tmp_path / "vault.sock"),
         )
         assert proxy._compute_refresh_lock_dir() == token_broker._ambient_lock_dir()
@@ -226,7 +228,7 @@ class TestBindUnixSocket:
 
         return VaultProxy(
             db_path=tmp_path / "vault.db",
-            scope_id=None,
+            broker_context=BrokerContext("proj", "t1", "default"),
             bind=UnixBind(socket_path=tmp_path / "sockets" / "vault.sock"),
             runtime_dir=tmp_path / "run",
         )
@@ -327,7 +329,7 @@ class TestVaultProxyLifecycle:
         CredentialDB(db_path, passphrase="test").close()
         return VaultProxy(
             db_path=str(db_path),
-            scope_id=None,
+            broker_context=BrokerContext("proj", "t1", "default"),
             bind=UnixBind(socket_path=sock_path),
             routes_path=str(routes),
             runtime_dir=tmp_path / "run",

@@ -43,6 +43,7 @@ from .protocol import (
     Image,
     LogStream,
     PortReservation,
+    RuntimeContainer,
 )
 
 __all__ = [
@@ -50,6 +51,7 @@ __all__ = [
     "Container",
     "ContainerRemoveResult",
     "ContainerRuntime",
+    "RuntimeContainer",
     "ExecResult",
     "Image",
     "LogStream",

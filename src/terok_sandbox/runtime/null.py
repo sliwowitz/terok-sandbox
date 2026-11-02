@@ -25,6 +25,7 @@ from .protocol import (
     Image,
     LogStream,
     PortReservation,
+    RuntimeContainer,
 )
 
 # A scripted stdio interaction for [`exec_stdio`][terok_sandbox.runtime.null.NullRuntime.exec_stdio] — pairs of
@@ -258,6 +259,7 @@ class NullRuntime:
         self._container_images: dict[str, str] = {}
         self._container_rw_sizes: dict[str, int] = {}
         self._container_ids: dict[str, str] = {}
+        self._container_annotations: dict[str, dict[str, str]] = {}
         self._container_mounts: dict[str, tuple[tuple[str, str], ...]] = {}
         self._container_env: dict[str, dict[str, str]] = {}
         self._container_exit_codes: dict[str, int] = {}
@@ -294,6 +296,30 @@ class NullRuntime:
     def set_container_id(self, name: str, container_id: str) -> None:
         """Record the full container ID [`Container.id`][terok_sandbox.runtime.Container.id] returns for *name*."""
         self._container_ids[name] = container_id
+
+    def set_container_annotations(self, name: str, annotations: dict[str, str]) -> None:
+        """Record host-side annotations for containment inventory tests."""
+        self._container_annotations[name] = dict(annotations)
+
+    def inventory(self, *, timeout: float = 10) -> list[RuntimeContainer]:
+        """Return fixture identities, states and host annotations."""
+        return [
+            RuntimeContainer(
+                self._container_ids[name],
+                name,
+                state,
+                dict(self._container_annotations.get(name, {})),
+            )
+            for name, state in self._container_states.items()
+        ]
+
+    def force_stop(self, container_id: str, *, timeout: float = 10) -> None:
+        """Stop the fixture with the exact ID or raise when it is absent."""
+        for name, identity in self._container_ids.items():
+            if identity == container_id:
+                self._container_states[name] = "exited"
+                return
+        raise RuntimeError("Container ID not found")
 
     def set_container_env(self, name: str, env: dict[str, str]) -> None:
         """Fixture hook: record the environment *name* was created with."""
@@ -451,6 +477,7 @@ class NullRuntime:
             self._container_ids.pop(name, None)
             self._container_mounts.pop(name, None)
             self._container_env.pop(name, None)
+            self._container_annotations.pop(name, None)
             self._container_exit_codes.pop(name, None)
             self._ready_results.pop(name, None)
             # Drop any pre-registered exec results keyed by this container name

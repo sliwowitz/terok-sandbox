@@ -167,6 +167,27 @@ Every subsystem you opt into authenticates the container via a
 | `--gate`  | gate token (stateless — lives only in the sidecar + container env) | HTTP basic-auth username        |
 | `--scope` | phantom (provider=`ssh` row in same DB)   | `socat → ssh-agent-bridge.sh` → vault container-facing endpoint |
 
+The host persists a mandatory `BrokerContext(scope, subject, credential_set)`
+in the sidecar, using the same identity that issued the HTTP proxy tokens.
+All processes in the container share that authority: one task, one credential
+set, for **both OAuth and API keys**. A live token for another task or set is
+rejected, even if it exists in the vault. Shared OAuth markers identify only
+a provider; they require a live grant for this container's exact context and
+provider, and never fall back to the `default` set.
+
+Revoking the task's token rows denies new HTTP requests immediately. Active
+HTTP streams and WebSocket forwarding are cancelled at the next authorization
+poll (100 ms); requests already performed upstream cannot be undone. The SSH
+signer checks its token and current key assignments before every identity or
+signature request, including on established connections.
+
+**Upgrade:** sidecars without a valid broker context cannot start credential
+services. Recreate those containers through the launch path so context and
+tokens are issued together; do not hand-fill a guessed default context.
+`write_sidecar` and `VaultProxy` require an explicit `BrokerContext`. Standalone
+HTTP callers must mint tokens with the sidecar's exact identity; merely enabling
+`--broker` does not confer a provider grant.
+
 Subject for token rows is the **container name**.  Cleanup keys on
 `(scope, container)`; the same name is used in shield's per-container
 rule namespace.

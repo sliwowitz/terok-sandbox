@@ -46,6 +46,16 @@ class ExecResult:
 
 
 @dataclass(frozen=True)
+class RuntimeContainer:
+    """A container's immutable identity and host-recorded containment metadata."""
+
+    id: str
+    name: str
+    state: str
+    annotations: dict[str, str]
+
+
+@dataclass(frozen=True)
 class ContainerRemoveResult:
     """Per-container outcome from [`ContainerRuntime.force_remove`][terok_sandbox.runtime.protocol.ContainerRuntime.force_remove]."""
 
@@ -271,6 +281,14 @@ class ContainerRuntime(Protocol):
     """
 
     # -- Handle factories --------------------------------------------------
+
+    def inventory(self, *, timeout: float = 10) -> list[RuntimeContainer]:
+        """Enumerate all containers with host annotations; raise on incomplete discovery."""
+        ...
+
+    def force_stop(self, container_id: str, *, timeout: float = 10) -> None:
+        """Stop an exact container ID immediately; raise on failure or deadline expiry."""
+        ...
 
     def container(self, name: str) -> Container:
         """Return a handle to the container named *name*.
