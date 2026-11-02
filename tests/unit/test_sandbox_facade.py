@@ -20,7 +20,7 @@ from terok_sandbox import GpuConfigError, SandboxConfig
 from terok_sandbox.launch import PerContainerResources, write_sidecar
 from terok_sandbox.runtime import ContainerRemoveResult
 from terok_sandbox.runtime.gpu import check_gpu_error
-from terok_sandbox.runtime.podman import redact_env_args
+from terok_sandbox.runtime.podman import redact_env_args, unshielded_network_args
 from terok_sandbox.sandbox import (
     READY_MARKER,
     LifecycleHooks,
@@ -35,11 +35,15 @@ from terok_sandbox.supervisor.sidecar import (
     wired_services,
 )
 from tests.constants import (
+    CONTAINER_HOSTNAME,
+    DOCKER_HOSTNAME,
     DRIFTED_SERVICE_PORTS,
     FAKE_SERVICE_PORTS,
     MISSING_PODMAN_INIT,
     MOCK_BASE,
     MOCK_TASK_DIR,
+    PASTA_HOST_LOOPBACK,
+    SLIRP_GATEWAY,
 )
 
 if TYPE_CHECKING:
@@ -922,6 +926,39 @@ class TestSandbox:
 
         mock_unshielded.assert_called_once()
         mock_shield.assert_not_called()
+
+    @pytest.mark.parametrize("shield_disabled", [False, True])
+    def test_hosts_file_reaches_podman(
+        self, shield_disabled: bool, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Shielded and unshielded launches both pass the configured base."""
+        monkeypatch.setattr("terok_util.podman._podman_version", lambda: (5, 4))
+        cfg = SandboxConfig(shield_disabled=shield_disabled, hosts_file="image")
+        with (
+            patch("terok_sandbox.sandbox.unshielded_network_args", return_value=[]),
+            patch("terok_sandbox.sandbox.Sandbox.pre_start_args", return_value=[]),
+        ):
+            cmd = Sandbox(cfg)._build_cmd(_make_spec(), "run")
+
+        assert cmd[cmd.index("--hosts-file") + 1] == "image"
+
+    @pytest.mark.parametrize(
+        ("network_mode", "address"),
+        [("pasta", PASTA_HOST_LOOPBACK), ("slirp4netns", SLIRP_GATEWAY)],
+    )
+    def test_unshielded_args_pin_both_host_aliases(self, network_mode: str, address: str) -> None:
+        """Neither name of the host keeps an address podman detected."""
+        with (
+            patch("terok_sandbox.runtime.podman.os.geteuid", return_value=1000),
+            patch(
+                "terok_sandbox.runtime.podman._detect_rootless_network_mode",
+                return_value=network_mode,
+            ),
+        ):
+            args = unshielded_network_args(None)
+
+        assert f"{CONTAINER_HOSTNAME}:{address}" in args
+        assert f"{DOCKER_HOSTNAME}:{address}" in args
 
     def test_run_refuses_when_shield_setup_fails(self) -> None:
         """A failing ``shield.pre_start`` aborts the launch with a diagnostic ``ShieldSetupError``.

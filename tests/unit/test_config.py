@@ -27,6 +27,21 @@ def test_aslr_control_reads_global_config(
     assert SandboxConfig(aslr_control=not value).aslr_control is not value
 
 
+def test_hosts_file_reads_global_config(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """``run.hosts_file`` reaches ``SandboxConfig``, and a direct value wins."""
+    path = tmp_path / "config.yml"
+    path.write_text("run:\n  hosts_file: image\n")
+    monkeypatch.setenv("TEROK_CONFIG_FILE", str(path))
+    assert SandboxConfig().hosts_file == "image"
+    assert SandboxConfig(hosts_file="none").hosts_file == "none"
+
+
+def test_hosts_file_defaults_to_none(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Missing configuration keeps the host's names out of the container."""
+    monkeypatch.setenv("TEROK_CONFIG_FILE", str(tmp_path / "missing.yml"))
+    assert SandboxConfig().hosts_file == "none"
+
+
 def test_aslr_control_defaults_off() -> None:
     """Missing configuration leaves the host's seccomp policy untouched."""
     assert SandboxConfig().aslr_control is False

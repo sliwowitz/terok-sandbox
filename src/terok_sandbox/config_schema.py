@@ -612,6 +612,15 @@ class RawRunSection(BaseModel):
             "Weakens exploit mitigation; opt in only for development containers."
         ),
     )
+    hosts_file: str = Field(
+        default="none",
+        description=(
+            "Podman ``--hosts-file`` value, the base of the container's "
+            "``/etc/hosts``: ``none``, ``image``, or an absolute host path.  "
+            "Set ``/etc/hosts`` to copy the host's names into the container.  "
+            "Podman older than 5.4 has no such flag and always copies them."
+        ),
+    )
     podman_args: list[str] = Field(
         default_factory=list,
         description=(

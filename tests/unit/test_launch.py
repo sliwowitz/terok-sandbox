@@ -191,6 +191,22 @@ class TestCompose:
             profile.assert_not_called()
             assert not any(arg.startswith("seccomp=") for arg in args)
 
+    def test_hosts_file_reaches_podman(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Standalone prepare/run passes the configured base on supported podman."""
+        monkeypatch.setattr("terok_util.podman._podman_version", lambda: (5, 4))
+        cfg = dataclasses.replace(_make_cfg(tmp_path), hosts_file="image")
+        args, _ = compose("myc", cfg=cfg, shield=False, gate=False, broker=False, scope=None)
+        assert args[args.index("--hosts-file") + 1] == "image"
+
+    def test_hosts_file_flag_is_absent_on_older_podman(self, tmp_path: Path) -> None:
+        """Podman older than 5.4 would reject the flag."""
+        args, _ = compose(
+            "myc", cfg=_make_cfg(tmp_path), shield=False, gate=False, broker=False, scope=None
+        )
+        assert "--hosts-file" not in args
+
     def test_aslr_control_rejects_default_krun_before_state_setup(self, tmp_path: Path) -> None:
         """An unsupported host-default runtime leaves standalone launch state untouched."""
         cfg = dataclasses.replace(_make_cfg(tmp_path), aslr_control=True)

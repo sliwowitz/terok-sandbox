@@ -64,6 +64,18 @@ SYSTEM_RUNTIME_ROOT = Path("/run")
 LOCALHOST = "127.0.0.1"
 """Loopback address used for bind/connect in tests."""
 
+CONTAINER_HOSTNAME = "host.containers.internal"
+"""Hostname Podman exposes for reaching services on the host."""
+
+DOCKER_HOSTNAME = "host.docker.internal"
+"""Second hostname Podman exposes for the host."""
+
+PASTA_HOST_LOOPBACK = "169.254.1.2"
+"""Address that pasta maps to the host's loopback."""
+
+SLIRP_GATEWAY = "10.0.2.2"
+"""Default slirp4netns gateway address."""
+
 GATE_PORT = 9418
 """Default gate server port."""
 

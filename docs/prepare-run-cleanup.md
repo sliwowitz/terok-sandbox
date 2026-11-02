@@ -41,6 +41,22 @@ services are scope-bound (the gate serves `<scope>.git`; the broker
 serves the scope's credentials); when `--scope` is omitted they are
 skipped with a note on stderr.
 
+## Host names in `/etc/hosts`
+
+Podman builds a container's `/etc/hosts` from a base file, and its default
+base is the host's `/etc/hosts`. That copies private host names into the
+container. Sandbox sets `--hosts-file none`, so the container starts from an
+empty base. Podman still adds `localhost`, the container name, and each
+`--add-host` entry.
+
+Set `run.hosts_file` in `config.yml` to change the base. The value goes to
+podman unchanged: `none`, `image`, or an absolute host path. Use `/etc/hosts`
+to copy the host's names into the container again. Embedded callers can set
+`SandboxConfig(hosts_file=...)`.
+
+Podman older than 5.4 has no `--hosts-file` flag. On those releases sandbox
+omits the flag, prints a notice, and the container copies the host's file.
+
 ## Seccomp grants for ThreadSanitizer and perf
 
 Set `run.aslr_control: true` in the host's `config.yml` to allow processes

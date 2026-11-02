@@ -259,6 +259,13 @@ def _default_aslr_control() -> bool:
     return _validate_section(RawRunSection, "run").aslr_control
 
 
+def _default_hosts_file() -> str:
+    """Resolve the global ``run.hosts_file`` setting through its schema."""
+    from .config_schema import RawRunSection
+
+    return _validate_section(RawRunSection, "run").hosts_file
+
+
 def _default_experimental() -> bool:
     """Default-factory indirection so tests can patch ``experimental_enabled``."""
     return experimental_enabled()
@@ -487,6 +494,13 @@ class SandboxConfig:
     pass the resolved project value explicitly to honor project overrides.
     Only narrowly vetted personality arguments are granted; the remaining host
     Podman seccomp policy stays intact. Disabled ASLR weakens exploit mitigation.
+    """
+
+    hosts_file: str = field(default_factory=_default_hosts_file)
+    """Base of the container's ``/etc/hosts``, passed to podman as ``--hosts-file``.
+
+    Defaults to ``run.hosts_file`` in the layered global config. Orchestrators
+    pass the resolved project value explicitly to honor project overrides.
     """
 
     def with_resolved_ports(self) -> SandboxConfig:

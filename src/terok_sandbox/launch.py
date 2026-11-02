@@ -26,7 +26,12 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
-from terok_util import find_host_tool, podman_userns_args, require_setup
+from terok_util import (
+    find_host_tool,
+    podman_hosts_file_args,
+    podman_userns_args,
+    require_setup,
+)
 
 from .config import SandboxConfig
 from .doctor import CheckVerdict, DoctorCheck
@@ -366,6 +371,8 @@ def compose(
         args += ShieldManager(
             state_dir, cfg, loopback_ports_override=loopback_ports or None
         ).pre_start(container)
+
+    args += podman_hosts_file_args(cfg.hosts_file)
 
     # User-namespace mapping ensures the host UID matches inside the
     # container, which both the bind-mounted sockets (0600 host-owned)
