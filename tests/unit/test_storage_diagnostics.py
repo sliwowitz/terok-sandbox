@@ -79,8 +79,7 @@ def storage(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict:
 def test_matching_failure_reports_metadata_without_diagnosis(storage: dict) -> None:
     before = storage["parent"].stat()
     report = storage_permission_diagnostics(storage["error"])
-    assert "Storage diagnostics" in report
-    assert "not a confirmed cause" in report
+    assert report.startswith("\n\nStorage diagnostics (host IDs vs Podman's rootless mappings):\n")
     assert str(storage["parent"]) in report
     assert "mode=0700" in report
     assert f"owner UID={before.st_uid} (mapped)" in report
@@ -178,7 +177,7 @@ def test_acl_status_is_context_not_a_gate(storage: dict, status: str) -> None:
     storage["acl"].return_value = b"an access ACL"
     report = storage_permission_diagnostics(storage["error"])
     assert f"access ACL={status}" in report
-    assert "not a confirmed cause" in report
+    assert f"group GID={storage['ownership']['gid']} (unmapped)" in report
 
 
 def test_unmapped_owner_is_reported_even_with_mapped_group(storage: dict) -> None:

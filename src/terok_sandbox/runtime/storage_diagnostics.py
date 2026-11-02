@@ -73,8 +73,8 @@ def storage_permission_diagnostics(stderr: str) -> str:
                 )
         if observations:
             return (
-                "\n\nStorage diagnostics (host IDs vs Podman's rootless mappings; "
-                "not a confirmed cause):\n" + "\n".join(observations)
+                "\n\nStorage diagnostics (host IDs vs Podman's rootless mappings):\n"
+                + "\n".join(observations)
             )
     except (OSError, subprocess.SubprocessError, ValueError, KeyError, TypeError, RuntimeError):
         # Diagnostics must never replace the launch error with a probe error.
