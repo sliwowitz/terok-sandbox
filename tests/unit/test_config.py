@@ -42,6 +42,41 @@ def test_hosts_file_defaults_to_none(tmp_path: Path, monkeypatch: pytest.MonkeyP
     assert SandboxConfig().hosts_file == "none"
 
 
+def test_list_value_keeps_the_rest_of_the_run_section(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A ``run.podman_args`` list validates, so its sibling settings stay in force."""
+    path = tmp_path / "config.yml"
+    path.write_text(
+        "run:\n  hosts_file: image\n  aslr_control: true\n  podman_args:\n    - --shm-size=8g\n"
+    )
+    monkeypatch.setenv("TEROK_CONFIG_FILE", str(path))
+    config = SandboxConfig()
+    assert config.hosts_file == "image"
+    assert config.aslr_control is True
+
+
+def test_null_value_counts_as_unset(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A null key takes its default, and its sibling settings stay in force."""
+    path = tmp_path / "config.yml"
+    path.write_text("run:\n  podman_args:\n  hosts_file: image\n  aslr_control: true\n")
+    monkeypatch.setenv("TEROK_CONFIG_FILE", str(path))
+    config = SandboxConfig()
+    assert config.hosts_file == "image"
+    assert config.aslr_control is True
+
+
+def test_section_that_is_no_mapping_warns_and_takes_defaults(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A scalar in place of a section falls back to the defaults, and says so."""
+    path = tmp_path / "config.yml"
+    path.write_text("run: notamapping\n")
+    monkeypatch.setenv("TEROK_CONFIG_FILE", str(path))
+    assert SandboxConfig().hosts_file == "none"
+    assert "invalid run section" in capsys.readouterr().err
+
+
 def test_aslr_control_defaults_off() -> None:
     """Missing configuration leaves the host's seccomp policy untouched."""
     assert SandboxConfig().aslr_control is False
@@ -157,7 +192,7 @@ class TestSocketModeSkipsPortResolution:
         from terok_sandbox.config_schema import RawServicesSection
 
         with unittest.mock.patch(
-            "terok_sandbox.config.read_config_section", return_value={"mode": "soket"}
+            "terok_sandbox.config.read_config_top_level", return_value={"mode": "soket"}
         ):
             assert services_mode() == RawServicesSection().mode
         captured = capsys.readouterr()

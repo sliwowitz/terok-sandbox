@@ -23,7 +23,6 @@ from pydantic import BaseModel, ValidationError
 
 from .paths import (
     config_root as _config_root,
-    read_config_section,
     read_config_top_level,
     runtime_root as _runtime_root,
     state_root as _state_root,
@@ -79,8 +78,11 @@ def _validate_section[T: BaseModel](schema_cls: type[T], section: str) -> T:
     one-liner to stderr and fall through to the schema's defaults.
     This helper centralises that pattern so a missing/typo'd key
     collapses to the schema's default without hand-rolled fallbacks.
+    A null key counts as unset.
     """
-    raw = read_config_section(section)
+    raw = read_config_top_level(section) or {}
+    if isinstance(raw, dict):
+        raw = {key: value for key, value in raw.items() if value is not None}
     try:
         return schema_cls.model_validate(raw)
     except ValidationError as exc:
