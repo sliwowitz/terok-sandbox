@@ -23,7 +23,12 @@ from pathlib import Path, PurePosixPath
 from types import MappingProxyType
 from typing import TYPE_CHECKING
 
-from terok_util import podman_userns_args, require_host_tool, require_setup
+from terok_util import (
+    podman_hosts_file_args,
+    podman_userns_args,
+    require_host_tool,
+    require_setup,
+)
 
 from ._util import warn_user
 from .config import SandboxConfig
@@ -777,6 +782,7 @@ class Sandbox:
                 # weaken the security posture the operator explicitly chose.
                 raise ShieldSetupError(spec.container_name, exc) from exc
 
+        cmd += podman_hosts_file_args(self._cfg.hosts_file)
         cmd += gpu_run_args(spec.gpus)
 
         if spec.memory is not None:

@@ -23,7 +23,6 @@ from pydantic import BaseModel, ValidationError
 
 from .paths import (
     config_root as _config_root,
-    read_config_section,
     read_config_top_level,
     runtime_root as _runtime_root,
     state_root as _state_root,
@@ -79,8 +78,11 @@ def _validate_section[T: BaseModel](schema_cls: type[T], section: str) -> T:
     one-liner to stderr and fall through to the schema's defaults.
     This helper centralises that pattern so a missing/typo'd key
     collapses to the schema's default without hand-rolled fallbacks.
+    A null key counts as unset.
     """
-    raw = read_config_section(section)
+    raw = read_config_top_level(section) or {}
+    if isinstance(raw, dict):
+        raw = {key: value for key, value in raw.items() if value is not None}
     try:
         return schema_cls.model_validate(raw)
     except ValidationError as exc:
@@ -257,6 +259,13 @@ def _default_aslr_control() -> bool:
     from .config_schema import RawRunSection
 
     return _validate_section(RawRunSection, "run").aslr_control
+
+
+def _default_hosts_file() -> str:
+    """Resolve the global ``run.hosts_file`` setting through its schema."""
+    from .config_schema import RawRunSection
+
+    return _validate_section(RawRunSection, "run").hosts_file
 
 
 def _default_experimental() -> bool:
@@ -487,6 +496,13 @@ class SandboxConfig:
     pass the resolved project value explicitly to honor project overrides.
     Only narrowly vetted personality arguments are granted; the remaining host
     Podman seccomp policy stays intact. Disabled ASLR weakens exploit mitigation.
+    """
+
+    hosts_file: str = field(default_factory=_default_hosts_file)
+    """Base of the container's ``/etc/hosts``, passed to podman as ``--hosts-file``.
+
+    Defaults to ``run.hosts_file`` in the layered global config. Orchestrators
+    pass the resolved project value explicitly to honor project overrides.
     """
 
     def with_resolved_ports(self) -> SandboxConfig:

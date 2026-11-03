@@ -73,12 +73,13 @@ def redact_env_args(cmd: list[str]) -> list[str]:
 
 _SLIRP_GATEWAY = "10.0.2.2"
 _PASTA_HOST_LOOPBACK_MAP = "169.254.1.2"
+_HOST_ALIASES = ("host.containers.internal", "host.docker.internal")
 
 
 def unshielded_network_args(gate_port: int | None) -> list[str]:
     """Return podman network args for running without shield.
 
-    Replicates shield's normal networking (reachable ``host.containers.internal``)
+    Replicates shield's normal networking (reachable host aliases)
     without nftables rules.  **Dangerous fallback** — all egress is unfiltered.
     """
     if os.geteuid() == 0:
@@ -87,15 +88,18 @@ def unshielded_network_args(gate_port: int | None) -> list[str]:
         return [
             "--network",
             "slirp4netns:allow_host_loopback=true",
-            "--add-host",
-            f"host.containers.internal:{_SLIRP_GATEWAY}",
+            *_host_alias_args(_SLIRP_GATEWAY),
         ]
     return [
         "--network",
         f"pasta:--map-host-loopback,{_PASTA_HOST_LOOPBACK_MAP}",
-        "--add-host",
-        f"host.containers.internal:{_PASTA_HOST_LOOPBACK_MAP}",
+        *_host_alias_args(_PASTA_HOST_LOOPBACK_MAP),
     ]
+
+
+def _host_alias_args(address: str) -> list[str]:
+    """Return the ``--add-host`` flags that pin every name of the host to *address*."""
+    return [arg for alias in _HOST_ALIASES for arg in ("--add-host", f"{alias}:{address}")]
 
 
 def _detect_rootless_network_mode() -> str:
