@@ -1,5 +1,5 @@
 version = 1
-revision = 5
+revision = 3
 requires-python = ">=3.12, <4.0"
 resolution-markers = [
     "python_full_version >= '3.15'",
@@ -2654,19 +2654,29 @@ wheels = [
 
 [[package]]
 name = "terok-clearance"
-version = "0.8.2a2.dev259+g2678097e7"
-source = { git = "https://github.com/sliwowitz/terok-clearance?rev=fix%2F1315-rootless-storage#2678097e7682211bd00e81a4dda87fe679ce0a02" }
+version = "0.8.2a2"
+source = { url = "https://github.com/terok-ai/terok-clearance/releases/download/v0.8.2a2/terok_clearance-0.8.2a2-py3-none-any.whl" }
 dependencies = [
     { name = "asyncvarlink" },
     { name = "dbus-fast" },
     { name = "pyyaml" },
     { name = "terok-util" },
 ]
+wheels = [
+    { url = "https://github.com/terok-ai/terok-clearance/releases/download/v0.8.2a2/terok_clearance-0.8.2a2-py3-none-any.whl", hash = "sha256:b4cbd7460a9afb4a1c68a226fdbe25adfff5cc26c6bb0ee72265056117cc3ad6" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "asyncvarlink", specifier = "==0.3.3" },
+    { name = "dbus-fast", specifier = "~=5.0" },
+    { name = "pyyaml", specifier = "~=6.0" },
+    { name = "terok-util", url = "https://github.com/terok-ai/terok-util/releases/download/v0.5.0a2/terok_util-0.5.0a2-py3-none-any.whl" },
+]
 
 [[package]]
 name = "terok-sandbox"
 source = { editable = "." }
-default-groups = ["dev", "test"]
 dependencies = [
     { name = "aiohttp" },
     { name = "cryptography" },
@@ -2724,9 +2734,9 @@ requires-dist = [
     { name = "pydantic", specifier = "~=2.13" },
     { name = "ruamel-yaml", specifier = "==0.19.1" },
     { name = "sqlcipher3", specifier = "==0.6.4" },
-    { name = "terok-clearance", git = "https://github.com/sliwowitz/terok-clearance?rev=fix%2F1315-rootless-storage" },
-    { name = "terok-shield", git = "https://github.com/sliwowitz/terok-shield?rev=fix%2F1315-rootless-storage" },
-    { name = "terok-util", git = "https://github.com/sliwowitz/terok-util?rev=fix%2F1315-rootless-storage" },
+    { name = "terok-clearance", url = "https://github.com/terok-ai/terok-clearance/releases/download/v0.8.2a2/terok_clearance-0.8.2a2-py3-none-any.whl" },
+    { name = "terok-shield", url = "https://github.com/terok-ai/terok-shield/releases/download/v0.10.0a3/terok_shield-0.10.0a3-py3-none-any.whl" },
+    { name = "terok-util", url = "https://github.com/terok-ai/terok-util/releases/download/v0.5.0a2/terok_util-0.5.0a2-py3-none-any.whl" },
 ]
 
 [package.metadata.requires-dev]
@@ -2760,23 +2770,44 @@ test = [
 
 [[package]]
 name = "terok-shield"
-version = "0.10.0a3.dev414+ge3f1511fd"
-source = { git = "https://github.com/sliwowitz/terok-shield?rev=fix%2F1315-rootless-storage#e3f1511fd4f6b173a4f71fa8b23d9316f5dfe3ec" }
+version = "0.10.0a3"
+source = { url = "https://github.com/terok-ai/terok-shield/releases/download/v0.10.0a3/terok_shield-0.10.0a3-py3-none-any.whl" }
 dependencies = [
     { name = "pydantic" },
     { name = "pyyaml" },
     { name = "terok-util" },
 ]
+wheels = [
+    { url = "https://github.com/terok-ai/terok-shield/releases/download/v0.10.0a3/terok_shield-0.10.0a3-py3-none-any.whl", hash = "sha256:03c7c0f1007f9e868f285c9dfaf12f39252db360490351fd6f95d127a5dd7c47" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "pydantic", specifier = "~=2.13" },
+    { name = "pyyaml", specifier = "~=6.0" },
+    { name = "terok-util", url = "https://github.com/terok-ai/terok-util/releases/download/v0.5.0a2/terok_util-0.5.0a2-py3-none-any.whl" },
+]
 
 [[package]]
 name = "terok-util"
-version = "0.5.0a2.dev161+g89255169a"
-source = { git = "https://github.com/sliwowitz/terok-util?rev=fix%2F1315-rootless-storage#89255169a2b518f8a5b25f3dedbc6632094956f7" }
+version = "0.5.0a2"
+source = { url = "https://github.com/terok-ai/terok-util/releases/download/v0.5.0a2/terok_util-0.5.0a2-py3-none-any.whl" }
 dependencies = [
     { name = "jinja2" },
     { name = "packaging" },
     { name = "platformdirs" },
     { name = "ruamel-yaml" },
+]
+wheels = [
+    { url = "https://github.com/terok-ai/terok-util/releases/download/v0.5.0a2/terok_util-0.5.0a2-py3-none-any.whl", hash = "sha256:eb4946d2179dfef6308e97de08ff4adb03242fbee134b7d88ceccb4823c390d7" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "jinja2", specifier = "~=3.1" },
+    { name = "packaging", specifier = "~=26.3" },
+    { name = "platformdirs", specifier = "~=4.12" },
+    { name = "ruamel-yaml", specifier = "==0.19.1" },
 ]
 
 [[package]]
