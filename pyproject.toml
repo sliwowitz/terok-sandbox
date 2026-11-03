@@ -34,7 +34,7 @@ dynamic = ["version"]
 # Dependency pins follow the policy in AGENTS.md ("Dependency Pinning &
 # pyproject.toml Hygiene").  Keep the dependency list comment-free.
 dependencies = [
-    "terok-util @ git+https://github.com/sliwowitz/terok-util@fix/container-boundaries",
+    "terok-util @ https://github.com/terok-ai/terok-util/releases/download/v0.5.0a4/terok_util-0.5.0a4-py3-none-any.whl",
     "terok-shield @ git+https://github.com/sliwowitz/terok-shield@fix/container-boundaries",
     "terok-clearance @ git+https://github.com/sliwowitz/terok-clearance@fix/container-boundaries",
     "platformdirs~=4.12",
