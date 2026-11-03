@@ -2760,8 +2760,8 @@ test = [
 
 [[package]]
 name = "terok-shield"
-version = "0.10.0a5.dev417+g5826dc4ab"
-source = { git = "https://github.com/sliwowitz/terok-shield?rev=fix%2Fcontainer-boundaries#5826dc4ab69f114c66496bc90ec70bc8b0b25a48" }
+version = "0.10.0a5.dev418+g90e7e70eb"
+source = { git = "https://github.com/sliwowitz/terok-shield?rev=fix%2Fcontainer-boundaries#90e7e70ebb416a1a102175173f7489ba31280435" }
 dependencies = [
     { name = "pydantic" },
     { name = "pyyaml" },
