@@ -1,5 +1,5 @@
 version = 1
-revision = 3
+revision = 5
 requires-python = ">=3.12, <4.0"
 resolution-markers = [
     "python_full_version >= '3.15'",
@@ -2654,8 +2654,8 @@ wheels = [
 
 [[package]]
 name = "terok-clearance"
-version = "0.8.2a2.dev259+g794b43c5b"
-source = { git = "https://github.com/sliwowitz/terok-clearance?rev=fix%2Fcontainer-boundaries#794b43c5b865e788854e4d9afc9ff255949796d4" }
+version = "0.8.2a4.dev262+gaf32dcc0b"
+source = { git = "https://github.com/sliwowitz/terok-clearance?rev=fix%2Fcontainer-boundaries#af32dcc0bdd3bff1a7a88168cdb73290004e1e19" }
 dependencies = [
     { name = "asyncvarlink" },
     { name = "dbus-fast" },
@@ -2666,6 +2666,7 @@ dependencies = [
 [[package]]
 name = "terok-sandbox"
 source = { editable = "." }
+default-groups = ["dev", "test"]
 dependencies = [
     { name = "aiohttp" },
     { name = "cryptography" },
@@ -2759,8 +2760,8 @@ test = [
 
 [[package]]
 name = "terok-shield"
-version = "0.10.0a3.dev414+g771cbf13e"
-source = { git = "https://github.com/sliwowitz/terok-shield?rev=fix%2Fcontainer-boundaries#771cbf13e0a054634d99506d2e15e471e3346d16" }
+version = "0.10.0a5.dev417+g5826dc4ab"
+source = { git = "https://github.com/sliwowitz/terok-shield?rev=fix%2Fcontainer-boundaries#5826dc4ab69f114c66496bc90ec70bc8b0b25a48" }
 dependencies = [
     { name = "pydantic" },
     { name = "pyyaml" },
@@ -2769,8 +2770,8 @@ dependencies = [
 
 [[package]]
 name = "terok-util"
-version = "0.5.0a2.dev165+g4945d361a"
-source = { git = "https://github.com/sliwowitz/terok-util?rev=fix%2Fcontainer-boundaries#4945d361a69cf8453325a1b821eabe06a7b67e53" }
+version = "0.5.0a4.dev170+g69e377426"
+source = { git = "https://github.com/sliwowitz/terok-util?rev=fix%2Fcontainer-boundaries#69e3774267cba56be4e964d27530f27ece334f1b" }
 dependencies = [
     { name = "jinja2" },
     { name = "packaging" },

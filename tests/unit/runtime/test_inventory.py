@@ -74,6 +74,24 @@ def test_inventory_propagates_runtime_failures(run, failure):
         PodmanRuntime().inventory(timeout=2)
 
 
+@pytest.mark.parametrize("identity", ["short", "A" * 64, "--all"])
+def test_inventory_rejects_untrusted_ids_before_inspection(run, identity):
+    """A malformed listing cannot turn into name resolution or another Podman option."""
+    run.return_value = Mock(stdout=identity)
+    with pytest.raises(RuntimeError, match="invalid container ID"):
+        PodmanRuntime().inventory()
+    assert run.call_count == 1
+
+
+def test_inventory_does_not_inspect_after_its_deadline(run, monkeypatch):
+    """Listing and inspection share one timeout budget instead of each receiving a fresh one."""
+    monkeypatch.setattr("terok_sandbox.runtime.podman.time.monotonic", Mock(side_effect=[0, 3]))
+    run.return_value = Mock(stdout=_ID)
+    with pytest.raises(TimeoutError, match="inventory deadline expired"):
+        PodmanRuntime().inventory(timeout=2)
+    assert run.call_count == 1
+
+
 def test_empty_inventory_and_unannotated_containers(run):
     """An empty host and ordinary unannotated containers are valid inventories."""
     run.return_value = Mock(stdout="")

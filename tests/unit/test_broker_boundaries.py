@@ -16,12 +16,25 @@ from aiohttp.test_utils import TestClient, TestServer
 
 from terok_sandbox import BrokerContext
 from terok_sandbox.vault.daemon import PHANTOM_CREDENTIALS_MARKER
-from terok_sandbox.vault.daemon.token_broker import _build_app, _TokenDB
+from terok_sandbox.vault.daemon.token_broker import UnixBind, VaultProxy, _build_app, _TokenDB
 from terok_sandbox.vault.store.db import CredentialDB
 
 _CONTEXT = BrokerContext("project", "task", "project")
 _PROVIDER = "anthropic"
 _TIMEOUT = 3
+
+
+@pytest.mark.parametrize(
+    "context", [None, {"scope": "project", "subject": "task", "credential_set": "default"}]
+)
+def test_broker_entry_points_reject_untrusted_context_before_opening_vault(tmp_path, context):
+    """Neither a missing identity nor a plain mapping can bypass the canonical context type."""
+    db_path = tmp_path / "unopened.db"
+    with pytest.raises(ValueError, match="Missing broker context"):
+        _build_app(str(db_path), str(tmp_path / "routes.json"), broker_context=context)
+    with pytest.raises(ValueError, match="Missing broker context"):
+        VaultProxy(db_path=db_path, broker_context=context, bind=UnixBind(tmp_path / "vault.sock"))
+    assert not db_path.exists()
 
 
 @pytest.mark.parametrize("field", ["scope", "subject", "credential_set"])
