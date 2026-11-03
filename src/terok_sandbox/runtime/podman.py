@@ -35,12 +35,15 @@ from terok_util import require_host_tool
 from .._util import log_debug, log_warning
 from .protocol import (
     Container,
+    ContainerInspection,
     ContainerRemoveResult,
     ExecResult,
     Image,
+    ImageInspection,
     LogStream,
     PortReservation,
     RuntimeContainer,
+    RuntimeInspectionError,
 )
 from .storage_diagnostics import storage_permission_diagnostics
 
@@ -151,8 +154,8 @@ _PROBE_TIMEOUT = 30
 """Ceiling for read-only podman queries (inspect / ps).  They answer in
 milliseconds from a healthy podman; only a wedged one (stale storage
 lock, dead storage) blocks longer, and an unbounded probe then hangs
-whatever thread asked — a TUI froze this way (terok#1181).  On timeout a
-probe degrades to its no-answer value, same as any other probe failure."""
+whatever thread asked — a TUI froze this way (terok#1181). Best-effort
+properties degrade to their no-answer value; strict inspection raises."""
 _STOP_POLL_INTERVAL = 0.5
 _STOP_KILL_TIMEOUT = 15
 _STOP_CLEANUP_TIMEOUT = 60
@@ -266,6 +269,24 @@ class PodmanContainer:
     def __hash__(self) -> int:
         """Hash by name."""
         return hash(("PodmanContainer", self.name))
+
+    def inspect(self) -> ContainerInspection | None:
+        """Read identity and creation inputs together; only confirmed absence returns ``None``."""
+        record = _inspect_record("container", self.name)
+        if record is None:
+            return None
+        try:
+            identity = _inspection_identity(record["Id"])
+            state = record["State"]["Status"]
+            if not isinstance(state, str) or not state:
+                raise ValueError("invalid state")
+            image_id = record["Image"]
+            image = self._runtime.image(_inspection_identity(image_id)) if image_id != "" else None
+            env = _inspection_environment(record["Config"]["Env"])
+            mounts = _inspection_mounts(record["Mounts"])
+        except (KeyError, TypeError, ValueError) as exc:
+            raise RuntimeInspectionError(f"Invalid inspection of container {self.name!r}") from exc
+        return ContainerInspection(identity, state, image, env, mounts)
 
     @property
     def state(self) -> str | None:
@@ -704,6 +725,24 @@ class PodmanImage:
         """Hash by ref."""
         return hash(("PodmanImage", self.ref))
 
+    def inspect(self) -> ImageInspection | None:
+        """Read identity and labels together; missing labels are not an inspection fallback."""
+        record = _inspect_record("image", self.ref)
+        if record is None:
+            return None
+        try:
+            identity = _inspection_identity(record["Id"])
+            labels = record["Config"]["Labels"]
+            if labels is None:
+                labels = {}
+            if not isinstance(labels, dict) or any(
+                not isinstance(value, str) for value in labels.values()
+            ):
+                raise ValueError("invalid labels")
+        except (KeyError, TypeError, ValueError) as exc:
+            raise RuntimeInspectionError(f"Invalid inspection of image {self.ref!r}") from exc
+        return ImageInspection(identity, labels)
+
     @property
     def id(self) -> str | None:
         """Resolved image ID, or ``None`` when the image is absent."""
@@ -818,6 +857,94 @@ class PodmanImage:
         except (FileNotFoundError, subprocess.TimeoutExpired):
             return False
         return result.returncode == 0
+
+
+# ── Strict inspection ─────────────────────────────────────────────────────
+
+
+def _inspect_record(kind: str, ref: str) -> dict | None:
+    """Inspect once; confirm absence separately only when Podman rejects the inspection."""
+    deadline = time.monotonic() + _PROBE_TIMEOUT
+    try:
+        executable = require_host_tool("podman")
+        result = subprocess.run(  # nosec B603 B607 - fixed argv; trusted executable; reference after --
+            ["podman", kind, "inspect", "--", ref],
+            executable=executable,
+            capture_output=True,
+            text=True,
+            timeout=_PROBE_TIMEOUT,
+        )
+        if result.returncode:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise TimeoutError("Inspection deadline expired")
+            present = subprocess.run(  # nosec B603 B607 - fixed argv; trusted executable; reference after --
+                ["podman", kind, "exists", "--", ref],
+                executable=executable,
+                capture_output=True,
+                text=True,
+                timeout=remaining,
+            )
+            if present.returncode == 1:
+                return None
+            present.check_returncode()
+            result.check_returncode()
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise RuntimeInspectionError(f"Cannot inspect {kind} {ref!r}: {exc}") from exc
+
+    try:
+        records = json.loads(result.stdout)
+        if not isinstance(records, list) or len(records) != 1 or not isinstance(records[0], dict):
+            raise ValueError("expected exactly one inspection record")
+    except (TypeError, ValueError) as exc:
+        raise RuntimeInspectionError(f"Invalid inspection of {kind} {ref!r}") from exc
+    return records[0]
+
+
+def _inspection_identity(value: object) -> str:
+    """Accept a full content-addressed Podman identity, never a mutable tag or short prefix."""
+    if not isinstance(value, str) or not re.fullmatch(r"(?:sha256:)?[0-9a-f]{64}", value):
+        raise ValueError("invalid immutable identity")
+    return value
+
+
+def _inspection_environment(entries: object) -> dict[str, str]:
+    """Decode the complete creation environment; nil is empty, malformed entries are not."""
+    if entries is None:
+        return {}
+    if not isinstance(entries, list):
+        raise ValueError("invalid environment")
+    env = {}
+    for entry in entries:
+        if not isinstance(entry, str):
+            raise ValueError("invalid environment entry")
+        key, separator, value = entry.partition("=")
+        if not key or not separator:
+            raise ValueError("invalid environment assignment")
+        env[key] = value
+    return env
+
+
+def _inspection_mounts(entries: object) -> tuple[tuple[str, str], ...]:
+    """Preserve every reported bind or volume mount, refusing partial mount evidence."""
+    if entries is None:
+        return ()
+    if not isinstance(entries, list):
+        raise ValueError("invalid mounts")
+    mounts = []
+    for entry in entries:
+        if not isinstance(entry, dict):
+            raise ValueError("invalid mount entry")
+        source, destination = entry["Source"], entry["Destination"]
+        if (
+            not isinstance(source, str)
+            or not isinstance(destination, str)
+            or not source
+            or not destination
+        ):
+            raise ValueError("invalid mount paths")
+        mounts.append((source, destination))
+    return tuple(mounts)
 
 
 # ── LogStream ─────────────────────────────────────────────────────────────

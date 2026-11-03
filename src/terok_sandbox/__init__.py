@@ -53,6 +53,9 @@ from terok_util.config_stack import ConfigScope
 _LAZY: dict[str, str] = {
     "BrokerContext": "vault.context:BrokerContext",
     "RuntimeContainer": "runtime:RuntimeContainer",
+    "ContainerInspection": "runtime:ContainerInspection",
+    "ImageInspection": "runtime:ImageInspection",
+    "RuntimeInspectionError": "runtime:RuntimeInspectionError",
     # Stage-line colour helpers
     "bold": "_stage:bold",
     "red": "_stage:red",
@@ -395,6 +398,7 @@ if TYPE_CHECKING:
         DEFAULT_SSH_HOST,
         GPU_VENDORS,
         ContainerEvent,
+        ContainerInspection,
         ContainerRuntime,
         ExecResult,
         GpuConfigError,
@@ -402,10 +406,12 @@ if TYPE_CHECKING:
         GpuSelector,
         GpuVendor,
         Image,
+        ImageInspection,
         KrunRuntime,
         NullRuntime,
         PodmanEventStream,
         PodmanRuntime,
+        RuntimeInspectionError,
         TcpSSHTransport,
         check_gpu_available,
         detect_gpu_vendors,
@@ -456,6 +462,9 @@ if TYPE_CHECKING:
 __all__ = [
     "BrokerContext",
     "RuntimeContainer",
+    "ContainerInspection",
+    "ImageInspection",
+    "RuntimeInspectionError",
     # Config
     "CONTAINER_GATE_SOCKET",
     "CONTAINER_RUNTIME_DIR",

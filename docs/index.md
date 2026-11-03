@@ -188,6 +188,24 @@ sandbox.run(
 See the developer guide for the full lifecycle and integration
 patterns.
 
+## Strict runtime inspection
+
+Use `Container.inspect()` and `Image.inspect()` before decisions that can discard
+retained state. They return `ContainerInspection` and `ImageInspection` snapshots,
+or `None` only when absence is confirmed. Timeouts, runtime failures and malformed
+metadata raise `RuntimeInspectionError`; they do not become empty environments or
+labels that could be mistaken for an obsolete protocol.
+
+A container snapshot includes its ID, state, creation environment, reported
+bind/volume mounts and an image handle pinned to the observed immutable image ID.
+An image snapshot includes its ID and OCI labels. Mounts are Podman's reported
+bind/volume projection, not the full OCI mount topology (for example, tmpfs mounts
+are not included). A snapshot is an observation, not a lease: callers must still
+account for disappearance or replacement after inspection.
+
+Existing handle properties remain best-effort display probes. Do not use their
+empty/default values as evidence for destructive recovery.
+
 ## Emergency runtime inventory
 
 `ContainerRuntime.inventory(timeout=...)` returns full container IDs, names,

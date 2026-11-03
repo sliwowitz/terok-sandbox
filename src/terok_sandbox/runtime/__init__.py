@@ -37,23 +37,29 @@ from .podman import (
 )
 from .protocol import (
     Container,
+    ContainerInspection,
     ContainerRemoveResult,
     ContainerRuntime,
     ExecResult,
     Image,
+    ImageInspection,
     LogStream,
     PortReservation,
     RuntimeContainer,
+    RuntimeInspectionError,
 )
 
 __all__ = [
     # Protocol surface
     "Container",
+    "ContainerInspection",
     "ContainerRemoveResult",
     "ContainerRuntime",
     "RuntimeContainer",
     "ExecResult",
     "Image",
+    "ImageInspection",
+    "RuntimeInspectionError",
     "LogStream",
     "PortReservation",
     # Backends

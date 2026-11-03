@@ -20,12 +20,15 @@ from typing import BinaryIO
 
 from .protocol import (
     Container,
+    ContainerInspection,
     ContainerRemoveResult,
     ExecResult,
     Image,
+    ImageInspection,
     LogStream,
     PortReservation,
     RuntimeContainer,
+    RuntimeInspectionError,
 )
 
 # A scripted stdio interaction for [`exec_stdio`][terok_sandbox.runtime.null.NullRuntime.exec_stdio] — pairs of
@@ -105,6 +108,14 @@ class NullContainer:
     def __hash__(self) -> int:
         """Hash by name."""
         return hash(("NullContainer", self.name))
+
+    def inspect(self) -> ContainerInspection | None:
+        """Snapshot the fixture, refusing an incomplete identity rather than inventing one."""
+        if self.state is None:
+            return None
+        if not self.id:
+            raise RuntimeInspectionError(f"Container fixture {self.name!r} has no ID")
+        return ContainerInspection(self.id, self.state, self.image, self.env, tuple(self.mounts))
 
     @property
     def state(self) -> str | None:
@@ -198,6 +209,10 @@ class NullImage:
     def __hash__(self) -> int:
         """Hash by ref."""
         return hash(("NullImage", self.ref))
+
+    def inspect(self) -> ImageInspection | None:
+        """Snapshot a registered image fixture, or confirm that it is absent."""
+        return ImageInspection(self.ref, self.labels()) if self.exists() else None
 
     @property
     def id(self) -> str | None:

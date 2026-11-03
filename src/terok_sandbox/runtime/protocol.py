@@ -27,6 +27,31 @@ if TYPE_CHECKING:
 # ── Value types ───────────────────────────────────────────────────────────
 
 
+class RuntimeInspectionError(RuntimeError):
+    """Required runtime metadata could not be obtained reliably."""
+
+
+@dataclass(frozen=True)
+class ContainerInspection:
+    """One successful observation of a container, including its creation-time inputs."""
+
+    id: str
+    state: str
+    image: Image | None
+    """Originating image pinned by immutable ID, or ``None`` for a rootfs-only container."""
+    env: dict[str, str]
+    mounts: tuple[tuple[str, str], ...]
+    """Reported bind/volume mounts as ``(host source, container destination)`` pairs."""
+
+
+@dataclass(frozen=True)
+class ImageInspection:
+    """One successful observation of an image's identity and OCI labels."""
+
+    id: str
+    labels: dict[str, str]
+
+
 @dataclass(frozen=True)
 class ExecResult:
     """Outcome of [`ContainerRuntime.exec`][terok_sandbox.runtime.protocol.ContainerRuntime.exec].
@@ -82,6 +107,15 @@ class Container(Protocol):
     """
 
     name: str
+
+    def inspect(self) -> ContainerInspection | None:
+        """Read a coherent snapshot, returning ``None`` only for confirmed absence.
+
+        Unlike best-effort display properties, failures and malformed metadata
+        raise [`RuntimeInspectionError`][terok_sandbox.RuntimeInspectionError].
+        A snapshot records one observation, not a lease on the container's lifetime.
+        """
+        ...
 
     @property
     def state(self) -> str | None:
@@ -185,6 +219,14 @@ class Image(Protocol):
 
     ref: str
     """Tag (``"terok-l2-cli:abcd"``) or ID (``"sha256:..."``) used on lookup."""
+
+    def inspect(self) -> ImageInspection | None:
+        """Read identity and labels; return ``None`` only for confirmed absence.
+
+        Other failures raise [`RuntimeInspectionError`][terok_sandbox.RuntimeInspectionError],
+        never an empty label map that could be mistaken for an obsolete image.
+        """
+        ...
 
     @property
     def id(self) -> str | None:
