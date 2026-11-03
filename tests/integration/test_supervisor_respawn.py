@@ -139,6 +139,11 @@ def _write_sidecar(state: Path, name: str, tmp_path: Path) -> None:
         json.dumps(
             {
                 "container_name": name,
+                "broker_context": {
+                    "scope": "respawn",
+                    "subject": name,
+                    "credential_set": "default",
+                },
                 "ipc_mode": "socket",
                 "db_path": str(tmp_path / "vault.db"),
                 "runtime_dir": str(tmp_path / "rt"),
