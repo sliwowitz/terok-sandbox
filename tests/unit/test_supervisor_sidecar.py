@@ -62,6 +62,9 @@ def _write_sidecar(tmp_path: Path, payload: dict[str, object]) -> Path:
     """Drop a sidecar JSON under a sidecar-shaped layout for the test."""
     target = tmp_path / "sidecar" / "demo.json"
     target.parent.mkdir(parents=True, exist_ok=True)
+    payload.setdefault(
+        "broker_context", {"scope": "proj", "subject": "t1", "credential_set": "default"}
+    )
     target.write_text(json.dumps(payload))
     return target
 
@@ -848,3 +851,24 @@ class TestOneChangeAtATime:
             with pytest.raises(FileNotFoundError, match="no sidecar to refresh"):
                 edit.result(timeout=_HANG_GUARD_S)
         assert _entries(path.parent) == []
+
+
+@pytest.mark.parametrize(
+    "context",
+    [
+        None,
+        {},
+        {"scope": "proj", "subject": "task"},
+        {"scope": "proj", "subject": "task", "credential_set": ""},
+        {"scope": "proj", "subject": "task", "credential_set": "default", "extra": True},
+    ],
+)
+def test_missing_or_invalid_broker_context_refuses_legacy_sidecar(tmp_path, context):
+    """Legacy containers must be recreated, never silently assigned the default credential set."""
+    payload = _launch_payload(tmp_path)
+    payload["broker_context"] = context
+    path = _write_sidecar(tmp_path, payload)
+    assert load_sidecar(path) is None
+    payload.pop("broker_context")
+    path.write_text(json.dumps(payload))
+    assert load_sidecar(path) is None

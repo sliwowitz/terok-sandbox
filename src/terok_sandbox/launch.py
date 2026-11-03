@@ -49,6 +49,7 @@ from .runtime.seccomp import seccomp_args
 from .sandbox import Sharing, VolumeSpec
 from .setup import check_setup
 from .supervisor.sidecar import remove_sidecar, store_sidecar
+from .vault.context import BrokerContext
 
 # Loopback TCP port the in-container vault HTTP bridge listens on in
 # socket-transport mode.  Constant by design — every layer (this module,
@@ -461,6 +462,7 @@ def compose(
     _write_meta(state_dir, plan)
     sidecar_path = write_sidecar(
         container,
+        broker_context=BrokerContext(scope or "standalone", container, "default"),
         cfg=cfg,
         per_container=per_container,
         scope_id=plan.scope or "",
@@ -491,6 +493,7 @@ def write_sidecar(
     *,
     cfg: SandboxConfig,
     per_container: PerContainerResources,
+    broker_context: BrokerContext,
     scope_id: str = "",
     project_id: str = "",
     task_id: str = "",
@@ -560,6 +563,9 @@ def write_sidecar(
     ):
         raise ValueError(f"invalid container name: {container_name!r}")
 
+    if not isinstance(broker_context, BrokerContext):
+        raise ValueError("A trusted broker context is required; recreate the task container")
+
     target = cfg.sidecar_path(container_name)
     try:
         target.parent.mkdir(parents=True, exist_ok=True)
@@ -568,6 +574,11 @@ def write_sidecar(
         return None
 
     payload: dict[str, object] = {
+        "broker_context": {
+            "scope": broker_context.scope,
+            "subject": broker_context.subject,
+            "credential_set": broker_context.credential_set,
+        },
         "container_name": container_name,
         "ipc_mode": cfg.services_mode,
         "clearance": cfg.clearance,

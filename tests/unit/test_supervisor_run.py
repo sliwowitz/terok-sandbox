@@ -23,6 +23,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from terok_sandbox import BrokerContext
 from terok_sandbox.supervisor.launcher import ChildHandle
 from terok_sandbox.supervisor.main import (
     _terminate_children,
@@ -39,6 +40,7 @@ def sidecar(tmp_path: Path) -> Path:
     sidecar_dir.mkdir(parents=True)
     payload = {
         "container_name": "demo",
+        "broker_context": {"scope": "proj", "subject": "t1", "credential_set": "default"},
         "ipc_mode": "socket",
         "db_path": str(tmp_path / "vault.db"),
         "runtime_dir": str(tmp_path / "run"),
@@ -103,6 +105,7 @@ class TestWiredServices:
 
     def test_gate_dropped_when_unwired(self) -> None:
         cfg = SidecarConfig(
+            broker_context=BrokerContext("proj", "t1", "default"),
             container_name="demo",
             ipc_mode="socket",
             db_path=Path("/x/vault.db"),
@@ -112,6 +115,7 @@ class TestWiredServices:
 
     def test_gate_kept_when_wired(self) -> None:
         cfg = SidecarConfig(
+            broker_context=BrokerContext("proj", "t1", "default"),
             container_name="demo",
             ipc_mode="socket",
             db_path=Path("/x/vault.db"),
@@ -136,6 +140,7 @@ class TestWiredServices:
         """``off`` drops verdict and clearance together; ``mute`` keeps both — the
         hub must run to start muted — and the setting never touches the rest."""
         cfg = SidecarConfig(
+            broker_context=BrokerContext("proj", "t1", "default"),
             container_name="demo",
             ipc_mode="socket",
             db_path=tmp_path / "vault.db",

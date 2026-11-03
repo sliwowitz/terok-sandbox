@@ -405,7 +405,7 @@ class TestConnectionHandlerCleanup:
         writer = mock.MagicMock()
         writer.wait_closed = mock.AsyncMock()
         with (
-            mock.patch.object(sig, "_resolve_scope_from_token", return_value="proj"),
+            mock.patch.object(sig, "_resolve_scope_from_token", return_value=("proj", "token")),
             mock.patch.object(sig, "_serve_agent_session", side_effect=RuntimeError("boom")),
         ):
             await sig._handle_container_connection(
@@ -838,3 +838,44 @@ class TestSSHSignerRoundTrip:
         finally:
             server.close()
             await server.wait_closed()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("change", ["revoke_token", "unassign_key", "delete_key", "replace_key"])
+async def test_established_session_rechecks_every_signature(signer_env, tmp_path, change):
+    """A connection's initial key list and token never become permanent signing authority."""
+    from contextlib import closing
+
+    db_path, token, pub_blob = signer_env
+    socket_path = tmp_path / "signer.sock"
+    server = await start_ssh_signer(db_path, socket_path=socket_path)
+    try:
+        reader, writer = await asyncio.open_unix_connection(socket_path)
+        writer.write(_build_handshake(token))
+        signature = _pack_string(pub_blob) + _pack_string(b"data") + struct.pack(">I", 0)
+        writer.write(_build_msg(SSH_AGENTC_SIGN_REQUEST, signature))
+        await writer.drain()
+        assert (await _read_response(reader))[0] == SSH_AGENT_SIGN_RESPONSE
+        with closing(CredentialDB(Path(db_path), passphrase="test")) as db:
+            key = db.load_ssh_keys_for_scope("proj")[0]
+            if change == "revoke_token":
+                db.revoke_tokens("proj", "task-1")
+            elif change == "delete_key":
+                db.delete_ssh_key(key.id)
+            else:
+                db.unassign_ssh_key("proj", key.id)
+                if change == "replace_key":
+                    replacement = _seed_key(db, "proj", comment="replacement")
+        writer.write(_build_msg(SSH_AGENTC_SIGN_REQUEST, signature))
+        await writer.drain()
+        assert (await _read_response(reader))[0] == SSH_AGENT_FAILURE
+        if change == "replace_key":
+            signature = _pack_string(replacement) + _pack_string(b"data") + struct.pack(">I", 0)
+            writer.write(_build_msg(SSH_AGENTC_SIGN_REQUEST, signature))
+            await writer.drain()
+            assert (await _read_response(reader))[0] == SSH_AGENT_SIGN_RESPONSE
+        writer.close()
+        await writer.wait_closed()
+    finally:
+        server.close()
+        await server.wait_closed()

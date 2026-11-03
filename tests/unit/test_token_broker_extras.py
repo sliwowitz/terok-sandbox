@@ -23,6 +23,7 @@ import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
+from terok_sandbox.vault.context import BrokerContext
 from terok_sandbox.vault.daemon.token_broker import (
     _KEY_LOCK_DIR,  # noqa: PLC2701
     _KEY_OAUTH_CLIENT,
@@ -340,7 +341,11 @@ class TestHandleRequestApiKeyEdges:
             cred={"type": "api_key", "key": "real-key"},
             route={"upstream": "http://localhost:1", "auth_header": "dynamic"},
         )
-        app = _build_app(str(db_path), str(routes_path))
+        app = _build_app(
+            str(db_path),
+            str(routes_path),
+            broker_context=BrokerContext("myproj", "task-1", "default"),
+        )
         # Replace the on-startup-created session with one that captures the request.
         captured: dict = {}
 
@@ -382,7 +387,11 @@ class TestHandleRequestApiKeyEdges:
         db_path, routes_path, token = _populate_db_and_routes(
             tmp_path, cred={"type": "api_key", "irrelevant": "x"}
         )
-        app = _build_app(str(db_path), str(routes_path))
+        app = _build_app(
+            str(db_path),
+            str(routes_path),
+            broker_context=BrokerContext("myproj", "task-1", "default"),
+        )
         async with TestClient(TestServer(app)) as client:
             resp = await client.get("/p", headers={"Authorization": f"Bearer {token}"})
             assert resp.status == 502
@@ -394,7 +403,11 @@ class TestHandleRequestApiKeyEdges:
         db_path, routes_path, token = _populate_db_and_routes(
             tmp_path, cred={"type": "oauth", "refresh_token": "r"}
         )
-        app = _build_app(str(db_path), str(routes_path))
+        app = _build_app(
+            str(db_path),
+            str(routes_path),
+            broker_context=BrokerContext("myproj", "task-1", "default"),
+        )
         async with TestClient(TestServer(app)) as client:
             resp = await client.get("/p", headers={"Authorization": f"Bearer {token}"})
             assert resp.status == 502

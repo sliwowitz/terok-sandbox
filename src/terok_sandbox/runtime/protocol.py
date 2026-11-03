@@ -27,6 +27,31 @@ if TYPE_CHECKING:
 # ── Value types ───────────────────────────────────────────────────────────
 
 
+class RuntimeInspectionError(RuntimeError):
+    """Required runtime metadata could not be obtained reliably."""
+
+
+@dataclass(frozen=True)
+class ContainerInspection:
+    """One successful observation of a container, including its creation-time inputs."""
+
+    id: str
+    state: str
+    image: Image | None
+    """Originating image pinned by immutable ID, or ``None`` for a rootfs-only container."""
+    env: dict[str, str]
+    mounts: tuple[tuple[str, str], ...]
+    """Reported bind/volume mounts as ``(host source, container destination)`` pairs."""
+
+
+@dataclass(frozen=True)
+class ImageInspection:
+    """One successful observation of an image's identity and OCI labels."""
+
+    id: str
+    labels: dict[str, str]
+
+
 @dataclass(frozen=True)
 class ExecResult:
     """Outcome of [`ContainerRuntime.exec`][terok_sandbox.runtime.protocol.ContainerRuntime.exec].
@@ -43,6 +68,16 @@ class ExecResult:
     def ok(self) -> bool:
         """Convenience — ``True`` when the command exited with code 0."""
         return self.exit_code == 0
+
+
+@dataclass(frozen=True)
+class RuntimeContainer:
+    """A container's immutable identity and host-recorded containment metadata."""
+
+    id: str
+    name: str
+    state: str
+    annotations: dict[str, str]
 
 
 @dataclass(frozen=True)
@@ -72,6 +107,15 @@ class Container(Protocol):
     """
 
     name: str
+
+    def inspect(self) -> ContainerInspection | None:
+        """Read a coherent snapshot, returning ``None`` only for confirmed absence.
+
+        Unlike best-effort display properties, failures and malformed metadata
+        raise [`RuntimeInspectionError`][terok_sandbox.RuntimeInspectionError].
+        A snapshot records one observation, not a lease on the container's lifetime.
+        """
+        ...
 
     @property
     def state(self) -> str | None:
@@ -176,6 +220,14 @@ class Image(Protocol):
     ref: str
     """Tag (``"terok-l2-cli:abcd"``) or ID (``"sha256:..."``) used on lookup."""
 
+    def inspect(self) -> ImageInspection | None:
+        """Read identity and labels; return ``None`` only for confirmed absence.
+
+        Other failures raise [`RuntimeInspectionError`][terok_sandbox.RuntimeInspectionError],
+        never an empty label map that could be mistaken for an obsolete image.
+        """
+        ...
+
     @property
     def id(self) -> str | None:
         """Resolved image ID, or ``None`` if the image is not present."""
@@ -271,6 +323,14 @@ class ContainerRuntime(Protocol):
     """
 
     # -- Handle factories --------------------------------------------------
+
+    def inventory(self, *, timeout: float = 10) -> list[RuntimeContainer]:
+        """Enumerate all containers with host annotations; raise on incomplete discovery."""
+        ...
+
+    def force_stop(self, container_id: str, *, timeout: float = 10) -> None:
+        """Stop an exact container ID immediately; raise on failure or deadline expiry."""
+        ...
 
     def container(self, name: str) -> Container:
         """Return a handle to the container named *name*.

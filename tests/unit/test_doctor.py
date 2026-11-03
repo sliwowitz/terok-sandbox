@@ -274,6 +274,7 @@ class TestSupervisorChildrenCheck:
         sidecar_dir.mkdir(parents=True, exist_ok=True)
         payload: dict[str, object] = {
             "container_name": "demo",
+            "broker_context": {"scope": "proj", "subject": "task", "credential_set": "default"},
             "ipc_mode": "tcp",
             "db_path": str(state / "v.db"),
             "runtime_dir": str(state / "rt"),

@@ -51,6 +51,11 @@ from terok_util.config_stack import ConfigScope
 #: but are no longer advertised as stable API — reach into their
 #: submodule directly.
 _LAZY: dict[str, str] = {
+    "BrokerContext": "vault.context:BrokerContext",
+    "RuntimeContainer": "runtime:RuntimeContainer",
+    "ContainerInspection": "runtime:ContainerInspection",
+    "ImageInspection": "runtime:ImageInspection",
+    "RuntimeInspectionError": "runtime:RuntimeInspectionError",
     # Stage-line colour helpers
     "bold": "_stage:bold",
     "red": "_stage:red",
@@ -274,6 +279,9 @@ def __dir__() -> list[str]:
 
 
 if TYPE_CHECKING:
+    from .runtime import RuntimeContainer as RuntimeContainer
+    from .vault.context import BrokerContext as BrokerContext
+
     # Eager view of the stable (``__all__``) surface for type checkers and
     # IDEs — never imported at runtime, so it costs nothing on ``import
     # terok_sandbox``.  Demoted names stay resolvable via ``_LAZY`` but
@@ -390,6 +398,7 @@ if TYPE_CHECKING:
         DEFAULT_SSH_HOST,
         GPU_VENDORS,
         ContainerEvent,
+        ContainerInspection,
         ContainerRuntime,
         ExecResult,
         GpuConfigError,
@@ -397,10 +406,12 @@ if TYPE_CHECKING:
         GpuSelector,
         GpuVendor,
         Image,
+        ImageInspection,
         KrunRuntime,
         NullRuntime,
         PodmanEventStream,
         PodmanRuntime,
+        RuntimeInspectionError,
         TcpSSHTransport,
         check_gpu_available,
         detect_gpu_vendors,
@@ -449,6 +460,11 @@ if TYPE_CHECKING:
 
 
 __all__ = [
+    "BrokerContext",
+    "RuntimeContainer",
+    "ContainerInspection",
+    "ImageInspection",
+    "RuntimeInspectionError",
     # Config
     "CONTAINER_GATE_SOCKET",
     "CONTAINER_RUNTIME_DIR",

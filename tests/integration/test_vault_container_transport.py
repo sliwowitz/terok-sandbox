@@ -85,7 +85,7 @@ async def vault_socket(
     pins the resolution chain the broker's ``_TokenDB`` walks to the same value), so
     the operator's real vault and passphrase chain are never touched.
     """
-    from terok_sandbox import config as _config
+    from terok_sandbox import BrokerContext, config as _config
     from terok_sandbox.vault.daemon.token_broker import _build_app
     from terok_sandbox.vault.store import (
         encryption as _enc,
@@ -144,7 +144,13 @@ async def vault_socket(
     state.phantom = db.create_token("project-x", "task-42", "default", "claude")
     db.close()
 
-    broker_runner = web.AppRunner(_build_app(str(state.db_path), str(routes_path)))
+    broker_runner = web.AppRunner(
+        _build_app(
+            str(state.db_path),
+            str(routes_path),
+            broker_context=BrokerContext("project-x", "task-42", "default"),
+        )
+    )
     await broker_runner.setup()
     broker_site = web.UnixSite(broker_runner, path=str(state.socket_path))
     await broker_site.start()

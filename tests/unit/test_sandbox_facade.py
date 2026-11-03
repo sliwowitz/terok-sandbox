@@ -16,7 +16,7 @@ from unittest.mock import MagicMock, call, patch
 
 import pytest
 
-from terok_sandbox import GpuConfigError, SandboxConfig
+from terok_sandbox import BrokerContext, GpuConfigError, SandboxConfig
 from terok_sandbox.launch import PerContainerResources, write_sidecar
 from terok_sandbox.runtime import ContainerRemoveResult
 from terok_sandbox.runtime.gpu import check_gpu_error
@@ -1594,6 +1594,7 @@ def _launch_sidecar(cfg: SandboxConfig, tmp_path: Path) -> Path:
     vault_port, signer_port, gate_port = FAKE_SERVICE_PORTS
     path = write_sidecar(
         "myc",
+        broker_context=BrokerContext("proj", "7", "default"),
         cfg=cfg,
         per_container=PerContainerResources(
             container_runtime_dir=cfg.container_runtime_dir("myc"),

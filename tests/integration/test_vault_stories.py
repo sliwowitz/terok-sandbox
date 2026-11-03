@@ -20,6 +20,7 @@ import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestServer
 
+from terok_sandbox import BrokerContext
 from terok_sandbox.vault.daemon.token_broker import _build_app
 from terok_sandbox.vault.store.db import CredentialDB
 
@@ -108,7 +109,9 @@ async def proxy_env(tmp_path: Path, populated_db: CredentialDB):
 
     # 3. Build and start proxy app
     db_path = str(tmp_path / "proxy" / "credentials.db")
-    proxy_app = _build_app(db_path, str(routes_file))
+    proxy_app = _build_app(
+        db_path, str(routes_file), broker_context=BrokerContext("test-project", "task-1", "default")
+    )
     proxy_server = TestServer(proxy_app)
     await proxy_server.start_server()
 

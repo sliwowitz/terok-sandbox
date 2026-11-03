@@ -254,7 +254,7 @@ async def _run_vault(cfg: SidecarConfig, paths: SupervisorPaths, stop: asyncio.E
         bind = UnixBind(socket_path=paths.vault_socket)
     vault = VaultProxy(
         db_path=cfg.db_path,
-        scope_id=cfg.scope_id,
+        broker_context=cfg.broker_context,
         bind=bind,
         routes_path=_routes_path(cfg),
         runtime_dir=cfg.runtime_dir,

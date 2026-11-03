@@ -35,11 +35,15 @@ from terok_util import require_host_tool
 from .._util import log_debug, log_warning
 from .protocol import (
     Container,
+    ContainerInspection,
     ContainerRemoveResult,
     ExecResult,
     Image,
+    ImageInspection,
     LogStream,
     PortReservation,
+    RuntimeContainer,
+    RuntimeInspectionError,
 )
 from .storage_diagnostics import storage_permission_diagnostics
 
@@ -150,8 +154,8 @@ _PROBE_TIMEOUT = 30
 """Ceiling for read-only podman queries (inspect / ps).  They answer in
 milliseconds from a healthy podman; only a wedged one (stale storage
 lock, dead storage) blocks longer, and an unbounded probe then hangs
-whatever thread asked — a TUI froze this way (terok#1181).  On timeout a
-probe degrades to its no-answer value, same as any other probe failure."""
+whatever thread asked — a TUI froze this way (terok#1181). Best-effort
+properties degrade to their no-answer value; strict inspection raises."""
 _STOP_POLL_INTERVAL = 0.5
 _STOP_KILL_TIMEOUT = 15
 _STOP_CLEANUP_TIMEOUT = 60
@@ -265,6 +269,24 @@ class PodmanContainer:
     def __hash__(self) -> int:
         """Hash by name."""
         return hash(("PodmanContainer", self.name))
+
+    def inspect(self) -> ContainerInspection | None:
+        """Read identity and creation inputs together; only confirmed absence returns ``None``."""
+        record = _inspect_record("container", self.name)
+        if record is None:
+            return None
+        try:
+            identity = _inspection_identity(record["Id"])
+            state = record["State"]["Status"]
+            if not isinstance(state, str) or not state:
+                raise ValueError("invalid state")
+            image_id = record["Image"]
+            image = self._runtime.image(_inspection_identity(image_id)) if image_id != "" else None
+            env = _inspection_environment(record["Config"]["Env"])
+            mounts = _inspection_mounts(record["Mounts"])
+        except (KeyError, TypeError, ValueError) as exc:
+            raise RuntimeInspectionError(f"Invalid inspection of container {self.name!r}") from exc
+        return ContainerInspection(identity, state, image, env, mounts)
 
     @property
     def state(self) -> str | None:
@@ -703,6 +725,28 @@ class PodmanImage:
         """Hash by ref."""
         return hash(("PodmanImage", self.ref))
 
+    def inspect(self) -> ImageInspection | None:
+        """Read identity and labels together; missing labels are not an inspection fallback."""
+        record = _inspect_record("image", self.ref)
+        if record is None:
+            return None
+        try:
+            identity = _inspection_identity(record["Id"])
+            config = record["Config"]
+            if not isinstance(config, dict):
+                raise ValueError("invalid image config")
+            # OCI ImageConfig omits empty Labels; the containing Config is still required.
+            labels = config.get("Labels")
+            if labels is None:
+                labels = {}
+            if not isinstance(labels, dict) or any(
+                not isinstance(value, str) for value in labels.values()
+            ):
+                raise ValueError("invalid labels")
+        except (KeyError, TypeError, ValueError) as exc:
+            raise RuntimeInspectionError(f"Invalid inspection of image {self.ref!r}") from exc
+        return ImageInspection(identity, labels)
+
     @property
     def id(self) -> str | None:
         """Resolved image ID, or ``None`` when the image is absent."""
@@ -817,6 +861,94 @@ class PodmanImage:
         except (FileNotFoundError, subprocess.TimeoutExpired):
             return False
         return result.returncode == 0
+
+
+# ── Strict inspection ─────────────────────────────────────────────────────
+
+
+def _inspect_record(kind: str, ref: str) -> dict | None:
+    """Inspect once; confirm absence separately only when Podman rejects the inspection."""
+    deadline = time.monotonic() + _PROBE_TIMEOUT
+    try:
+        executable = require_host_tool("podman")
+        result = subprocess.run(  # nosec B603 B607 - fixed argv; trusted executable; reference after --
+            ["podman", kind, "inspect", "--", ref],
+            executable=executable,
+            capture_output=True,
+            text=True,
+            timeout=_PROBE_TIMEOUT,
+        )
+        if result.returncode:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise TimeoutError("Inspection deadline expired")
+            present = subprocess.run(  # nosec B603 B607 - fixed argv; trusted executable; reference after --
+                ["podman", kind, "exists", "--", ref],
+                executable=executable,
+                capture_output=True,
+                text=True,
+                timeout=remaining,
+            )
+            if present.returncode == 1:
+                return None
+            present.check_returncode()
+            result.check_returncode()
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise RuntimeInspectionError(f"Cannot inspect {kind} {ref!r}: {exc}") from exc
+
+    try:
+        records = json.loads(result.stdout)
+        if not isinstance(records, list) or len(records) != 1 or not isinstance(records[0], dict):
+            raise ValueError("expected exactly one inspection record")
+    except (TypeError, ValueError) as exc:
+        raise RuntimeInspectionError(f"Invalid inspection of {kind} {ref!r}") from exc
+    return records[0]
+
+
+def _inspection_identity(value: object) -> str:
+    """Accept a full content-addressed Podman identity, never a mutable tag or short prefix."""
+    if not isinstance(value, str) or not re.fullmatch(r"(?:sha256:)?[0-9a-f]{64}", value):
+        raise ValueError("invalid immutable identity")
+    return value
+
+
+def _inspection_environment(entries: object) -> dict[str, str]:
+    """Decode the complete creation environment; nil is empty, malformed entries are not."""
+    if entries is None:
+        return {}
+    if not isinstance(entries, list):
+        raise ValueError("invalid environment")
+    env = {}
+    for entry in entries:
+        if not isinstance(entry, str):
+            raise ValueError("invalid environment entry")
+        key, separator, value = entry.partition("=")
+        if not key or not separator:
+            raise ValueError("invalid environment assignment")
+        env[key] = value
+    return env
+
+
+def _inspection_mounts(entries: object) -> tuple[tuple[str, str], ...]:
+    """Preserve every reported bind or volume mount, refusing partial mount evidence."""
+    if entries is None:
+        return ()
+    if not isinstance(entries, list):
+        raise ValueError("invalid mounts")
+    mounts = []
+    for entry in entries:
+        if not isinstance(entry, dict):
+            raise ValueError("invalid mount entry")
+        source, destination = entry["Source"], entry["Destination"]
+        if (
+            not isinstance(source, str)
+            or not isinstance(destination, str)
+            or not source
+            or not destination
+        ):
+            raise ValueError("invalid mount paths")
+        mounts.append((source, destination))
+    return tuple(mounts)
 
 
 # ── LogStream ─────────────────────────────────────────────────────────────
@@ -1051,6 +1183,82 @@ class PodmanPortReservation:
 
 class PodmanRuntime:
     """The default [`ContainerRuntime`][terok_sandbox.ContainerRuntime] — talks to the podman CLI."""
+
+    def inventory(self, *, timeout: float = 10) -> list[RuntimeContainer]:
+        """Read daemon identities and annotations without consulting task-controlled files.
+
+        Discovery has one deadline. A failed command, malformed result or
+        missing record raises rather than presenting an incomplete inventory.
+        """
+        deadline = time.monotonic() + timeout
+        executable = require_host_tool("podman")
+        listed = subprocess.run(  # nosec B603 B607 - fixed argv; executable resolved from trusted host paths
+            ["podman", "ps", "-aq", "--no-trunc"],
+            executable=executable,
+            capture_output=True,
+            text=True,
+            check=True,
+            timeout=timeout,
+        )
+        ids = listed.stdout.split()
+        if not ids:
+            return []
+        if any(not re.fullmatch(r"[0-9a-f]{64}", value) for value in ids):
+            raise RuntimeError("Podman returned an invalid container ID")
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise TimeoutError("Container inventory deadline expired")
+        inspected = subprocess.run(  # nosec B603 B607 - validated full IDs; trusted host executable
+            ["podman", "inspect", "--type", "container", *ids],
+            executable=executable,
+            capture_output=True,
+            text=True,
+            check=True,
+            timeout=remaining,
+        )
+        records = json.loads(inspected.stdout)
+        if not isinstance(records, list):
+            raise RuntimeError("Podman inventory is not a list")
+        result = []
+        for record in records:
+            try:
+                identity, name = record["Id"], record["Name"]
+                state = record["State"]["Status"]
+                annotations = record["Config"].get("Annotations")
+                if annotations is None:
+                    annotations = {}
+                if (
+                    identity not in ids
+                    or not isinstance(name, str)
+                    or not name
+                    or not isinstance(state, str)
+                    or not state
+                    or not isinstance(annotations, dict)
+                    or any(
+                        not isinstance(k, str) or not isinstance(v, str)
+                        for k, v in annotations.items()
+                    )
+                ):
+                    raise ValueError("invalid fields")
+            except (KeyError, TypeError, ValueError) as exc:
+                raise RuntimeError("Podman returned invalid containment metadata") from exc
+            result.append(RuntimeContainer(identity, name.lstrip("/"), state, annotations))
+        if len(result) != len(ids) or {item.id for item in result} != set(ids):
+            raise RuntimeError("Podman returned an incomplete container inventory")
+        return result
+
+    def force_stop(self, container_id: str, *, timeout: float = 10) -> None:
+        """SIGKILL an exact container ID, including paused containers, within the deadline."""
+        if not re.fullmatch(r"[0-9a-f]{64}", container_id):
+            raise ValueError("force_stop requires a full container ID")
+        subprocess.run(  # nosec B603 B607 - validated full ID; trusted host executable
+            ["podman", "kill", "--signal", "KILL", container_id],
+            executable=require_host_tool("podman"),
+            capture_output=True,
+            text=True,
+            check=True,
+            timeout=timeout,
+        )
 
     def container(self, name: str) -> Container:
         """Return a handle to the container named *name*."""

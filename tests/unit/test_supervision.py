@@ -47,6 +47,7 @@ def _write_sidecar(
     sidecar_dir.mkdir(parents=True, exist_ok=True)
     payload: dict[str, object] = {
         "container_name": _NAME,
+        "broker_context": {"scope": "proj", "subject": "task", "credential_set": "default"},
         "ipc_mode": ipc_mode,
         "db_path": str(state_dir / "v.db"),
         "runtime_dir": str(runtime_dir),

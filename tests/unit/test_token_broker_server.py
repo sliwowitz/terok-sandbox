@@ -15,6 +15,7 @@ import pytest
 from aiohttp import ClientSession, WSMsgType, WSServerHandshakeError, web
 from multidict import CIMultiDict
 
+from terok_sandbox.vault.context import BrokerContext
 from terok_sandbox.vault.daemon.token_broker import (
     _KEY_OAUTH_CLIENT,
     _KEY_PROXY_CLIENT,
@@ -54,7 +55,9 @@ class TestHealthEndpoint:
         routes_file.write_text("{}")
         db_path = tmp_path / "creds.db"
         CredentialDB(db_path, passphrase="test").close()
-        return _build_app(str(db_path), str(routes_file))
+        return _build_app(
+            str(db_path), str(routes_file), broker_context=BrokerContext("proj", "t1", "default")
+        )
 
     async def test_health_returns_200(self, _app) -> None:
         """GET /-/health returns 200 with status ok."""
@@ -303,7 +306,11 @@ class TestBuildApp:
         routes_file = tmp_path / "routes.json"
         routes_file.write_text(json.dumps({"claude": {"upstream": "https://example.com"}}))
 
-        app = _build_app(str(tmp_path / "test.db"), str(routes_file))
+        app = _build_app(
+            str(tmp_path / "test.db"),
+            str(routes_file),
+            broker_context=BrokerContext("proj", "t1", "default"),
+        )
 
         assert isinstance(app[_KEY_ROUTES], _RouteTable)
         assert isinstance(app[_KEY_TOKEN_DB], _TokenDB)
@@ -349,7 +356,11 @@ def _broker_env(tmp_path: Path):
         )
     )
 
-    app = _build_app(str(tmp_path / "test.db"), str(routes))
+    app = _build_app(
+        str(tmp_path / "test.db"),
+        str(routes),
+        broker_context=BrokerContext("proj", "t1", "default"),
+    )
     return app, {
         "claude": claude_token,
         "empty": empty_token,
@@ -443,6 +454,8 @@ def _static_marker_env(tmp_path: Path):
     db.store_credential(
         "default", "openai", {"type": "oauth", "access_token": "sk-real-codex-static"}
     )
+    db.create_token("proj", "t1", "default", "anthropic")
+    db.create_token("proj", "t1", "default", "openai")
     db.close()
 
     routes = tmp_path / "routes.json"
@@ -454,7 +467,11 @@ def _static_marker_env(tmp_path: Path):
             }
         )
     )
-    return _build_app(str(tmp_path / "test.db"), str(routes))
+    return _build_app(
+        str(tmp_path / "test.db"),
+        str(routes),
+        broker_context=BrokerContext("proj", "t1", "default"),
+    )
 
 
 @pytest.mark.needs_loopback  # binds an aiohttp loopback server; krun TSI refuses it
@@ -498,11 +515,16 @@ class TestStaticPhantomMarker:
         from terok_sandbox.vault.daemon import PHANTOM_CREDENTIALS_MARKER
 
         db = CredentialDB(tmp_path / "test.db", passphrase="test")
-        db.close()  # empty DB
+        db.create_token("proj", "t1", "default", "anthropic")
+        db.close()  # grant without credential
 
         routes = tmp_path / "routes.json"
         routes.write_text(json.dumps({"anthropic": {"upstream": "http://127.0.0.1:1"}}))
-        app = _build_app(str(tmp_path / "test.db"), str(routes))
+        app = _build_app(
+            str(tmp_path / "test.db"),
+            str(routes),
+            broker_context=BrokerContext("proj", "t1", "default"),
+        )
 
         async with TestClient(TestServer(app)) as client:
             resp = await client.get(
@@ -539,15 +561,15 @@ def test_static_markers_use_post_rename_provider_names() -> None:
         CODEX_SHARED_OAUTH_MARKER,
         PHANTOM_CREDENTIALS_MARKER,
     )
-    from terok_sandbox.vault.daemon.token_broker import _static_oauth_token_info
+    from terok_sandbox.vault.daemon.token_broker import _marker_provider
     from terok_sandbox.vault.store.migrations import _PROVIDER_RENAMES
 
     stale_agent_names = set(_PROVIDER_RENAMES)  # {"claude", "codex", "vibe", ...}
     for marker in (PHANTOM_CREDENTIALS_MARKER, CODEX_SHARED_OAUTH_MARKER):
-        info = _static_oauth_token_info(marker)
+        info = _marker_provider(marker)
         assert info is not None, f"marker {marker!r} not recognised"
-        assert info["provider"] not in stale_agent_names, (
-            f"marker {marker!r} resolves to stale agent name {info['provider']!r}; "
+        assert info not in stale_agent_names, (
+            f"marker {marker!r} resolves to stale agent name {info!r}; "
             "re-key it to the provider it authenticates to"
         )
 
@@ -628,7 +650,11 @@ class TestForwardingPath:
             )
         )
 
-        broker_app = _build_app(str(tmp_path / "test.db"), str(routes))
+        broker_app = _build_app(
+            str(tmp_path / "test.db"),
+            str(routes),
+            broker_context=BrokerContext("proj", "t1", "default"),
+        )
         async with TestClient(TestServer(broker_app)) as client:
             resp = await client.post(
                 "/v1/messages",
@@ -667,7 +693,11 @@ class TestForwardingPath:
             )
         )
 
-        broker_app = _build_app(str(tmp_path / "test.db"), str(routes))
+        broker_app = _build_app(
+            str(tmp_path / "test.db"),
+            str(routes),
+            broker_context=BrokerContext("proj", "t1", "default"),
+        )
         async with TestClient(TestServer(broker_app)) as client:
             resp = await client.post(
                 "/v1/messages",
@@ -712,7 +742,11 @@ class TestForwardingPath:
             )
         )
 
-        broker_app = _build_app(str(tmp_path / "test.db"), str(routes))
+        broker_app = _build_app(
+            str(tmp_path / "test.db"),
+            str(routes),
+            broker_context=BrokerContext("proj", "t1", "default"),
+        )
         async with TestClient(TestServer(broker_app)) as client:
             resp = await client.post(
                 "/v1/messages",
@@ -747,7 +781,11 @@ class TestForwardingPath:
         routes.write_text(
             json.dumps({"claude": {"upstream": f"http://127.0.0.1:{upstream_server.port}"}})
         )
-        broker_app = _build_app(str(tmp_path / "test.db"), str(routes))
+        broker_app = _build_app(
+            str(tmp_path / "test.db"),
+            str(routes),
+            broker_context=BrokerContext("proj", "t1", "default"),
+        )
         async with TestClient(TestServer(broker_app)) as client:
             resp = await client.post(
                 "/v1/messages",
@@ -776,7 +814,11 @@ class TestForwardingPath:
             json.dumps({"codex": {"upstream": f"http://127.0.0.1:{upstream_server.port}"}})
         )
 
-        broker_app = _build_app(str(tmp_path / "test.db"), str(routes))
+        broker_app = _build_app(
+            str(tmp_path / "test.db"),
+            str(routes),
+            broker_context=BrokerContext("proj", "t1", "default"),
+        )
         async with TestClient(TestServer(broker_app)) as client:
             resp = await client.post(
                 "/v1/responses",
@@ -819,7 +861,11 @@ class TestForwardingPath:
             )
         )
 
-        broker_app = _build_app(str(tmp_path / "test.db"), str(routes))
+        broker_app = _build_app(
+            str(tmp_path / "test.db"),
+            str(routes),
+            broker_context=BrokerContext("proj", "t1", "default"),
+        )
         async with TestClient(TestServer(broker_app)) as client:
             resp = await client.post(
                 "/backend-api/ps/mcp",
@@ -853,7 +899,11 @@ class TestForwardingPath:
             )
         )
 
-        broker_app = _build_app(str(tmp_path / "test.db"), str(routes))
+        broker_app = _build_app(
+            str(tmp_path / "test.db"),
+            str(routes),
+            broker_context=BrokerContext("proj", "t1", "default"),
+        )
         async with TestClient(TestServer(broker_app)) as client:
             resp = await client.post(
                 "/v1/chat/completions",
@@ -887,7 +937,11 @@ class TestForwardingPath:
             )
         )
 
-        broker_app = _build_app(str(tmp_path / "test.db"), str(routes))
+        broker_app = _build_app(
+            str(tmp_path / "test.db"),
+            str(routes),
+            broker_context=BrokerContext("proj", "t1", "default"),
+        )
         async with TestClient(TestServer(broker_app)) as client:
             resp = await client.get(
                 "/api/v4/projects",
@@ -926,7 +980,11 @@ class TestForwardingPath:
             )
         )
 
-        broker_app = _build_app(str(tmp_path / "test.db"), str(routes))
+        broker_app = _build_app(
+            str(tmp_path / "test.db"),
+            str(routes),
+            broker_context=BrokerContext("proj", "t1", "default"),
+        )
         async with TestClient(TestServer(broker_app)) as client:
             resp = await client.get(
                 "/api/v4/projects/group%2Fproject",
@@ -980,7 +1038,11 @@ class TestForwardingPath:
             )
         )
 
-        broker_app = _build_app(str(tmp_path / "test.db"), str(routes))
+        broker_app = _build_app(
+            str(tmp_path / "test.db"),
+            str(routes),
+            broker_context=BrokerContext("proj", "t1", "default"),
+        )
         async with TestClient(TestServer(broker_app)) as client:
             api_resp = await client.get(
                 "/v1/responses",
@@ -1036,7 +1098,11 @@ class TestForwardingPath:
             json.dumps({"codex": {"upstream": f"http://127.0.0.1:{upstream_server.port}"}})
         )
 
-        broker_app = _build_app(str(tmp_path / "test.db"), str(routes))
+        broker_app = _build_app(
+            str(tmp_path / "test.db"),
+            str(routes),
+            broker_context=BrokerContext("proj", "t1", "default"),
+        )
         async with TestClient(TestServer(broker_app)) as client:
             async with client.ws_connect(
                 "/v1/realtime",
@@ -1086,7 +1152,11 @@ class TestForwardingPath:
             json.dumps({"claude": {"upstream": f"http://127.0.0.1:{upstream_server.port}"}})
         )
 
-        broker_app = _build_app(str(tmp_path / "test.db"), str(routes))
+        broker_app = _build_app(
+            str(tmp_path / "test.db"),
+            str(routes),
+            broker_context=BrokerContext("proj", "t1", "default"),
+        )
         async with TestClient(TestServer(broker_app)) as client:
             # auto_decompress=False lets us inspect exactly what crossed the broker.
             resp = await client.get(
@@ -1131,7 +1201,11 @@ class TestForwardingPath:
             json.dumps({"claude": {"upstream": f"http://127.0.0.1:{upstream_server.port}"}})
         )
 
-        broker_app = _build_app(str(tmp_path / "test.db"), str(routes))
+        broker_app = _build_app(
+            str(tmp_path / "test.db"),
+            str(routes),
+            broker_context=BrokerContext("proj", "t1", "default"),
+        )
         async with TestClient(TestServer(broker_app)) as client:
             resp = await client.post(
                 "/v1/messages",
@@ -1182,7 +1256,11 @@ class TestForwardingPath:
             json.dumps({"codex": {"upstream": f"http://127.0.0.1:{upstream_server.port}"}})
         )
 
-        broker_app = _build_app(str(tmp_path / "test.db"), str(routes))
+        broker_app = _build_app(
+            str(tmp_path / "test.db"),
+            str(routes),
+            broker_context=BrokerContext("proj", "t1", "default"),
+        )
         async with TestClient(TestServer(broker_app)) as client:
             # compress=15 makes the client offer permessage-deflate to the broker.
             async with client.ws_connect(
@@ -1221,7 +1299,11 @@ class TestForwardingPath:
             json.dumps({"claude": {"upstream": f"http://127.0.0.1:{upstream_server.port}"}})
         )
 
-        broker_app = _build_app(str(tmp_path / "test.db"), str(routes))
+        broker_app = _build_app(
+            str(tmp_path / "test.db"),
+            str(routes),
+            broker_context=BrokerContext("proj", "t1", "default"),
+        )
         async with TestClient(TestServer(broker_app)) as client:
             # Client omits Accept-Encoding (skip_auto_headers keeps the *test* client from
             # adding one to the broker) -> the broker must not add one upstream either.
@@ -1257,7 +1339,11 @@ class TestForwardingPath:
             json.dumps({"claude": {"upstream": f"http://127.0.0.1:{upstream_server.port}"}})
         )
 
-        broker_app = _build_app(str(tmp_path / "test.db"), str(routes))
+        broker_app = _build_app(
+            str(tmp_path / "test.db"),
+            str(routes),
+            broker_context=BrokerContext("proj", "t1", "default"),
+        )
         async with TestClient(TestServer(broker_app)) as client:
             resp = await client.get(
                 "/v1/check?foo=bar&baz=1",
@@ -1282,7 +1368,11 @@ class TestForwardingPath:
             )
         )
 
-        broker_app = _build_app(str(tmp_path / "test.db"), str(routes))
+        broker_app = _build_app(
+            str(tmp_path / "test.db"),
+            str(routes),
+            broker_context=BrokerContext("proj", "t1", "default"),
+        )
         async with TestClient(TestServer(broker_app)) as client:
             resp = await client.get(
                 "/v1/messages",
@@ -1319,7 +1409,12 @@ class TestAuditLogIntegration:
         )
 
         audit_path = tmp_path / "credential_audit.jsonl"
-        broker_app = _build_app(str(tmp_path / "test.db"), str(routes), audit_path=audit_path)
+        broker_app = _build_app(
+            str(tmp_path / "test.db"),
+            str(routes),
+            broker_context=BrokerContext("proj", "t1", "default"),
+            audit_path=audit_path,
+        )
         try:
             async with TestClient(TestServer(broker_app)) as client:
                 resp = await client.post(
@@ -1845,7 +1940,11 @@ class TestRefreshAll:
             )
         )
 
-        app = _build_app(str(tmp_path / "test.db"), str(routes_file))
+        app = _build_app(
+            str(tmp_path / "test.db"),
+            str(routes_file),
+            broker_context=BrokerContext("proj", "t1", "default"),
+        )
         from aiohttp import ClientSession
 
         app[_KEY_OAUTH_CLIENT] = ClientSession()
@@ -1904,7 +2003,11 @@ class TestRefreshAll:
         )
 
         pinned = tmp_path / "pinned-locks"
-        app = _build_app(str(tmp_path / "test.db"), str(routes_file))
+        app = _build_app(
+            str(tmp_path / "test.db"),
+            str(routes_file),
+            broker_context=BrokerContext("proj", "t1", "default"),
+        )
         app[_KEY_LOCK_DIR] = pinned
         app[_KEY_OAUTH_CLIENT] = ClientSession()
 
@@ -1949,7 +2052,11 @@ class TestRefreshAll:
             )
         )
 
-        app = _build_app(str(tmp_path / "test.db"), str(routes_file))
+        app = _build_app(
+            str(tmp_path / "test.db"),
+            str(routes_file),
+            broker_context=BrokerContext("proj", "t1", "default"),
+        )
         from aiohttp import ClientSession
 
         app[_KEY_OAUTH_CLIENT] = ClientSession()
@@ -1986,7 +2093,11 @@ class TestServerDisconnectRetry:
                 {"claude": {"upstream": "http://127.0.0.1:1", "auth_header": "Authorization"}}
             )
         )
-        return _build_app(str(tmp_path / "test.db"), str(routes)), token
+        return _build_app(
+            str(tmp_path / "test.db"),
+            str(routes),
+            broker_context=BrokerContext("proj", "t1", "default"),
+        ), token
 
     async def test_retries_and_succeeds_after_first_disconnect(self, _app_and_token) -> None:
         """ServerDisconnectedError on first attempt triggers a retry; second attempt succeeds."""
@@ -2140,7 +2251,11 @@ class TestRedirectFollowing:
         await upstream.start_server()
         token = self._wire_broker(tmp_path, upstream.port)
 
-        broker_app = _build_app(str(tmp_path / "test.db"), str(tmp_path / "routes.json"))
+        broker_app = _build_app(
+            str(tmp_path / "test.db"),
+            str(tmp_path / "routes.json"),
+            broker_context=BrokerContext("proj", "t1", "default"),
+        )
         async with TestClient(TestServer(broker_app)) as client:
             resp = await client.get("/logs", headers={"Authorization": f"Bearer {token}"})
             assert resp.status == 200
@@ -2168,7 +2283,11 @@ class TestRedirectFollowing:
         await upstream.start_server()
         token = self._wire_broker(tmp_path, upstream.port)
 
-        broker_app = _build_app(str(tmp_path / "test.db"), str(tmp_path / "routes.json"))
+        broker_app = _build_app(
+            str(tmp_path / "test.db"),
+            str(tmp_path / "routes.json"),
+            broker_context=BrokerContext("proj", "t1", "default"),
+        )
         async with TestClient(TestServer(broker_app)) as client:
             resp = await client.post("/logs", headers={"Authorization": f"Bearer {token}"})
             assert resp.status == 302  # relayed, not resolved
@@ -2211,7 +2330,11 @@ class TestResponseHeaderRelay:
         await upstream.start_server()
         token = TestRedirectFollowing._wire_broker(tmp_path, upstream.port)
 
-        broker_app = _build_app(str(tmp_path / "test.db"), str(tmp_path / "routes.json"))
+        broker_app = _build_app(
+            str(tmp_path / "test.db"),
+            str(tmp_path / "routes.json"),
+            broker_context=BrokerContext("proj", "t1", "default"),
+        )
         async with TestClient(TestServer(broker_app)) as client:
             resp = await client.get("/items", headers={"Authorization": f"Bearer {token}"})
             assert resp.status == 200
@@ -2291,7 +2414,11 @@ class TestUpstreamHandshakeRejection:
         routes_file = tmp_path / "routes.json"
         routes_file.write_text("{}")
         CredentialDB(tmp_path / "creds.db", passphrase="test").close()
-        app = _build_app(str(tmp_path / "creds.db"), str(routes_file))
+        app = _build_app(
+            str(tmp_path / "creds.db"),
+            str(routes_file),
+            broker_context=BrokerContext("proj", "t1", "default"),
+        )
         await _on_startup(app)
         try:
             assert app[_KEY_PROXY_CLIENT].auto_decompress is False

@@ -32,6 +32,7 @@ from .protocol import (
     ExecResult,
     Image,
     PortReservation,
+    RuntimeContainer,
 )
 
 if TYPE_CHECKING:
@@ -73,6 +74,14 @@ class KrunRuntime:
         return self._transport
 
     # -- Handle factories --------------------------------------------------
+
+    def inventory(self, *, timeout: float = 10) -> list[RuntimeContainer]:
+        """Read authoritative containment metadata through the host Podman runtime."""
+        return self._podman.inventory(timeout=timeout)
+
+    def force_stop(self, container_id: str, *, timeout: float = 10) -> None:
+        """Force-stop the guest by host container identity, without entering the guest."""
+        self._podman.force_stop(container_id, timeout=timeout)
 
     def container(self, name: str) -> Container:
         """Return a [`KrunContainer`][terok_sandbox.runtime.krun.KrunContainer]

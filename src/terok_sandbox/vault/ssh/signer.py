@@ -253,8 +253,8 @@ async def _read_handshake(reader: asyncio.StreamReader) -> str | None:
 
 async def _resolve_scope_from_token(
     reader: asyncio.StreamReader, writer: asyncio.StreamWriter, token_db: Any
-) -> str | None:
-    """Container-facing: read and validate the phantom token, return the scope."""
+) -> tuple[str, str] | None:
+    """Authenticate the connection and retain its token for per-request revocation checks."""
     peer = _peer_label(writer)
     token = await _read_handshake(reader)
     if not token:
@@ -267,7 +267,7 @@ async def _resolve_scope_from_token(
     if token_info.get("provider") != "ssh":
         _logger.warning("Token provider %r is not 'ssh', rejecting", token_info.get("provider"))
         return None
-    return token_info["scope"]
+    return token_info["scope"], token
 
 
 async def _serve_agent_session(
@@ -275,27 +275,26 @@ async def _serve_agent_session(
     writer: asyncio.StreamWriter,
     scope: str,
     key_cache: _DBKeyCache,
+    *,
+    authorize: Callable[[], bool] | None = None,
 ) -> None:
     """Run the agent message loop for a connection bound to *scope*."""
     peer = _peer_label(writer)
-    keys = key_cache.get(scope)
-    if not keys:
-        _logger.warning("No SSH keys loaded for scope %r", scope)
+    if not key_cache.get(scope):
+        _logger.warning("No SSH keys assigned to scope %r", scope)
         return
-
-    key_by_blob = {pub_blob: (priv, comment) for priv, pub_blob, comment in keys}
-    _logger.info(
-        "SSH agent session ready for scope %r from %s — %d key(s) available",
-        scope,
-        peer,
-        len(keys),
-    )
-
     while True:
         try:
             msg_type, payload = await _read_msg(reader)
         except (asyncio.IncompleteReadError, ValueError):
             break
+
+        if authorize is not None and not authorize():
+            _write_msg(writer, SSH_AGENT_FAILURE)
+            await writer.drain()
+            return
+        keys = key_cache.get(scope)
+        key_by_blob = {pub_blob: (priv, comment) for priv, pub_blob, comment in keys}
 
         if msg_type == SSH_AGENTC_REQUEST_IDENTITIES:
             _logger.info("Identity request for scope %r — returning %d key(s)", scope, len(keys))
@@ -344,10 +343,17 @@ async def _handle_container_connection(
 ) -> None:
     """Container-facing connection: handshake → scope → agent session."""
     try:
-        scope = await _resolve_scope_from_token(reader, writer, token_db)
-        if scope is None:
+        identity = await _resolve_scope_from_token(reader, writer, token_db)
+        if identity is None:
             return
-        await _serve_agent_session(reader, writer, scope, key_cache)
+        scope, token = identity
+
+        def authorized() -> bool:
+            """Check the live token before every identity or signature request."""
+            grant = token_db.lookup_token(token)
+            return grant is not None and grant.get("provider") == "ssh" and grant["scope"] == scope
+
+        await _serve_agent_session(reader, writer, scope, key_cache, authorize=authorized)
     except Exception:
         _logger.exception("SSH agent connection error from %s", _peer_label(writer))
     finally:

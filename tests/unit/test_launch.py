@@ -61,6 +61,7 @@ from terok_sandbox.podman_args import (
     validate_passthrough_args,
 )
 from terok_sandbox.supervisor.sidecar import _LOCK_NAME as SIDECAR_LOCK_NAME
+from terok_sandbox.vault.context import BrokerContext
 
 
 def _make_cfg(tmp_path: Path, services_mode: str = "socket") -> SandboxConfig:
@@ -476,11 +477,20 @@ class TestWriteSidecar:
     pick their own fail policy — ``compose`` rolls back and aborts).
     """
 
+    def test_missing_broker_context_does_not_write_sidecar(self, tmp_path: Path) -> None:
+        """Refuse a legacy caller before creating durable container authority."""
+        cfg = _make_cfg(tmp_path)
+        resources = _socket_resources(tmp_path)
+        with pytest.raises(ValueError, match="trusted broker context"):
+            write_sidecar("myc", cfg=cfg, per_container=resources, broker_context=None)
+        assert not cfg.sidecar_path("myc").exists()
+
     def test_writes_socket_mode_payload(self, tmp_path: Path) -> None:
         """Socket mode: no port keys; gate keys only when a token is wired."""
         cfg = _make_cfg(tmp_path, services_mode="socket")
         path = write_sidecar(
             "myc",
+            broker_context=BrokerContext("proj", "t1", "default"),
             cfg=cfg,
             per_container=_socket_resources(tmp_path),
             scope_id="proj",
@@ -490,6 +500,11 @@ class TestWriteSidecar:
         )
         assert path == cfg.state_dir / "sidecar" / "myc.json"
         payload = json.loads(path.read_text())
+        assert payload["broker_context"] == {
+            "scope": "proj",
+            "subject": "t1",
+            "credential_set": "default",
+        }
         assert payload["container_name"] == "myc"
         assert payload["ipc_mode"] == "socket"
         assert payload["scope_id"] == "proj"
@@ -515,6 +530,7 @@ class TestWriteSidecar:
         )
         path = write_sidecar(
             "myc",
+            broker_context=BrokerContext("proj", "t1", "default"),
             cfg=cfg,
             per_container=res,
             gate_base_path=str(cfg.gate_base_path),
@@ -530,7 +546,12 @@ class TestWriteSidecar:
     def test_no_gate_kwargs_omit_gate_keys(self, tmp_path: Path) -> None:
         """Without gate kwargs, no gate keys land in the payload."""
         cfg = _make_cfg(tmp_path, services_mode="socket")
-        path = write_sidecar("myc", cfg=cfg, per_container=_socket_resources(tmp_path))
+        path = write_sidecar(
+            "myc",
+            broker_context=BrokerContext("proj", "t1", "default"),
+            cfg=cfg,
+            per_container=_socket_resources(tmp_path),
+        )
         assert path is not None
         payload = json.loads(path.read_text())
         assert payload["project_id"] == ""
@@ -543,6 +564,7 @@ class TestWriteSidecar:
         cfg = _make_cfg(tmp_path, services_mode="socket")
         path = write_sidecar(
             "myc",
+            broker_context=BrokerContext("proj", "t1", "default"),
             cfg=cfg,
             per_container=_socket_resources(tmp_path),
             project_id="proj",
@@ -558,7 +580,12 @@ class TestWriteSidecar:
     def test_clearance_defaults_to_prompt(self, tmp_path: Path) -> None:
         """With no ``services.clearance`` configured, the sidecar says ``prompt`` outright."""
         cfg = _make_cfg(tmp_path, services_mode="socket")
-        path = write_sidecar("myc", cfg=cfg, per_container=_socket_resources(tmp_path))
+        path = write_sidecar(
+            "myc",
+            broker_context=BrokerContext("proj", "t1", "default"),
+            cfg=cfg,
+            per_container=_socket_resources(tmp_path),
+        )
         assert path is not None
         assert json.loads(path.read_text())["clearance"] == "prompt"
 
@@ -568,7 +595,12 @@ class TestWriteSidecar:
         from terok_sandbox.supervisor.sidecar import load_sidecar
 
         cfg = dataclasses.replace(_make_cfg(tmp_path, services_mode="socket"), clearance=value)
-        path = write_sidecar("myc", cfg=cfg, per_container=_socket_resources(tmp_path))
+        path = write_sidecar(
+            "myc",
+            broker_context=BrokerContext("proj", "t1", "default"),
+            cfg=cfg,
+            per_container=_socket_resources(tmp_path),
+        )
         assert path is not None
         assert json.loads(path.read_text())["clearance"] == value
         loaded = load_sidecar(path)
@@ -588,6 +620,7 @@ class TestWriteSidecar:
         target.chmod(0o644)
         path = write_sidecar(
             "myc",
+            broker_context=BrokerContext("proj", "t1", "default"),
             cfg=cfg,
             per_container=_socket_resources(tmp_path),
             gate_base_path=str(cfg.gate_base_path),
@@ -604,7 +637,12 @@ class TestWriteSidecar:
         victim = tmp_path / "victim"
         victim.write_text("precious")
         (sidecar_dir / "myc.json").symlink_to(victim)
-        result = write_sidecar("myc", cfg=cfg, per_container=_socket_resources(tmp_path))
+        result = write_sidecar(
+            "myc",
+            broker_context=BrokerContext("proj", "t1", "default"),
+            cfg=cfg,
+            per_container=_socket_resources(tmp_path),
+        )
         assert result is None
         assert victim.read_text() == "precious"
         assert "sidecar write failed" in capsys.readouterr().err
@@ -621,6 +659,7 @@ class TestWriteSidecar:
         cfg = _make_cfg(tmp_path, services_mode="socket")
         path = write_sidecar(
             "myc",
+            broker_context=BrokerContext("proj", "t1", "default"),
             cfg=cfg,
             per_container=_socket_resources(tmp_path),
             gate_base_path=str(cfg.gate_base_path),
@@ -631,7 +670,12 @@ class TestWriteSidecar:
         with patch(
             "terok_sandbox.supervisor.sidecar.json.dump", side_effect=OSError("no space left")
         ):
-            result = write_sidecar("myc", cfg=cfg, per_container=_socket_resources(tmp_path))
+            result = write_sidecar(
+                "myc",
+                broker_context=BrokerContext("proj", "t1", "default"),
+                cfg=cfg,
+                per_container=_socket_resources(tmp_path),
+            )
         assert result is None
         assert path.read_bytes() == before
         # Nothing beside the sidecar but the directory's lock file — no temp file left.
@@ -645,7 +689,12 @@ class TestWriteSidecar:
         """A path-shaped name must never become a path segment."""
         cfg = _make_cfg(tmp_path, services_mode="socket")
         with pytest.raises(ValueError, match="invalid container name"):
-            write_sidecar(name, cfg=cfg, per_container=_socket_resources(tmp_path))
+            write_sidecar(
+                name,
+                broker_context=BrokerContext("proj", "t1", "default"),
+                cfg=cfg,
+                per_container=_socket_resources(tmp_path),
+            )
 
     def test_mkdir_failure_returns_none(
         self, tmp_path: Path, capsys: pytest.CaptureFixture
@@ -653,7 +702,12 @@ class TestWriteSidecar:
         """A sidecar-dir mkdir OSError soft-fails to ``None`` with a stderr warning."""
         cfg = _make_cfg(tmp_path, services_mode="socket")
         with patch("pathlib.Path.mkdir", side_effect=OSError("read-only fs")):
-            result = write_sidecar("myc", cfg=cfg, per_container=_socket_resources(tmp_path))
+            result = write_sidecar(
+                "myc",
+                broker_context=BrokerContext("proj", "t1", "default"),
+                cfg=cfg,
+                per_container=_socket_resources(tmp_path),
+            )
         assert result is None
         assert "sidecar dir setup failed" in capsys.readouterr().err
 
@@ -663,7 +717,12 @@ class TestWriteSidecar:
         """An open(2) OSError (e.g. disk full) soft-fails to ``None`` with a warning."""
         cfg = _make_cfg(tmp_path, services_mode="socket")
         with patch("terok_sandbox.launch.os.open", side_effect=OSError("no space left")):
-            result = write_sidecar("myc", cfg=cfg, per_container=_socket_resources(tmp_path))
+            result = write_sidecar(
+                "myc",
+                broker_context=BrokerContext("proj", "t1", "default"),
+                cfg=cfg,
+                per_container=_socket_resources(tmp_path),
+            )
         assert result is None
         assert "sidecar write failed" in capsys.readouterr().err
 
@@ -757,7 +816,9 @@ class TestRemoveContainerState:
         """The inverse of allocate + write: both artifacts gone afterwards."""
         cfg = _make_cfg(tmp_path)
         res = allocate_per_container_resources(cfg, "myc")
-        path = write_sidecar("myc", cfg=cfg, per_container=res)
+        path = write_sidecar(
+            "myc", broker_context=BrokerContext("proj", "t1", "default"), cfg=cfg, per_container=res
+        )
         assert path is not None and path.exists()
         assert res.container_runtime_dir.is_dir()
         remove_container_state("myc", cfg=cfg)
