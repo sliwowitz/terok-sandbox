@@ -769,57 +769,13 @@ async def _forward_request(request: web.Request) -> web.StreamResponse:
         await _audit_request(request, token_info, 502, "credential_missing", started_at)
         return web.Response(status=502, text="Credential not configured for this provider")
 
-    # Determine the real auth value and header based on credential type.
-    # OAuth tokens use "Authorization: Bearer <token>"; API keys use the
-    # route-configured header (e.g. "x-api-key: <key>").
-    # Legacy rows without "type" are detected by the presence of "access_token".
-    cred_type = cred.get("type", "")
-    is_oauth = cred_type == "oauth" or (not cred_type and "access_token" in cred)
-    if is_oauth:
-        real_token = cred.get("access_token")
-        if not real_token:
-            _logger.error("Credential for %r is OAuth but missing access_token", provider)
-            await _audit_request(request, token_info, 502, "credential_misconfigured", started_at)
-            return web.Response(status=502, text="Credential misconfigured")
-        auth_header = "Authorization"
-        auth_prefix = "Bearer "
-    else:
-        real_token = cred.get("token") or cred.get("key")
-        if not real_token:
-            _logger.error("Credential for %r has no usable token field", provider)
-            await _audit_request(request, token_info, 502, "credential_misconfigured", started_at)
-            return web.Response(status=502, text="Credential misconfigured")
-        auth_header = route.get("auth_header", "Authorization")
-        auth_prefix = route.get("auth_prefix", "Bearer ")
-        # "dynamic" means auto-detect — for API keys, use x-api-key
-        if auth_header == "dynamic":
-            auth_header = "x-api-key"
-            auth_prefix = ""
+    headers = _upstream_headers(request, route, cred, provider=provider)
+    if headers is None:
+        await _audit_request(request, token_info, 502, "credential_misconfigured", started_at)
+        return web.Response(status=502, text="Credential misconfigured")
 
-    # 4. Build upstream request — strip phantom auth, inject real auth
     upstream_base = _select_upstream(route, rest)
     upstream_url = _build_upstream_url(upstream_base, rest, request.query_string)
-
-    # Strip auth, host, and RFC 7230 hop-by-hop headers (plus any names the
-    # client listed in its Connection header) before forwarding upstream.
-    dropped = {t.strip().lower() for t in request.headers.get("Connection", "").split(",")}
-    dropped |= _HOP_BY_HOP_HEADERS
-    dropped |= set(_AUTH_HEADERS)
-    dropped.add("host")
-    dropped.discard("")
-    headers = {k: v for k, v in request.headers.items() if k.lower() not in dropped}
-    headers[auth_header] = f"{auth_prefix}{real_token}"
-    if is_oauth:
-        for header, value in (route.get("oauth_extra_headers") or {}).items():
-            existing_values = [
-                part.strip() for part in headers.get(header, "").split(",") if part.strip()
-            ]
-            if value not in existing_values:
-                headers[header] = ",".join([*existing_values, value])
-        for header, field in (route.get("oauth_credential_headers") or {}).items():
-            if value := cred.get(field):
-                headers[header] = str(value)
-
     session: ClientSession = request.app[_KEY_PROXY_CLIENT]
     if request.headers.get("Upgrade", "").lower() == "websocket":
         # WebSocket sessions deliberately bypass the audit log in v1 — the
@@ -834,7 +790,82 @@ async def _forward_request(request: web.Request) -> web.StreamResponse:
             provider=provider,
         )
 
-    # 5. Forward and stream response
+    return await _forward_http(
+        request,
+        session=session,
+        upstream_url=upstream_url,
+        headers=headers,
+        token_info=token_info,
+        started_at=started_at,
+    )
+
+
+def _upstream_headers(
+    request: web.Request, route: dict, cred: dict, *, provider: str
+) -> dict[str, str] | None:
+    """Replace container authentication with the authorized credential, or reject a malformed row."""
+    # OAuth tokens use "Authorization: Bearer <token>"; API keys use the
+    # route-configured header (e.g. "x-api-key: <key>").
+    # Legacy rows without "type" are detected by the presence of "access_token".
+    cred_type = cred.get("type", "")
+    is_oauth = cred_type == "oauth" or (not cred_type and "access_token" in cred)
+    if is_oauth:
+        real_token = cred.get("access_token")
+        if not real_token:
+            _logger.error("Credential for %r is OAuth but missing access_token", provider)
+            return None
+        auth_header = "Authorization"
+        auth_prefix = "Bearer "
+    else:
+        real_token = cred.get("token") or cred.get("key")
+        if not real_token:
+            _logger.error("Credential for %r has no usable token field", provider)
+            return None
+        auth_header = route.get("auth_header", "Authorization")
+        auth_prefix = route.get("auth_prefix", "Bearer ")
+        # "dynamic" means auto-detect — for API keys, use x-api-key
+        if auth_header == "dynamic":
+            auth_header = "x-api-key"
+            auth_prefix = ""
+
+    # Strip auth, host, and RFC 7230 hop-by-hop headers (plus any names the
+    # client listed in its Connection header) before forwarding upstream.
+    dropped = {t.strip().lower() for t in request.headers.get("Connection", "").split(",")}
+    dropped |= _HOP_BY_HOP_HEADERS
+    dropped |= set(_AUTH_HEADERS)
+    dropped.add("host")
+    dropped.discard("")
+    headers = {k: v for k, v in request.headers.items() if k.lower() not in dropped}
+    headers[auth_header] = f"{auth_prefix}{real_token}"
+    if is_oauth:
+        _add_oauth_headers(headers, route, cred)
+    return headers
+
+
+def _add_oauth_headers(headers: dict[str, str], route: dict, cred: dict) -> None:
+    """Merge OAuth feature flags and credential metadata without duplicating exact values."""
+    for header, value in (route.get("oauth_extra_headers") or {}).items():
+        existing_values = [
+            part.strip() for part in headers.get(header, "").split(",") if part.strip()
+        ]
+        if value not in existing_values:
+            headers[header] = ",".join([*existing_values, value])
+    for header, field in (route.get("oauth_credential_headers") or {}).items():
+        if value := cred.get(field):
+            headers[header] = str(value)
+
+
+async def _forward_http(
+    request: web.Request,
+    *,
+    session: ClientSession,
+    upstream_url: str,
+    headers: dict[str, str],
+    token_info: dict,
+    started_at: float,
+) -> web.StreamResponse:
+    """Stream an authenticated HTTP exchange, retrying only safe pre-response disconnects."""
+    provider = token_info["provider"]
     # Read the body once (streaming body can only be consumed once).
     body = await request.read() if request.can_read_body else None
     # Only retry idempotent methods (or those with an Idempotency-Key header) to

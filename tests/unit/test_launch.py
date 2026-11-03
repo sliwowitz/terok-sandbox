@@ -480,10 +480,9 @@ class TestWriteSidecar:
     def test_missing_broker_context_does_not_write_sidecar(self, tmp_path: Path) -> None:
         """Refuse a legacy caller before creating durable container authority."""
         cfg = _make_cfg(tmp_path)
+        resources = _socket_resources(tmp_path)
         with pytest.raises(ValueError, match="trusted broker context"):
-            write_sidecar(
-                "myc", cfg=cfg, per_container=_socket_resources(tmp_path), broker_context=None
-            )
+            write_sidecar("myc", cfg=cfg, per_container=resources, broker_context=None)
         assert not cfg.sidecar_path("myc").exists()
 
     def test_writes_socket_mode_payload(self, tmp_path: Path) -> None:

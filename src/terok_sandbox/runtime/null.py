@@ -301,8 +301,12 @@ class NullRuntime:
         """Record host-side annotations for containment inventory tests."""
         self._container_annotations[name] = dict(annotations)
 
-    def inventory(self, *, timeout: float = 10) -> list[RuntimeContainer]:
-        """Return fixture identities, states and host annotations."""
+    def inventory(
+        self,
+        *,
+        timeout: float = 10,  # NOSONAR(S1172) - required protocol timeout
+    ) -> list[RuntimeContainer]:
+        """Return fixture identities and annotations without blocking; no timeout is needed."""
         return [
             RuntimeContainer(
                 self._container_ids[name],
@@ -313,8 +317,13 @@ class NullRuntime:
             for name, state in self._container_states.items()
         ]
 
-    def force_stop(self, container_id: str, *, timeout: float = 10) -> None:
-        """Stop the fixture with the exact ID or raise when it is absent."""
+    def force_stop(
+        self,
+        container_id: str,
+        *,
+        timeout: float = 10,  # NOSONAR(S1172) - required protocol timeout
+    ) -> None:
+        """Stop the fixture by exact ID without blocking, or raise when it is absent."""
         for name, identity in self._container_ids.items():
             if identity == container_id:
                 self._container_states[name] = "exited"

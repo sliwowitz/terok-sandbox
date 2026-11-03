@@ -59,8 +59,9 @@ def test_inventory_preserves_full_ids_and_host_annotations(run):
 def test_invalid_or_incomplete_inventory_raises(run, record):
     """Malformed metadata and vanished records cannot masquerade as successful discovery."""
     run.side_effect = [Mock(stdout=_ID), Mock(stdout=json.dumps(record))]
+    runtime = PodmanRuntime()
     with pytest.raises(RuntimeError):
-        PodmanRuntime().inventory()
+        runtime.inventory()
 
 
 @pytest.mark.parametrize(
@@ -70,16 +71,18 @@ def test_invalid_or_incomplete_inventory_raises(run, record):
 def test_inventory_propagates_runtime_failures(run, failure):
     """The orchestrator must report failed containment instead of claiming an empty host."""
     run.side_effect = failure
+    runtime = PodmanRuntime()
     with pytest.raises(type(failure)):
-        PodmanRuntime().inventory(timeout=2)
+        runtime.inventory(timeout=2)
 
 
 @pytest.mark.parametrize("identity", ["short", "A" * 64, "--all"])
 def test_inventory_rejects_untrusted_ids_before_inspection(run, identity):
     """A malformed listing cannot turn into name resolution or another Podman option."""
     run.return_value = Mock(stdout=identity)
+    runtime = PodmanRuntime()
     with pytest.raises(RuntimeError, match="invalid container ID"):
-        PodmanRuntime().inventory()
+        runtime.inventory()
     assert run.call_count == 1
 
 
@@ -87,8 +90,9 @@ def test_inventory_does_not_inspect_after_its_deadline(run, monkeypatch):
     """Listing and inspection share one timeout budget instead of each receiving a fresh one."""
     monkeypatch.setattr("terok_sandbox.runtime.podman.time.monotonic", Mock(side_effect=[0, 3]))
     run.return_value = Mock(stdout=_ID)
+    runtime = PodmanRuntime()
     with pytest.raises(TimeoutError, match="inventory deadline expired"):
-        PodmanRuntime().inventory(timeout=2)
+        runtime.inventory(timeout=2)
     assert run.call_count == 1
 
 
@@ -102,12 +106,13 @@ def test_empty_inventory_and_unannotated_containers(run):
 
 def test_force_stop_requires_full_id_and_propagates_timeout(run):
     """No ambiguous names, swallowed errors or unbounded stop command."""
+    runtime = PodmanRuntime()
     with pytest.raises(ValueError):
-        PodmanRuntime().force_stop("looks-like-a-task")
+        runtime.force_stop("looks-like-a-task")
     run.assert_not_called()
     run.side_effect = subprocess.TimeoutExpired("podman", 2)
     with pytest.raises(subprocess.TimeoutExpired):
-        PodmanRuntime().force_stop(_ID, timeout=2)
+        runtime.force_stop(_ID, timeout=2)
     assert run.call_args.args[0] == ["podman", "kill", "--signal", "KILL", _ID]
     assert run.call_args.kwargs["timeout"] == 2
     assert run.call_args.kwargs["check"] is True
@@ -133,8 +138,10 @@ def test_null_runtime_models_inventory_and_stop(state):
     runtime.set_container_state("demo", state)
     runtime.set_container_id("demo", _ID)
     runtime.set_container_annotations("demo", {"trusted": "annotation"})
-    assert runtime.inventory() == [RuntimeContainer(_ID, "demo", state, {"trusted": "annotation"})]
-    runtime.force_stop(_ID)
+    assert runtime.inventory(timeout=0) == [
+        RuntimeContainer(_ID, "demo", state, {"trusted": "annotation"})
+    ]
+    runtime.force_stop(_ID, timeout=0)
     assert runtime.inventory()[0].state == "exited"
     with pytest.raises(RuntimeError):
         runtime.force_stop("b" * 64)

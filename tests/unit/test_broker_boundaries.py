@@ -30,10 +30,12 @@ _TIMEOUT = 3
 def test_broker_entry_points_reject_untrusted_context_before_opening_vault(tmp_path, context):
     """Neither a missing identity nor a plain mapping can bypass the canonical context type."""
     db_path = tmp_path / "unopened.db"
+    db_path_text, routes_path = str(db_path), str(tmp_path / "routes.json")
+    bind = UnixBind(tmp_path / "vault.sock")
     with pytest.raises(ValueError, match="Missing broker context"):
-        _build_app(str(db_path), str(tmp_path / "routes.json"), broker_context=context)
+        _build_app(db_path_text, routes_path, broker_context=context)
     with pytest.raises(ValueError, match="Missing broker context"):
-        VaultProxy(db_path=db_path, broker_context=context, bind=UnixBind(tmp_path / "vault.sock"))
+        VaultProxy(db_path=db_path, broker_context=context, bind=bind)
     assert not db_path.exists()
 
 
@@ -41,8 +43,9 @@ def test_broker_entry_points_reject_untrusted_context_before_opening_vault(tmp_p
 @pytest.mark.parametrize("value", ["", " ", None, 42])
 def test_context_rejects_missing_identity(field, value):
     """No empty/default inference can silently broaden broker authority."""
+    identity = {**asdict(_CONTEXT), field: value}
     with pytest.raises(ValueError):
-        BrokerContext(**{**asdict(_CONTEXT), field: value})
+        BrokerContext(**identity)
 
 
 @pytest.mark.parametrize("field", ["scope", "subject", "credential_set"])
@@ -146,8 +149,9 @@ async def test_revocation_disconnects_established_http_stream(tmp_path, marker):
             try:
                 with closing(CredentialDB(tmp_path / "vault.db", passphrase="test")) as db:
                     db.revoke_tokens(_CONTEXT.scope, _CONTEXT.subject)
+                remaining_response = response.read()
                 with pytest.raises(ClientError):
-                    await asyncio.wait_for(response.read(), _TIMEOUT)
+                    await asyncio.wait_for(remaining_response, _TIMEOUT)
                 denied = await client.get("/", headers={"Authorization": f"Bearer {token}"})
                 assert denied.status == 401
             finally:
