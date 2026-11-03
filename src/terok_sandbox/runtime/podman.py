@@ -732,7 +732,11 @@ class PodmanImage:
             return None
         try:
             identity = _inspection_identity(record["Id"])
-            labels = record["Config"]["Labels"]
+            config = record["Config"]
+            if not isinstance(config, dict):
+                raise ValueError("invalid image config")
+            # OCI ImageConfig omits empty Labels; the containing Config is still required.
+            labels = config.get("Labels")
             if labels is None:
                 labels = {}
             if not isinstance(labels, dict) or any(

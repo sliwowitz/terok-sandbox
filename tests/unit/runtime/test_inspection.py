@@ -99,6 +99,22 @@ def test_image_snapshot_preserves_observed_labels(run, labels):
     assert run.call_args.args[0] == ["podman", "image", "inspect", "--", "mutable:tag"]
 
 
+@pytest.mark.parametrize("config", [{}, {"Env": ["container=oci"], "Cmd": ["sh"]}])
+def test_image_snapshot_accepts_oci_omitted_labels(run, config):
+    """Podman's documented inspect shape embeds OCI Config, which omits empty Labels."""
+    record = {
+        "Id": _IMAGE_ID,
+        "RepoTags": ["example:latest"],
+        "Config": config,
+        "Architecture": "amd64",
+        "Os": "linux",
+        "RootFS": {"Type": "layers", "Layers": []},
+        "Labels": None,
+    }
+    run.return_value = _completed(stdout=json.dumps([record]))
+    assert PodmanRuntime().image("example:latest").inspect() == ImageInspection(_IMAGE_ID, {})
+
+
 @pytest.mark.parametrize("stdout", ["not JSON", "[]", "{}", "[{}, {}]", "[42]"])
 def test_malformed_inspection_never_becomes_absence(run, handle, stdout):
     """Even successful commands must return exactly one complete record."""
@@ -157,8 +173,9 @@ def test_missing_container_fields_are_not_assumed_empty(run, field):
         {},
         {"Id": None, "Config": {"Labels": {}}},
         {"Id": "short", "Config": {"Labels": {}}},
+        {"Id": _IMAGE_ID},
         {"Id": _IMAGE_ID, "Config": None},
-        {"Id": _IMAGE_ID, "Config": {}},
+        {"Id": _IMAGE_ID, "Config": []},
         {"Id": _IMAGE_ID, "Config": {"Labels": []}},
         {"Id": _IMAGE_ID, "Config": {"Labels": {"protocol": 3}}},
     ],
