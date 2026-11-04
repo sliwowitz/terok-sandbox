@@ -1216,7 +1216,10 @@ class PodmanRuntime:
             check=True,
             timeout=remaining,
         )
-        records = json.loads(inspected.stdout)
+        try:
+            records = json.loads(inspected.stdout)
+        except json.JSONDecodeError as exc:
+            raise RuntimeError("Podman inventory is not valid JSON") from exc
         if not isinstance(records, list):
             raise RuntimeError("Podman inventory is not a list")
         result = []
@@ -1224,7 +1227,10 @@ class PodmanRuntime:
             try:
                 identity, name = record["Id"], record["Name"]
                 state = record["State"]["Status"]
-                annotations = record["Config"].get("Annotations")
+                config = record["Config"]
+                if not isinstance(config, dict):
+                    raise ValueError("invalid Config")
+                annotations = config.get("Annotations")
                 if annotations is None:
                     annotations = {}
                 if (

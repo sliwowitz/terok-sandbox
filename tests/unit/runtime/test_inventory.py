@@ -64,6 +64,30 @@ def test_invalid_or_incomplete_inventory_raises(run, record):
         runtime.inventory()
 
 
+@pytest.mark.parametrize("stdout", ["", "not JSON", '[{"Id":'])
+def test_inventory_wraps_invalid_json(run, stdout):
+    """Invalid inspection output uses the same runtime failure contract as invalid records."""
+    run.side_effect = [Mock(stdout=_ID), Mock(stdout=stdout)]
+    runtime = PodmanRuntime()
+    with pytest.raises(RuntimeError, match="Podman inventory is not valid JSON") as error:
+        runtime.inventory()
+    assert isinstance(error.value.__cause__, json.JSONDecodeError)
+
+
+@pytest.mark.parametrize("config", [None, [], "invalid", 0])
+def test_inventory_rejects_non_object_config_without_partial_results(run, config):
+    """A malformed later record must not turn complete discovery into a partial inventory."""
+    other_id = "b" * 64
+    run.side_effect = [
+        Mock(stdout=f"{_ID}\n{other_id}"),
+        Mock(stdout=json.dumps([_record(), _record(Id=other_id, Config=config)])),
+    ]
+    runtime = PodmanRuntime()
+    with pytest.raises(RuntimeError, match="invalid containment metadata") as error:
+        runtime.inventory()
+    assert isinstance(error.value.__cause__, ValueError)
+
+
 @pytest.mark.parametrize(
     "failure",
     [subprocess.CalledProcessError(125, "podman"), subprocess.TimeoutExpired("podman", 2)],
