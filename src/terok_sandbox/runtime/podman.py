@@ -1222,33 +1222,7 @@ class PodmanRuntime:
             raise RuntimeError("Podman inventory is not valid JSON") from exc
         if not isinstance(records, list):
             raise RuntimeError("Podman inventory is not a list")
-        result = []
-        for record in records:
-            try:
-                identity, name = record["Id"], record["Name"]
-                state = record["State"]["Status"]
-                config = record["Config"]
-                if not isinstance(config, dict):
-                    raise ValueError("invalid Config")
-                annotations = config.get("Annotations")
-                if annotations is None:
-                    annotations = {}
-                if (
-                    identity not in ids
-                    or not isinstance(name, str)
-                    or not name
-                    or not isinstance(state, str)
-                    or not state
-                    or not isinstance(annotations, dict)
-                    or any(
-                        not isinstance(k, str) or not isinstance(v, str)
-                        for k, v in annotations.items()
-                    )
-                ):
-                    raise ValueError("invalid fields")
-            except (KeyError, TypeError, ValueError) as exc:
-                raise RuntimeError("Podman returned invalid containment metadata") from exc
-            result.append(RuntimeContainer(identity, name.lstrip("/"), state, annotations))
+        result = [_inventory_container(record, ids) for record in records]
         if len(result) != len(ids) or {item.id for item in result} != set(ids):
             raise RuntimeError("Podman returned an incomplete container inventory")
         return result
@@ -1613,6 +1587,32 @@ class PodmanRuntime:
                 if parsed is not None:
                     result[parts[0]] = parsed
         return result
+
+
+def _inventory_container(record: dict, ids: list[str]) -> RuntimeContainer:
+    """Validate one container's containment metadata against the daemon's listed IDs."""
+    try:
+        identity, name = record["Id"], record["Name"]
+        state = record["State"]["Status"]
+        config = record["Config"]
+        if not isinstance(config, dict):
+            raise ValueError("invalid Config")
+        annotations = config.get("Annotations")
+        if annotations is None:
+            annotations = {}
+        if (
+            identity not in ids
+            or not isinstance(name, str)
+            or not name
+            or not isinstance(state, str)
+            or not state
+            or not isinstance(annotations, dict)
+            or any(not isinstance(k, str) or not isinstance(v, str) for k, v in annotations.items())
+        ):
+            raise ValueError("invalid fields")
+    except (KeyError, TypeError, ValueError) as exc:
+        raise RuntimeError("Podman returned invalid containment metadata") from exc
+    return RuntimeContainer(identity, name.lstrip("/"), state, annotations)
 
 
 # ── exec_stdio internals ──────────────────────────────────────────────────
