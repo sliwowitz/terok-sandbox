@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: 2026 Jiri Vyskocil
 # SPDX-License-Identifier: Apache-2.0
 
-"""Capture short command replies within a shared byte budget and deadline."""
+"""Capture a command's reply within a byte budget and one deadline."""
 
 from __future__ import annotations
 
@@ -13,27 +13,39 @@ import time
 from contextlib import suppress
 from typing import BinaryIO, cast
 
-from .protocol import ExecResult
+from .protocol import ExecOutputLimitError, ExecResult
 
 _READ_SIZE = 64 * 1024
 
 
-def _run_bounded(
+def run_captured(
     argv: list[str],
     *,
     max_output_bytes: int,
     timeout: float | None,
     executable: str | None = None,
 ) -> ExecResult:
-    """Capture stdout and stderr without retaining more than their combined budget.
+    """Run *argv* and return its reply, holding at most *max_output_bytes* of it.
 
-    Overflow raises ``RuntimeError`` rather than returning a partial reply.
-    The deadline covers both pipe reads and process exit. Failure closes the
-    pipes and kills the local transport process group; it does not promise
-    to stop processes inside a container or remote guest.
+    Overflow raises
+    [`ExecOutputLimitError`][terok_sandbox.runtime.protocol.ExecOutputLimitError]
+    rather than returning a partial reply.  One deadline covers the pipe
+    reads and the process exit.  Failure closes the pipes and kills the
+    local transport process group; it does not promise to stop processes
+    inside a container or remote guest.
     """
-    _check_output_limit(0, max_output_bytes)
+    if max_output_bytes <= 0:
+        raise ValueError("max_output_bytes must be positive")
     deadline = None if timeout is None else time.monotonic() + timeout
+
+    def remaining() -> float | None:
+        if deadline is None:
+            return None
+        left = deadline - time.monotonic()
+        if left <= 0:
+            raise subprocess.TimeoutExpired(argv, cast(float, timeout))
+        return left
+
     outputs = (bytearray(), bytearray())
     with subprocess.Popen(  # nosec B603 - argv supplied by the runtime transport
         argv,
@@ -51,16 +63,18 @@ def _run_bounded(
                     selector.register(stream, selectors.EVENT_READ, output)
                 size = 0
                 while selector.get_map():
-                    remaining = _remaining_time(argv, timeout, deadline)
-                    for key, _ in selector.select(remaining):
+                    for key, _ in selector.select(remaining()):
                         chunk = os.read(key.fd, min(_READ_SIZE, max_output_bytes - size + 1))
                         if not chunk:
                             selector.unregister(key.fileobj)
                             continue
                         size += len(chunk)
-                        _check_output_limit(size, max_output_bytes)
+                        if size > max_output_bytes:
+                            raise ExecOutputLimitError(
+                                f"Command output exceeded {max_output_bytes} bytes"
+                            )
                         key.data.extend(chunk)
-            exit_code = proc.wait(timeout=_remaining_time(argv, timeout, deadline))
+            exit_code = proc.wait(timeout=remaining())
         except BaseException:
             # No reader threads hold buffered locks; inherited writers cannot
             # delay pipe closure or keep the selector waiting beyond its deadline.
@@ -71,22 +85,3 @@ def _run_bounded(
             proc.wait()
             raise
     return ExecResult(exit_code, *(output.decode("utf-8", errors="replace") for output in outputs))
-
-
-def _check_output_limit(size: int, limit: int | None) -> None:
-    """Reject invalid budgets and replies that exceed the selected byte budget."""
-    if limit is not None:
-        if limit <= 0:
-            raise ValueError("max_output_bytes must be positive")
-        if size > limit:
-            raise RuntimeError(f"Command output exceeded {limit} bytes")
-
-
-def _remaining_time(argv: list[str], timeout: float | None, deadline: float | None) -> float | None:
-    """Use one deadline for the reads and the final process wait."""
-    if deadline is None:
-        return None
-    remaining = deadline - time.monotonic()
-    if remaining <= 0:
-        raise subprocess.TimeoutExpired(argv, cast(float, timeout))
-    return remaining
