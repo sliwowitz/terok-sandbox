@@ -25,9 +25,9 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, BinaryIO, Protocol, runtime_checkable
 
-from ._capture import _check_output_limit
 from .podman import PodmanContainer, PodmanRuntime
 from .protocol import (
+    EXEC_OUTPUT_LIMIT,
     Container,
     ContainerRemoveResult,
     ExecResult,
@@ -130,7 +130,7 @@ class KrunRuntime:
         cmd: list[str],
         *,
         timeout: float | None = None,
-        max_output_bytes: int | None = None,
+        max_output_bytes: int = EXEC_OUTPUT_LIMIT,
     ) -> ExecResult:
         """Route to the transport — typically SSH-over-passt-TCP."""
         if not cmd:
@@ -200,7 +200,7 @@ class KrunTransport(Protocol):
         cmd: list[str],
         *,
         timeout: float | None = None,
-        max_output_bytes: int | None = None,
+        max_output_bytes: int = EXEC_OUTPUT_LIMIT,
     ) -> ExecResult:
         """Run *cmd* inside the guest backed by *container*; return its outcome."""
         ...
@@ -269,20 +269,15 @@ class FakeKrunTransport:
         cmd: list[str],
         *,
         timeout: float | None = None,
-        max_output_bytes: int | None = None,
+        max_output_bytes: int = EXEC_OUTPUT_LIMIT,
     ) -> ExecResult:
         """Return a pre-registered result, or empty success."""
-        # ``timeout`` is part of the protocol shape; the fake doesn't
-        # block on anything, so there is nothing to time out on.
-        del timeout
+        # Both keyword arguments are part of the protocol shape; the fake
+        # neither blocks nor produces output, so neither applies.
+        del timeout, max_output_bytes
         key = (container.name, tuple(cmd))
         self.exec_calls.append(key)
-        result = self._results.get(key, ExecResult(exit_code=0, stdout="", stderr=""))
-        if max_output_bytes is not None:
-            _check_output_limit(
-                len(result.stdout.encode()) + len(result.stderr.encode()), max_output_bytes
-            )
-        return result
+        return self._results.get(key, ExecResult(exit_code=0, stdout="", stderr=""))
 
     def exec_stdio(
         self,

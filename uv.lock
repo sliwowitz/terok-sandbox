@@ -2654,8 +2654,8 @@ wheels = [
 
 [[package]]
 name = "terok-clearance"
-version = "0.8.2a5.dev264+g5d78c6f26"
-source = { git = "https://github.com/sliwowitz/terok-clearance?rev=fix%2Fdeep-scan-followups#5d78c6f26f02665078beac5594e523b00a68e64c" }
+version = "0.8.2a5.dev265+g01d7a78d2"
+source = { git = "https://github.com/sliwowitz/terok-clearance?rev=fix%2Fdeep-scan-followups#01d7a78d28d11d8d042cb944dd765b2b3dc2d114" }
 dependencies = [
     { name = "asyncvarlink" },
     { name = "dbus-fast" },
@@ -2760,8 +2760,8 @@ test = [
 
 [[package]]
 name = "terok-shield"
-version = "0.10.0a6.dev419+g6077d948d"
-source = { git = "https://github.com/sliwowitz/terok-shield?rev=fix%2Fdeep-scan-followups#6077d948d435f8d1a32f9ff0bec05a44150f4d84" }
+version = "0.10.0a6.dev420+gf292847a3"
+source = { git = "https://github.com/sliwowitz/terok-shield?rev=fix%2Fdeep-scan-followups#f292847a3be9e7b13b9af97b2211d692afbffab2" }
 dependencies = [
     { name = "pydantic" },
     { name = "pyyaml" },
@@ -2770,8 +2770,8 @@ dependencies = [
 
 [[package]]
 name = "terok-util"
-version = "0.5.0a5.dev171+gd59967f9d"
-source = { git = "https://github.com/sliwowitz/terok-util?rev=fix%2Fdeep-scan-followups#d59967f9d37cf00d30c71229800c9476a0eff48e" }
+version = "0.5.0a5.dev172+g4ae23f0ee"
+source = { git = "https://github.com/sliwowitz/terok-util?rev=fix%2Fdeep-scan-followups#4ae23f0eeaa2e1fff6bb6f05afd81990a8abadaa" }
 dependencies = [
     { name = "jinja2" },
     { name = "packaging" },
