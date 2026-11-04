@@ -27,6 +27,20 @@ from tests.constants import MISSING_PODMAN_INIT, MOCK_BASE, MOCK_HOST_BIN
 class TestExec:
     """PodmanRuntime.exec delegates to ``podman exec`` with correct args."""
 
+    @patch("terok_sandbox.runtime.podman._run_bounded")
+    def test_output_budget_uses_bounded_capture(self, capture) -> None:
+        """Only explicitly bounded calls use the shared byte-oriented capture path."""
+        runtime = PodmanRuntime()
+        result = runtime.exec(runtime.container("ctr"), ["probe"], timeout=2, max_output_bytes=100)
+
+        assert result is capture.return_value
+        capture.assert_called_once_with(
+            ["podman", "exec", "ctr", "probe"],
+            executable=str(MOCK_HOST_BIN / "podman"),
+            timeout=2,
+            max_output_bytes=100,
+        )
+
     @patch("terok_sandbox.runtime.podman.subprocess.run")
     def test_calls_podman_exec(self, mock_run) -> None:
         """Builds the expected argv and returns an [`ExecResult`][terok_sandbox.ExecResult]."""

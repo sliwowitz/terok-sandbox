@@ -366,12 +366,19 @@ class ContainerRuntime(Protocol):
         cmd: list[str],
         *,
         timeout: float | None = None,
+        max_output_bytes: int | None = None,
     ) -> ExecResult:
         """Run *cmd* inside *container* and return its completion record.
 
         The operation that diverges most across backends: podman uses
         ``podman exec``; the krun backend uses SSH over a passt-forwarded
         TCP port.
+
+        A positive *max_output_bytes* bounds combined stdout and stderr
+        before decoding. Overflow raises ``RuntimeError`` instead of
+        returning partial output; ``None`` preserves unlimited capture.
+        Bounded calls supply EOF on stdin and decode UTF-8 with replacement
+        for invalid bytes.
         """
         ...
 

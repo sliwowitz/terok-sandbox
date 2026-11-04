@@ -18,6 +18,7 @@ from collections.abc import Callable, Mapping
 from pathlib import Path  # noqa: TC003 - used in a Protocol argument type
 from typing import BinaryIO
 
+from ._capture import _check_output_limit
 from .protocol import (
     Container,
     ContainerInspection,
@@ -444,10 +445,16 @@ class NullRuntime:
         cmd: list[str],
         *,
         timeout: float | None = None,
+        max_output_bytes: int | None = None,
     ) -> ExecResult:
         """Return a pre-registered result, or a default empty success."""
         key = (container.name, tuple(cmd))
-        return self._exec_results.get(key, ExecResult(exit_code=0, stdout="", stderr=""))
+        result = self._exec_results.get(key, ExecResult(exit_code=0, stdout="", stderr=""))
+        if max_output_bytes is not None:
+            _check_output_limit(
+                len(result.stdout.encode()) + len(result.stderr.encode()), max_output_bytes
+            )
+        return result
 
     def exec_stdio(
         self,
