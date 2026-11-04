@@ -64,6 +64,7 @@ from typing import BinaryIO
 
 from terok_util import require_host_tool
 
+from ._capture import _run_bounded
 from .podman import _start_stdio_pumps
 from .protocol import Container, ExecResult
 
@@ -166,6 +167,7 @@ class TcpSSHTransport:
         cmd: list[str],
         *,
         timeout: float | None = None,
+        max_output_bytes: int | None = None,
     ) -> ExecResult:
         """Run *cmd* in the guest and return its outcome.
 
@@ -173,10 +175,15 @@ class TcpSSHTransport:
         command string so the in-guest shell treats embedded
         metacharacters as literal data — argv semantics are preserved
         across the inherently-shell-parsed ssh wire format.
+
+        A positive *max_output_bytes* bounds combined stdout and stderr;
+        overflow raises ``RuntimeError`` without returning partial output.
         """
         endpoint = self._resolver(container)
         remote_str = _remote_command(cmd)
         argv = [*self._ssh_argv(endpoint), "--", remote_str]
+        if max_output_bytes is not None:
+            return _run_bounded(argv, timeout=timeout, max_output_bytes=max_output_bytes)
         proc = subprocess.run(  # nosec B603 - argv built from fixed verbs + caller-controlled scope/container names
             argv,
             capture_output=True,

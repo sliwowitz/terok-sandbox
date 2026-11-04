@@ -25,6 +25,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, BinaryIO, Protocol, runtime_checkable
 
+from ._capture import _check_output_limit
 from .podman import PodmanContainer, PodmanRuntime
 from .protocol import (
     Container,
@@ -129,11 +130,14 @@ class KrunRuntime:
         cmd: list[str],
         *,
         timeout: float | None = None,
+        max_output_bytes: int | None = None,
     ) -> ExecResult:
         """Route to the transport — typically SSH-over-passt-TCP."""
         if not cmd:
             raise ValueError("exec argv must not be empty")
-        return self._transport.exec(container, cmd, timeout=timeout)
+        return self._transport.exec(
+            container, cmd, timeout=timeout, max_output_bytes=max_output_bytes
+        )
 
     def exec_stdio(
         self,
@@ -196,6 +200,7 @@ class KrunTransport(Protocol):
         cmd: list[str],
         *,
         timeout: float | None = None,
+        max_output_bytes: int | None = None,
     ) -> ExecResult:
         """Run *cmd* inside the guest backed by *container*; return its outcome."""
         ...
@@ -264,6 +269,7 @@ class FakeKrunTransport:
         cmd: list[str],
         *,
         timeout: float | None = None,
+        max_output_bytes: int | None = None,
     ) -> ExecResult:
         """Return a pre-registered result, or empty success."""
         # ``timeout`` is part of the protocol shape; the fake doesn't
@@ -271,7 +277,12 @@ class FakeKrunTransport:
         del timeout
         key = (container.name, tuple(cmd))
         self.exec_calls.append(key)
-        return self._results.get(key, ExecResult(exit_code=0, stdout="", stderr=""))
+        result = self._results.get(key, ExecResult(exit_code=0, stdout="", stderr=""))
+        if max_output_bytes is not None:
+            _check_output_limit(
+                len(result.stdout.encode()) + len(result.stderr.encode()), max_output_bytes
+            )
+        return result
 
     def exec_stdio(
         self,

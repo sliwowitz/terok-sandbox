@@ -146,6 +146,17 @@ class TestTcpSSHTransportArgv:
 class TestTcpSSHTransportExec:
     """`exec` shells out and packages the result into an `ExecResult`."""
 
+    def test_output_budget_uses_shared_capture(self) -> None:
+        """The SSH transport preserves quoting while applying the host byte budget."""
+        with patch("terok_sandbox.runtime.krun_transport._run_bounded") as capture:
+            result = _make_transport().exec(
+                _StubContainer("ctr"), ["echo", "a;b"], timeout=2, max_output_bytes=100
+            )
+
+        assert result is capture.return_value
+        assert capture.call_args.kwargs == {"timeout": 2, "max_output_bytes": 100}
+        assert capture.call_args.args[0][-1] == "cd /workspace && exec echo 'a;b'"
+
     def test_exec_invokes_ssh_with_remote_command(self) -> None:
         with patch("subprocess.run") as run:
             run.return_value = subprocess.CompletedProcess(

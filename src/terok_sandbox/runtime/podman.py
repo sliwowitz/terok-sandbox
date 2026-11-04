@@ -33,6 +33,7 @@ from typing import BinaryIO, NoReturn
 from terok_util import require_host_tool
 
 from .._util import log_debug, log_warning
+from ._capture import _run_bounded
 from .protocol import (
     Container,
     ContainerInspection,
@@ -1319,6 +1320,7 @@ class PodmanRuntime:
         cmd: list[str],
         *,
         timeout: float | None = None,
+        max_output_bytes: int | None = None,
     ) -> ExecResult:
         """Run *cmd* inside *container* via ``podman exec``.
 
@@ -1328,6 +1330,9 @@ class PodmanRuntime:
         Raises [`ValueError`][ValueError] if *cmd* is empty — podman exec with
         no argv is never a valid request and catching it here avoids a
         later ``IndexError`` in the debug log.
+
+        A positive *max_output_bytes* bounds combined stdout and stderr;
+        overflow raises ``RuntimeError`` without returning partial output.
         """
         if not cmd:
             raise ValueError("exec argv must not be empty")
@@ -1335,6 +1340,13 @@ class PodmanRuntime:
             f"PodmanRuntime.exec({container.name}, cmd[0]={cmd[0]!r}, "
             f"argc={len(cmd)}, timeout={timeout})"
         )
+        if max_output_bytes is not None:
+            return _run_bounded(
+                ["podman", "exec", container.name, *cmd],
+                executable=require_host_tool("podman"),
+                timeout=timeout,
+                max_output_bytes=max_output_bytes,
+            )
         proc = subprocess.run(  # nosec B603 B607 - argv built from fixed verbs + caller-controlled scope/container names - binary PATH lookup is the cross-distro contract
             ["podman", "exec", container.name, *cmd],
             executable=require_host_tool("podman"),
