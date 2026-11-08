@@ -69,6 +69,28 @@ def _make_spec(**overrides) -> RunSpec:
 
 
 @pytest.mark.parametrize("verb", ["run", "create"])
+@pytest.mark.parametrize("enabled", [False, True])
+def test_wayland_wiring(tmp_path: Path, verb: str, enabled: bool) -> None:
+    """Both launch paths forward the opt-in; disabled launches never probe Wayland."""
+    with (
+        patch("terok_sandbox.sandbox.wayland_run_args", return_value=["wayland-grant"]) as grant,
+        patch("terok_sandbox.sandbox.Sandbox.pre_start_args", return_value=[]),
+    ):
+        sandbox = Sandbox(SandboxConfig(state_dir=tmp_path))
+        env = dict.fromkeys(("DISPLAY", "XAUTHORITY", "WAYLAND_SOCKET", "WAYLAND_DISPLAY"), "stale")
+        cmd = sandbox._build_cmd(_make_spec(wayland=enabled, unrestricted=False, env=env), verb)
+    if enabled:
+        grant.assert_called_once_with(sealed=False, runtime=None)
+        assert cmd.index("wayland-grant") < cmd.index("alpine:latest")
+    else:
+        grant.assert_not_called()
+        assert "wayland-grant" not in cmd
+    assert "no-new-privileges" in cmd
+    assert "label=disable" not in cmd
+    assert any(arg.endswith("=stale") for arg in cmd) is not enabled
+
+
+@pytest.mark.parametrize("verb", ["run", "create"])
 @pytest.mark.parametrize("aslr_control", [False, True])
 @pytest.mark.parametrize("perf", [False, True])
 @pytest.mark.parametrize("runtime", [None, "crun"])

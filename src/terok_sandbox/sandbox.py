@@ -41,6 +41,7 @@ from .runtime.podman import (
 )
 from .runtime.seccomp import seccomp_args
 from .runtime.storage_diagnostics import storage_permission_diagnostics
+from .runtime.wayland import WAYLAND_ENV_UNSET, wayland_run_args
 from .setup import check_setup
 
 if TYPE_CHECKING:
@@ -276,6 +277,9 @@ class RunSpec:
 
     gpus: GpuSelector = None
     """GPU vendors to pass through — normalized via [`normalize_gpus`][terok_sandbox.runtime.gpu.normalize_gpus]."""
+
+    wayland: bool = False
+    """Grant the current desktop user's Wayland socket; no audio or X11."""
 
     memory: str | None = None
     """Podman ``--memory`` value (e.g. ``"4g"``, ``"512m"``).  ``None`` = unlimited."""
@@ -724,6 +728,9 @@ class Sandbox:
         In **sealed** mode the volume specs are omitted from the command
         (they are injected via [`copy_to`][terok_sandbox.sandbox.Sandbox.copy_to] between create and start).
         """
+        wayland_args = (
+            wayland_run_args(sealed=spec.sealed, runtime=spec.runtime) if spec.wayland else []
+        )
         caps = _validate_caps(spec.caps)
         cmd: list[str] = ["podman", verb] + (["-d"] if verb == "run" else [])
         if spec.ephemeral:
@@ -805,7 +812,11 @@ class Sandbox:
             cmd += ["-v", vol.to_mount_arg()]
 
         for k, v in spec.env.items():
+            if spec.wayland and k in (*WAYLAND_ENV_UNSET, "WAYLAND_DISPLAY"):
+                continue
             cmd += ["-e", f"{k}={v}"]
+
+        cmd += wayland_args
 
         cmd += ["--name", spec.container_name]
         if spec.hostname is not None:

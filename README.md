@@ -87,6 +87,21 @@ from terok_sandbox import (
 The full export list lives in
 [`src/terok_sandbox/__init__.py`](src/terok_sandbox/__init__.py).
 
+### Opt-in desktop access
+
+`RunSpec(wayland=True, ...)` mounts only the invoking desktop user's Wayland
+socket, read-only, and sets an absolute `WAYLAND_DISPLAY` in the container.
+It requires an explicit host `WAYLAND_DISPLAY`, rootless local Podman, and
+shared (not sealed) isolation. The `krun` microVM runtime is unsupported.
+No audio, session D-Bus, X11, or host runtime directory is shared. GPU grants
+remain independent.
+
+This grants the compositor's protocol surface, **not** a window-only
+permission. Read-only mounting does not restrict protocol messages. SELinux
+and AppArmor policy remain authoritative; the socket is never relabeled and
+confinement is never disabled. An enforcing host may require a separately
+reviewed policy. Recreate containers when the desktop session/socket changes.
+
 ## CLI
 
 | Command | Purpose |
