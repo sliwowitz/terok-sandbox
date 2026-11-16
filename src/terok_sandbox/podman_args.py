@@ -19,7 +19,9 @@ launch time — both import from here, so the two can never disagree.
 
 from __future__ import annotations
 
+import stat
 from collections.abc import Sequence
+from pathlib import Path
 
 # Container-side mount point for the host runtime directory (socket mode).
 CONTAINER_RUNTIME_DIR = "/run/terok"
@@ -105,6 +107,27 @@ def reject_managed_flags(podman_args: list[str]) -> None:
         raise SystemExit(
             f"Flag(s) managed by terok-sandbox, cannot override: {', '.join(sorted(conflicts))}"
         )
+
+
+def socket_bind_mount(source: Path, destination: str) -> str:
+    """Render a ``--mount`` value binding one existing Unix socket read-only, label untouched.
+
+    Read-only protects the inode, not the protocol available through it.
+    The checks keep a path from being read as mount options, and keep
+    Podman from creating a source that vanished as a directory.
+
+    Raises:
+        ValueError: A path is relative or carries a mount-option delimiter,
+            or *source* is not a socket.
+        OSError: *source* cannot be examined.
+    """
+    if not source.is_absolute() or not Path(destination).is_absolute():
+        raise ValueError("socket bind paths must be absolute")
+    if any(c in f"{source}{destination}" for c in ':,"\r\n\0'):
+        raise ValueError("socket bind path contains mount-option delimiters")
+    if not stat.S_ISSOCK(source.lstat().st_mode):
+        raise ValueError(f"not a Unix socket: {source}")
+    return f"type=bind,source={source},destination={destination},readonly"
 
 
 def reject_managed_volumes(podman_args: list[str]) -> None:

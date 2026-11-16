@@ -536,6 +536,14 @@ path = "terok_sandbox.supervision"
 layer = "core"
 depends_on = ["terok_sandbox.supervisor.sidecar"]
 
+# A task's optional Wayland desktop across launch, restart and verification.
+# Core so the surface facade may delegate to it; it shapes the launch through
+# plain podman arguments, never through the facade's own types.
+[[modules]]
+path = "terok_sandbox.desktop"
+layer = "core"
+depends_on = []
+
 # Round-trip YAML writer for setup-time config.yml edits.
 [[modules]]
 path = "terok_sandbox._yaml"

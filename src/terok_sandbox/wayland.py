@@ -16,7 +16,7 @@ import logging
 import os
 import stat
 import sys
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from enum import StrEnum
 from functools import partial
 from pathlib import Path
@@ -110,6 +110,60 @@ class WaylandSession:
         """Whether this start has enough host wiring to launch the proxy."""
         return self.mode == WaylandMode.MITM and bool(self.upstream and self.binary)
 
+    @property
+    def mounted(self) -> bool:
+        """Whether creation gave the container its desktop mounts."""
+        return self.mode != WaylandMode.NONE and not self.disabled_reason
+
+    @property
+    def wired(self) -> bool:
+        """Whether this start has a complete path from the container to a compositor."""
+        return (
+            self.mounted
+            and not self.error
+            and self.upstream is not None
+            and (self.mode != WaylandMode.MITM or self.binary is not None)
+        )
+
+    @property
+    def bound_socket(self) -> Path | None:
+        """The compositor socket a direct container holds as a bind mount, if it holds one."""
+        return self.upstream if self.mode == WaylandMode.DIRECT and self.mounted else None
+
+    @property
+    def malformed(self) -> bool:
+        """Whether the saved wiring could not be read back."""
+        return self.mode == WaylandMode.NONE and bool(self.error)
+
+    def refreshed(self) -> WaylandSession:
+        """Resolve this start's endpoints for the same grant.
+
+        What creation decided — the process domain, and whether desktop
+        mounts exist at all — carries over unchanged, so one start from an
+        unsuitable shell cannot cost a container the mounts it has.
+
+        Raises:
+            WaylandRecreationRequired: The saved wiring is unreadable, or a
+                direct container's bound socket is gone or no longer the
+                session's; Podman cannot retarget a saved bind mount.
+        """
+        if self.malformed:
+            raise WaylandRecreationRequired(
+                f"Wayland recreation required: cannot verify saved desktop access: {self.error}"
+            )
+        current = replace(
+            resolve_session(self.mode, unavailable=self.disabled_reason),
+            direct_selinux=self.direct_selinux,
+            disabled_reason=self.disabled_reason,
+        )
+        keeps_bind = self.mode == WaylandMode.DIRECT and self.mounted
+        if keeps_bind and (current.upstream is None or current.upstream != self.upstream):
+            raise WaylandRecreationRequired(
+                "wl-direct recreation required: the saved compositor socket is missing "
+                "or the current session selects another socket"
+            )
+        return current
+
     def payload(self) -> dict[str, str | bool | None]:
         """Return the JSON representation stored in the private task sidecar."""
         return {
@@ -148,6 +202,10 @@ class WaylandSession:
             )
         except (KeyError, TypeError, ValueError) as exc:
             return cls(error=f"invalid Wayland sidecar: {exc}")
+
+
+class WaylandRecreationRequired(RuntimeError):
+    """A saved socket bind or process domain cannot change without recreation."""
 
 
 def resolve_session(mode: WaylandMode, *, unavailable: str | None = None) -> WaylandSession:

@@ -24,7 +24,7 @@ is the one writer.  The edits a sidecar takes after creation are
 — its ``clearance`` field, rewritten from current config before a restart —
 and the desktop wiring kept by
 [`record_wayland`][terok_sandbox.supervisor.sidecar.record_wayland] and
-[`refresh_wayland`][terok_sandbox.supervisor.sidecar.refresh_wayland];
+[`update_wayland`][terok_sandbox.supervisor.sidecar.update_wayland];
 [`remove_sidecar`][terok_sandbox.supervisor.sidecar.remove_sidecar] is the
 one removal.  They take turns under one lock per sidecar directory, so
 none of them lands between another's check and its act.
@@ -38,17 +38,16 @@ import json
 import logging
 import os
 import stat
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from .. import wayland
 from ..podman_args import WAYLAND_RUNTIME_SUBDIR, WAYLAND_SOCKET_NAME
 from ..vault.context import BrokerContext
 from ..wayland import WaylandMode, WaylandSession
 
 if TYPE_CHECKING:
-    from collections.abc import Iterator, Mapping
+    from collections.abc import Callable, Iterator, Mapping
 
     from ..config_schema import ClearanceMode
 
@@ -653,50 +652,21 @@ def record_wayland(sidecar_path: Path, session: WaylandSession) -> None:
         _replace_sidecar(sidecar_path, payload, identity)
 
 
-def refresh_wayland(sidecar_path: Path) -> WaylandSession:
-    """Capture the current desktop without changing a container's saved mount policy.
+def update_wayland(
+    sidecar_path: Path, update: Callable[[WaylandSession], WaylandSession]
+) -> WaylandSession:
+    """Replace the saved desktop wiring with ``update(saved)`` as one locked edit.
 
-    A restart keeps creation-time policy and refreshes only session endpoints.
-    Podman cannot retarget a saved direct bind mount or process domain. A
-    missing or changed source requires recreation instead of guessing another
-    compositor; the creation-time domain choice remains unchanged.
+    Storage only: what the new wiring is, and whether it may differ from the
+    old, is *update*'s decision.  Nothing is written when it raises, or when
+    the result requests no desktop.
     """
     with _own_sidecar(sidecar_path) as (payload, identity):
-        session = resolve_wayland_refresh(WaylandSession.from_payload(payload.get("wayland")))
+        session = update(WaylandSession.from_payload(payload.get("wayland")))
         if session.mode != WaylandMode.NONE:
             payload["wayland"] = session.payload()
             _replace_sidecar(sidecar_path, payload, identity)
         return session
-
-
-def resolve_wayland_refresh(previous: WaylandSession) -> WaylandSession:
-    """Validate the current desktop against a saved grant without rewriting its sidecar.
-
-    Only this start's endpoints are resolved anew.  What creation decided —
-    the process domain, and whether desktop mounts exist at all — carries
-    over unchanged, so one start from an unsuitable shell cannot cost a
-    container the mounts it has.
-    """
-    if previous.mode == WaylandMode.NONE and previous.error:
-        raise WaylandRecreationRequired(
-            f"Wayland recreation required: cannot verify saved desktop access: {previous.error}"
-        )
-    session = replace(
-        wayland.resolve_session(previous.mode, unavailable=previous.disabled_reason),
-        direct_selinux=previous.direct_selinux,
-        disabled_reason=previous.disabled_reason,
-    )
-    if previous.mode == WaylandMode.DIRECT and not previous.disabled_reason:
-        if session.upstream is None or session.upstream != previous.upstream:
-            raise WaylandRecreationRequired(
-                "wl-direct recreation required: the saved compositor socket is missing "
-                "or the current session selects another socket"
-            )
-    return session
-
-
-class WaylandRecreationRequired(RuntimeError):
-    """A saved socket bind or process domain cannot change without recreation."""
 
 
 @contextlib.contextmanager

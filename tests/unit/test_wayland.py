@@ -21,23 +21,20 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from terok_sandbox import (
-    BindMountSpec,
     LifecycleHooks,
     RunSpec,
     Sandbox,
     SandboxConfig,
-    SocketSpec,
-    VolumeSpec,
     WaylandMode,
     WaylandRecreationRequired,
 )
 from terok_sandbox._util import _selinux
 from terok_sandbox.podman_args import (
-    CONTAINER_RUNTIME_DIR,
     CONTAINER_USER_RUNTIME_DIR,
     CONTAINER_WAYLAND_DIR,
     CONTAINER_WAYLAND_SOCKET,
     WAYLAND_RUNTIME_SUBDIR,
+    socket_bind_mount,
 )
 from terok_sandbox.runtime.protocol import ExecResult
 from terok_sandbox.supervision import _expected_endpoints
@@ -47,6 +44,7 @@ from terok_sandbox.supervisor.sidecar import (
     load_sidecar,
     record_wayland,
     store_sidecar,
+    update_wayland,
     wired_services,
 )
 from terok_sandbox.wayland import (
@@ -57,11 +55,12 @@ from terok_sandbox.wayland import (
     resolve_session,
     warn_desktop_access,
 )
-from tests.constants import FAKE_SERVICE_PORTS
+from tests.constants import FAKE_SERVICE_PORTS, MOCK_BASE, MOCK_HOST_BIN
 
 _NAME = "wayland-test"
 _RESOLVER = "terok_sandbox.wayland.resolve_session"
 _VALUED_FLAGS = frozenset({"-v", "--mount", "-e", "--unsetenv", "--security-opt"})
+_UNSET_FLAGS = tuple(arg for name in WAYLAND_ENV_UNSET for arg in ("--unsetenv", name))
 _UNSET_INHERITED = Counter(("--unsetenv", name) for name in WAYLAND_ENV_UNSET)
 _PRIVATE_RUNTIME = Counter(
     {
@@ -145,6 +144,11 @@ def _launch(
     return launch.call_args.args[0]
 
 
+def _wired(prepared: RunSpec) -> bool:
+    """Whether a prepared launch carries desktop wiring beyond clearing inherited variables."""
+    return "WAYLAND_DISPLAY" in prepared.env or prepared.extra_args != _UNSET_FLAGS
+
+
 def _options(command: list[str]) -> Counter[tuple[str, ...]]:
     """A podman command as a multiset of options, their order aside."""
     options: Counter[tuple[str, ...]] = Counter()
@@ -198,6 +202,19 @@ def test_filtered_desktop_keeps_its_mounts_while_no_desktop_is_reachable(
     )
     saved = load_sidecar(sandbox.config.sidecar_path(_NAME))
     assert saved is not None and saved.wayland == absent
+    assert "wayland" not in wired_services(saved)
+
+
+@pytest.mark.parametrize("mode", [WaylandMode.MITM, WaylandMode.DIRECT])
+def test_wiring_that_cannot_be_recorded_is_not_applied(
+    sandbox: Sandbox, desktop_socket: Path, tmp_path: Path, mode: WaylandMode
+) -> None:
+    """Without a record a restart could not account for the mounts, so none are made."""
+    session = WaylandSession(mode, desktop_socket, tmp_path / "wl-mitm")
+    with patch(
+        "terok_sandbox.supervisor.sidecar.record_wayland", side_effect=OSError("unwritable")
+    ):
+        assert _desktop_options(sandbox, _spec(tmp_path, mode), session) == _UNSET_INHERITED
 
 
 @pytest.mark.parametrize("verb", ["run", "create"])
@@ -246,16 +263,17 @@ def test_a_request_that_wires_nothing_only_clears_inherited_display_variables(
     assert saved is not None and saved.wayland.disabled_reason
 
 
+@pytest.mark.parametrize("mode", [WaylandMode.MITM, WaylandMode.DIRECT])
 def test_a_wired_desktop_overrides_inherited_addresses_and_keeps_the_rest(
-    sandbox: Sandbox, desktop_socket: Path, tmp_path: Path
+    sandbox: Sandbox, desktop_socket: Path, tmp_path: Path, mode: WaylandMode
 ) -> None:
     """The caller's own display variables never reach a task that was given an endpoint."""
     spec = replace(
-        _spec(tmp_path),
+        _spec(tmp_path, mode),
         env={"DISPLAY": ":0", "WAYLAND_DISPLAY": "host-0", "XDG_RUNTIME_DIR": "/host", "KEEP": "1"},
         extra_args=("--user", "1234:5678"),
     )
-    session = WaylandSession(WaylandMode.MITM, desktop_socket, tmp_path / "wl-mitm")
+    session = WaylandSession(mode, desktop_socket, tmp_path / "wl-mitm")
     command = _launch(sandbox, spec, session)
     assert {value for flag, value in pairwise(command) if flag == "-e"} == {
         f"WAYLAND_DISPLAY={CONTAINER_WAYLAND_SOCKET}",
@@ -266,18 +284,15 @@ def test_a_wired_desktop_overrides_inherited_addresses_and_keeps_the_rest(
     assert spec.env["XDG_RUNTIME_DIR"] == "/host"
 
 
-def test_socket_mount_preserves_labels(desktop_socket: Path) -> None:
-    """Socket and volume specs share coordinates, but never label/copy semantics."""
-    socket_spec = SocketSpec(desktop_socket, CONTAINER_WAYLAND_SOCKET)
-    assert isinstance(socket_spec, BindMountSpec)
-    assert isinstance(VolumeSpec(desktop_socket.parent, CONTAINER_RUNTIME_DIR), BindMountSpec)
-    assert socket_spec.to_mount_arg() == (
+def test_socket_bind_preserves_labels(desktop_socket: Path) -> None:
+    """A socket is bound as it is: read-only, with no relabel option to change its host label."""
+    assert socket_bind_mount(desktop_socket, CONTAINER_WAYLAND_SOCKET) == (
         f"type=bind,source={desktop_socket},destination={CONTAINER_WAYLAND_SOCKET},readonly"
     )
 
 
 @pytest.mark.parametrize("kind", ["file", "directory", "symlink", "missing"])
-def test_socket_mount_rejects_non_socket(tmp_path: Path, desktop_socket: Path, kind: str) -> None:
+def test_socket_bind_rejects_non_socket(tmp_path: Path, desktop_socket: Path, kind: str) -> None:
     """Never let Podman create a missing socket source as a directory."""
     source = tmp_path / kind
     if kind == "file":
@@ -287,7 +302,7 @@ def test_socket_mount_rejects_non_socket(tmp_path: Path, desktop_socket: Path, k
     elif kind == "symlink":
         source.symlink_to(desktop_socket)
     with pytest.raises((ValueError, FileNotFoundError)):
-        SocketSpec(source, CONTAINER_WAYLAND_SOCKET).to_mount_arg()
+        socket_bind_mount(source, CONTAINER_WAYLAND_SOCKET)
 
 
 def test_none_does_not_discover_desktop_or_binary(sandbox: Sandbox, tmp_path: Path, capsys) -> None:
@@ -297,7 +312,7 @@ def test_none_does_not_discover_desktop_or_binary(sandbox: Sandbox, tmp_path: Pa
         patch("terok_sandbox.wayland.find_host_tool") as lookup,
     ):
         spec = _spec(tmp_path, WaylandMode.NONE)
-        assert sandbox._prepare_wayland(spec) == (spec, False)
+        assert sandbox._desktop.prepare(spec) is spec
         assert resolve_session(WaylandMode.NONE) == WaylandSession()
         observer = MagicMock()
         warn_desktop_access(WaylandMode.NONE, observer=observer)
@@ -498,104 +513,90 @@ def test_session_requires_socket_connect_permission(session_socket: Path) -> Non
     assert session.upstream is None and session.error and "cannot access" in session.error
 
 
+_UPSTREAM, _PROXY = MOCK_BASE / "wayland-0", MOCK_HOST_BIN / "wl-mitm"
+
+
+@pytest.mark.parametrize(
+    "session,mounted,wired,bound",
+    [
+        pytest.param(WaylandSession(), False, False, False, id="no-request"),
+        pytest.param(
+            WaylandSession(WaylandMode.MITM, _UPSTREAM, _PROXY), True, True, False, id="proxied"
+        ),
+        pytest.param(
+            WaylandSession(WaylandMode.MITM, error="no desktop"),
+            True,
+            False,
+            False,
+            id="proxy-mounts-await-a-desktop",
+        ),
+        pytest.param(
+            WaylandSession(WaylandMode.MITM, _UPSTREAM, error="wl-mitm not found"),
+            True,
+            False,
+            False,
+            id="proxy-binary-missing",
+        ),
+        pytest.param(
+            WaylandSession(WaylandMode.MITM, _UPSTREAM, _PROXY, disabled_reason="sealed"),
+            False,
+            False,
+            False,
+            id="creation-refused-the-mounts",
+        ),
+        pytest.param(WaylandSession(WaylandMode.DIRECT, _UPSTREAM), True, True, True, id="direct"),
+        pytest.param(
+            WaylandSession(
+                WaylandMode.DIRECT, error="no desktop", disabled_reason=MOUNTS_NOT_PREPARED
+            ),
+            False,
+            False,
+            False,
+            id="direct-created-without-a-desktop",
+        ),
+    ],
+)
+def test_each_saved_state_has_one_reading(
+    session: WaylandSession, mounted: bool, wired: bool, bound: bool
+) -> None:
+    """Every caller asks the session the same questions instead of re-deriving the answers."""
+    assert session.mounted is mounted
+    assert session.wired is wired
+    assert session.bound_socket == (_UPSTREAM if bound else None)
+    assert not session.malformed
+
+
+def test_refresh_changes_this_starts_endpoints_and_nothing_creation_decided() -> None:
+    """The domain and the refusal of mounts carry over whatever the current shell resolves."""
+    saved = WaylandSession(WaylandMode.DIRECT, _UPSTREAM, direct_selinux=True)
+    with patch(_RESOLVER, return_value=WaylandSession(WaylandMode.DIRECT, _UPSTREAM)):
+        assert saved.refreshed() == saved
+    refused = WaylandSession(WaylandMode.MITM, error="sealed", disabled_reason="sealed")
+    with patch(_RESOLVER, return_value=WaylandSession(WaylandMode.MITM, _UPSTREAM, _PROXY)):
+        assert refused.refreshed().disabled_reason == "sealed"
+
+
+def test_a_failed_update_leaves_the_saved_wiring_untouched(sandbox: Sandbox) -> None:
+    """The sidecar stores what it is handed; an update that raises hands it nothing."""
+    path = sandbox.config.sidecar_path(_NAME)
+    record_wayland(path, WaylandSession(WaylandMode.DIRECT, _UPSTREAM))
+    before = path.read_bytes()
+
+    def refuse(_saved: WaylandSession) -> WaylandSession:
+        raise WaylandRecreationRequired("recreation required")
+
+    with pytest.raises(WaylandRecreationRequired):
+        update_wayland(path, refuse)
+    assert update_wayland(path, lambda _saved: WaylandSession()) == WaylandSession()
+    assert path.read_bytes() == before
+
+
 @pytest.mark.parametrize("field", ["upstream", "binary"])
 def test_saved_desktop_paths_cannot_depend_on_working_directory(field: str) -> None:
     """A relative sidecar path must not select a different endpoint or executable on restart."""
     session = WaylandSession.from_payload({"mode": "wl-mitm", field: "relative-path"})
     assert session.mode == WaylandMode.NONE and not session.proxied
     assert session.error and "paths must be absolute" in session.error
-
-
-@pytest.mark.parametrize("mode", [WaylandMode.MITM, WaylandMode.DIRECT])
-def test_selected_mode_reaches_mount_and_environment(
-    sandbox: Sandbox,
-    desktop_socket: Path,
-    tmp_path: Path,
-    mode: WaylandMode,
-) -> None:
-    """Only the selected endpoint enters the task; the desktop directory never does."""
-    session = WaylandSession(mode, desktop_socket, tmp_path / "wl-mitm")
-    with patch(_RESOLVER, return_value=session):
-        spec, _ = sandbox._prepare_wayland(_spec(tmp_path, mode))
-    assert spec.env["WAYLAND_DISPLAY"] == CONTAINER_WAYLAND_SOCKET
-    if mode == WaylandMode.DIRECT:
-        assert spec.sockets == (SocketSpec(desktop_socket, CONTAINER_WAYLAND_SOCKET),)
-        assert not spec.volumes
-    else:
-        assert not spec.sockets
-        assert len(spec.volumes) == 1
-        assert spec.volumes[0].host_path != desktop_socket.parent
-        assert spec.volumes[0].read_only and spec.volumes[0].live
-    saved = load_sidecar(sandbox.config.sidecar_path(_NAME))
-    assert saved is not None and saved.wayland == session
-
-
-@pytest.mark.parametrize("mode", [WaylandMode.MITM, WaylandMode.DIRECT])
-def test_desktop_applications_get_a_private_user_runtime(
-    sandbox: Sandbox, desktop_socket: Path, tmp_path: Path, mode: WaylandMode
-) -> None:
-    """Runtime state is empty, user-owned tmpfs, not the host desktop's runtime directory."""
-    original = replace(
-        _spec(tmp_path, mode),
-        env={"XDG_RUNTIME_DIR": str(desktop_socket.parent), "KEEP": "value"},
-        extra_args=("--user", "1234:5678"),
-    )
-    session = WaylandSession(mode, desktop_socket, tmp_path / "wl-mitm")
-    with patch(_RESOLVER, return_value=session):
-        prepared, _ = sandbox._prepare_wayland(original)
-    assert prepared.env == {
-        "KEEP": "value",
-        "WAYLAND_DISPLAY": CONTAINER_WAYLAND_SOCKET,
-        "XDG_RUNTIME_DIR": CONTAINER_USER_RUNTIME_DIR,
-    }
-    assert prepared.extra_args[:2] == original.extra_args
-    assert prepared.extra_args[2] == "--mount"
-    assert set(prepared.extra_args[3].split(",")) == {
-        "type=tmpfs",
-        f"destination={CONTAINER_USER_RUNTIME_DIR}",
-        "tmpfs-mode=0700",
-        "U",
-        "nosuid",
-        "nodev",
-        "noexec",
-        "notmpcopyup",
-    }
-    with patch.object(sandbox, "pre_start_args", return_value=[]):
-        command = sandbox._build_cmd(prepared)
-    assert command[command.index("--mount") + 1] == prepared.extra_args[3]
-    assert f"XDG_RUNTIME_DIR={CONTAINER_USER_RUNTIME_DIR}" in command
-    assert original.env["XDG_RUNTIME_DIR"] == str(desktop_socket.parent)
-
-
-@pytest.mark.parametrize("mode", [WaylandMode.MITM, WaylandMode.DIRECT])
-def test_runtime_mount_rolls_back_when_desktop_wiring_cannot_be_recorded(
-    sandbox: Sandbox, desktop_socket: Path, tmp_path: Path, mode: WaylandMode
-) -> None:
-    """Failed desktop preparation leaves no application runtime mount or environment behind."""
-    original = _spec(tmp_path, mode)
-    session = WaylandSession(mode, desktop_socket, tmp_path / "wl-mitm")
-    with (
-        patch(_RESOLVER, return_value=session),
-        patch("terok_sandbox.supervisor.sidecar.record_wayland", side_effect=OSError("unwritable")),
-    ):
-        prepared, _ = sandbox._prepare_wayland(original)
-    assert prepared is original
-
-
-def test_proxy_directory_is_stable_even_when_desktop_unavailable(
-    sandbox: Sandbox,
-    tmp_path: Path,
-    capsys: pytest.CaptureFixture,
-) -> None:
-    """A missing initial dependency may recover on restart without changing mounts."""
-    with patch(_RESOLVER, return_value=WaylandSession(WaylandMode.MITM, error="no desktop")):
-        spec, _ = sandbox._prepare_wayland(_spec(tmp_path))
-    assert spec.volumes and not spec.sockets
-    assert spec.env["XDG_RUNTIME_DIR"] == CONTAINER_USER_RUNTIME_DIR
-    assert "--mount" in spec.extra_args
-    assert "no desktop" in capsys.readouterr().err
-    saved = load_sidecar(sandbox.config.sidecar_path(_NAME))
-    assert saved is not None and "wayland" not in wired_services(saved)
 
 
 @pytest.mark.parametrize("kwargs", [{"sealed": True}, {"runtime": "krun"}])
@@ -607,10 +608,8 @@ def test_unsupported_isolation_cannot_enable_gui_on_restart(
     mode: WaylandMode,
 ) -> None:
     """Session refresh cannot add a grant that container creation refused."""
-    spec, _ = sandbox._prepare_wayland(_spec(tmp_path, mode, **kwargs))
-    assert not spec.sockets and not spec.volumes
-    assert not spec.extra_args and "XDG_RUNTIME_DIR" not in spec.env
-    sandbox._refresh_wayland(_NAME)
+    assert not _wired(sandbox._desktop.prepare(_spec(tmp_path, mode, **kwargs)))
+    sandbox._desktop.refresh(_NAME)
     saved = load_sidecar(sandbox.config.sidecar_path(_NAME))
     assert saved is not None and saved.wayland.disabled_reason
     assert "wayland" not in wired_services(saved)
@@ -621,12 +620,12 @@ def test_proxy_restart_reresolves_session(sandbox: Sandbox, tmp_path: Path) -> N
     original = WaylandSession(WaylandMode.MITM, tmp_path / "old", tmp_path / "wl-mitm")
     current = replace(original, upstream=tmp_path / "new")
     with patch(_RESOLVER, side_effect=[original, current]) as resolve:
-        spec, _ = sandbox._prepare_wayland(_spec(tmp_path))
-        sandbox._refresh_wayland(_NAME)
+        spec = sandbox._desktop.prepare(_spec(tmp_path))
+        sandbox._desktop.refresh(_NAME)
     assert resolve.call_count == 2
     saved = load_sidecar(sandbox.config.sidecar_path(_NAME))
     assert saved is not None and saved.wayland.upstream == current.upstream
-    assert spec.volumes[0].host_path.is_dir()
+    assert Path(spec.extra_args[spec.extra_args.index("-v") + 1].split(":")[0]).is_dir()
 
 
 @pytest.mark.parametrize("change", ["missing", "different"])
@@ -640,7 +639,7 @@ def test_raw_restart_requires_recreation_for_changed_source(
     old = WaylandSession(WaylandMode.DIRECT, desktop_socket)
     new = replace(old, upstream=None if change == "missing" else tmp_path / "new")
     with patch(_RESOLVER, side_effect=[old, new]):
-        sandbox._prepare_wayland(_spec(tmp_path, WaylandMode.DIRECT))
+        sandbox._desktop.prepare(_spec(tmp_path, WaylandMode.DIRECT))
         with pytest.raises(WaylandRecreationRequired, match="recreation required"):
             sandbox.start(_NAME)
     sandbox.runtime.container.assert_not_called()
@@ -652,8 +651,7 @@ def test_direct_task_created_without_a_desktop_restarts_without_gui(
     """Creation mounted nothing, so a restart has no socket bind to keep or to refuse."""
     absent = WaylandSession(WaylandMode.DIRECT, error="no desktop")
     with patch(_RESOLVER, return_value=absent):
-        prepared, _ = sandbox._prepare_wayland(_spec(tmp_path, WaylandMode.DIRECT))
-    assert not prepared.sockets and not prepared.extra_args
+        assert not _wired(sandbox._desktop.prepare(_spec(tmp_path, WaylandMode.DIRECT)))
     capsys.readouterr()
     with patch.object(sandbox, "_verify_supervision"):
         sandbox.start(_NAME)
@@ -667,7 +665,7 @@ def test_same_raw_path_restarts(sandbox: Sandbox, desktop_socket: Path, tmp_path
     """A reboot-created socket at the same source needs no mount retargeting."""
     session = WaylandSession(WaylandMode.DIRECT, desktop_socket)
     with patch(_RESOLVER, return_value=session), patch.object(sandbox, "_verify_supervision"):
-        sandbox._prepare_wayland(_spec(tmp_path, WaylandMode.DIRECT))
+        sandbox._desktop.prepare(_spec(tmp_path, WaylandMode.DIRECT))
         sandbox.start(_NAME)
     sandbox.runtime.container.return_value.start.assert_called_once()
 
@@ -692,9 +690,9 @@ def test_gui_probe_failure_is_nonfatal(sandbox: Sandbox, tmp_path: Path, capsys)
     """A container-domain denial is loud without stopping the task or claiming SELinux."""
     session = WaylandSession(WaylandMode.MITM, tmp_path / "upstream", tmp_path / "wl-mitm")
     with patch(_RESOLVER, return_value=session):
-        sandbox._prepare_wayland(_spec(tmp_path))
+        sandbox._desktop.prepare(_spec(tmp_path))
     sandbox.runtime.exec.return_value = ExecResult(1, "", "Permission denied")
-    sandbox._verify_wayland(_NAME)
+    sandbox._desktop.verify(_NAME)
     warning = capsys.readouterr().err
     assert "Permission denied" in warning and "Task continues" in warning
     assert "SELinux" not in warning
@@ -718,16 +716,17 @@ def test_raw_failed_mount_does_not_record_a_grant(
     session = WaylandSession(WaylandMode.DIRECT, desktop_socket)
     with (
         patch(_RESOLVER, return_value=session),
-        patch.object(SocketSpec, "to_mount_arg", side_effect=FileNotFoundError("socket vanished")),
+        patch(
+            "terok_sandbox.desktop.socket_bind_mount",
+            side_effect=FileNotFoundError("socket vanished"),
+        ),
     ):
-        prepared, _ = sandbox._prepare_wayland(_spec(tmp_path, WaylandMode.DIRECT))
-    assert not prepared.sockets
-    assert not prepared.extra_args and "XDG_RUNTIME_DIR" not in prepared.env
+        assert not _wired(sandbox._desktop.prepare(_spec(tmp_path, WaylandMode.DIRECT)))
     saved = load_sidecar(sandbox.config.sidecar_path(_NAME))
     assert saved is not None and saved.wayland.upstream is None
     assert saved.wayland.disabled_reason == MOUNTS_NOT_PREPARED
     capsys.readouterr()
-    sandbox._refresh_wayland(_NAME)
+    sandbox._desktop.refresh(_NAME)
     assert MOUNTS_NOT_PREPARED in capsys.readouterr().err
 
 
@@ -737,8 +736,7 @@ def test_remote_podman_never_mounts_a_local_desktop(
 ) -> None:
     """A remote host's coincidentally identical pathname is not the invoking desktop."""
     monkeypatch.setenv(variable, "remote-selection")
-    prepared, _ = sandbox._prepare_wayland(_spec(tmp_path))
-    assert not prepared.volumes and not prepared.sockets
+    assert not _wired(sandbox._desktop.prepare(_spec(tmp_path)))
     saved = load_sidecar(sandbox.config.sidecar_path(_NAME))
     assert saved is not None and saved.wayland.disabled_reason
 
@@ -750,15 +748,15 @@ def test_one_start_from_a_remote_shell_keeps_the_prepared_proxy_mount(
     proxy = tmp_path / "wl-mitm"
     proxy.touch()
     with patch(_RESOLVER, return_value=WaylandSession(WaylandMode.MITM, session_socket, proxy)):
-        sandbox._prepare_wayland(_spec(tmp_path))
+        sandbox._desktop.prepare(_spec(tmp_path))
     monkeypatch.setenv("CONTAINER_HOST", "remote-selection")
-    sandbox._refresh_wayland(_NAME)
+    sandbox._desktop.refresh(_NAME)
     saved = load_sidecar(sandbox.config.sidecar_path(_NAME))
     assert saved is not None and "remote connections" in saved.wayland.error
     assert saved.wayland.disabled_reason is None
     monkeypatch.delenv("CONTAINER_HOST")
     with patch("terok_sandbox.wayland.find_host_tool", return_value=str(proxy)):
-        sandbox._refresh_wayland(_NAME)
+        sandbox._desktop.refresh(_NAME)
     saved = load_sidecar(sandbox.config.sidecar_path(_NAME))
     assert saved is not None and saved.wayland.proxied
 
@@ -801,7 +799,7 @@ def test_missing_probe_interpreter_does_not_claim_gui_is_broken(
     session = WaylandSession(WaylandMode.MITM, tmp_path / "upstream", tmp_path / "wl-mitm")
     record_wayland(sandbox.config.sidecar_path(_NAME), session)
     sandbox.runtime.exec.return_value = ExecResult(127, "", "python3 not found")
-    sandbox._verify_wayland(_NAME)
+    sandbox._desktop.verify(_NAME)
     warning = capsys.readouterr().err
     assert "unable to verify" in warning
     assert "without GUI access" not in warning
@@ -844,7 +842,7 @@ def test_preflight_failure_warns_once_without_probing(
 def test_unwired_desktop_never_probes(sandbox: Sandbox, session: WaylandSession) -> None:
     """The probe can verify only an endpoint actually prepared for this start."""
     record_wayland(sandbox.config.sidecar_path(_NAME), session)
-    sandbox._verify_wayland(_NAME)
+    sandbox._desktop.verify(_NAME)
     sandbox.runtime.exec.assert_not_called()
 
 
@@ -861,7 +859,7 @@ def test_probe_warning_observer_receives_compact_original_message(
         'Traceback (most recent call last):\n  File "<string>"\nPermissionError: denied',
     )
     observed: list[str] = []
-    sandbox._verify_wayland(_NAME, hooks=LifecycleHooks(warning=observed.append))
+    sandbox._desktop.verify(_NAME, hooks=LifecycleHooks(warning=observed.append))
     sandbox.runtime.exec.assert_called_once()
     assert observed == capsys.readouterr().err.splitlines()
     assert len(observed) == int(exit_code != 0)
@@ -888,8 +886,8 @@ def test_hostile_probe_diagnostics_are_safe_to_print_and_repeat(
     else:
         sandbox.runtime.exec.return_value = ExecResult(outcome, "", detail)
     observed: list[str] = []
-    with caplog.at_level(logging.DEBUG, logger="terok_sandbox.sandbox"):
-        sandbox._verify_wayland(_NAME, hooks=LifecycleHooks(warning=observed.append))
+    with caplog.at_level(logging.DEBUG, logger="terok_sandbox.desktop"):
+        sandbox._desktop.verify(_NAME, hooks=LifecycleHooks(warning=observed.append))
 
     assert observed == capsys.readouterr().err.splitlines()
     assert len(observed) == 1 and "PermissionError: denied" in observed[0]
@@ -910,7 +908,7 @@ def test_probe_timeout_does_not_dump_embedded_script(sandbox: Sandbox, tmp_path:
     )
     sandbox.runtime.exec.side_effect = subprocess.TimeoutExpired("embedded-probe-script", 3)
     observed: list[str] = []
-    sandbox._verify_wayland(_NAME, hooks=LifecycleHooks(warning=observed.append))
+    sandbox._desktop.verify(_NAME, hooks=LifecycleHooks(warning=observed.append))
     assert len(observed) == 1 and "timed out" in observed[0]
     assert "embedded-probe-script" not in observed[0]
 
@@ -981,7 +979,7 @@ def test_direct_domain_is_selected_only_for_valid_opt_in_mount(
         patch.object(sandbox, "pre_start_args", return_value=[]),
         patch.object(sandbox, "_exec_podman") as launch,
         patch.object(sandbox, "_verify_supervision"),
-        patch.object(sandbox, "_verify_wayland"),
+        patch.object(sandbox._desktop, "verify"),
     ):
         getattr(sandbox, verb)(_spec(tmp_path, mode), hooks=LifecycleHooks(warning=observed.append))
     command = launch.call_args.args[0]
@@ -1014,7 +1012,7 @@ def test_restart_keeps_creation_time_direct_domain(
     with (
         patch(_RESOLVER, return_value=replace(session, direct_selinux=False)),
         patch.object(sandbox, "_verify_supervision"),
-        patch.object(sandbox, "_verify_wayland"),
+        patch.object(sandbox._desktop, "verify"),
         patch.object(sandbox, "_warn_if_outdated"),
     ):
         if selected and not installed:

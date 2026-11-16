@@ -16,11 +16,10 @@ from terok_sandbox import (
     RunSpec,
     Sandbox,
     SandboxConfig,
-    SocketSpec,
     WaylandMode,
     WaylandRecreationRequired,
 )
-from terok_sandbox.podman_args import CONTAINER_WAYLAND_SOCKET
+from terok_sandbox.podman_args import CONTAINER_WAYLAND_SOCKET, socket_bind_mount
 from terok_sandbox.supervisor.sidecar import load_sidecar, record_wayland, store_sidecar
 from terok_sandbox.wayland import WaylandSession
 
@@ -53,18 +52,7 @@ def test_socket_coordinates_cannot_change_mount_options(
         destination = str(coordinate)
     reason = "must be absolute" if invalid == "relative" else "mount-option delimiters"
     with pytest.raises(ValueError, match=reason):
-        SocketSpec(source, destination).to_mount_arg()
-
-
-def test_sealed_creation_rejects_explicit_host_socket(spec: RunSpec) -> None:
-    """A caller cannot bypass sealed isolation by supplying its own SocketSpec."""
-    socket = SocketSpec(spec.task_dir / "socket", CONTAINER_WAYLAND_SOCKET)
-    sandbox = Sandbox(runtime=MagicMock())
-    with (
-        patch.object(sandbox, "pre_start_args", return_value=[]),
-        pytest.raises(ValueError, match="existing host sockets are not supported in sealed"),
-    ):
-        sandbox._build_cmd(replace(spec, sealed=True, sockets=(socket,)))
+        socket_bind_mount(source, destination)
 
 
 @pytest.mark.parametrize("failure", [OSError, ValueError])
@@ -81,10 +69,8 @@ def test_unrecorded_session_drops_prepared_mounts(
             "terok_sandbox.supervisor.sidecar.record_wayland", side_effect=failure("state denied")
         ),
     ):
-        prepared, direct_selinux = sandbox._prepare_wayland(
-            spec, hooks=LifecycleHooks(warning=warnings.append)
-        )
-    assert prepared is spec and not direct_selinux
+        prepared = sandbox._desktop.prepare(spec, hooks=LifecycleHooks(warning=warnings.append))
+    assert prepared.env == spec.env and "-v" not in prepared.extra_args
     assert "cannot record desktop wiring: state denied" in warnings[-1]
     assert "Task continues" in warnings[-1]
     assert warnings[-1] in capsys.readouterr().err
@@ -101,9 +87,9 @@ def test_session_refresh_failure_warns_without_stopping_restart(
     path.touch()
     warnings: list[str] = []
     with patch(
-        "terok_sandbox.supervisor.sidecar.refresh_wayland", side_effect=failure("state denied")
+        "terok_sandbox.supervisor.sidecar.update_wayland", side_effect=failure("state denied")
     ):
-        sandbox._refresh_wayland(spec.container_name, hooks=LifecycleHooks(warning=warnings.append))
+        sandbox._desktop.refresh(spec.container_name, hooks=LifecycleHooks(warning=warnings.append))
     assert len(warnings) == 1
     assert "could not refresh desktop session: state denied" in warnings[0]
     assert "Task continues" in warnings[0]
@@ -191,60 +177,43 @@ def test_proxy_mount_failure_cannot_gain_wiring_on_restart(
     session = WaylandSession(WaylandMode.MITM, spec.task_dir / "upstream", spec.task_dir / "proxy")
     with (
         patch("terok_sandbox.wayland.resolve_session", return_value=session),
-        patch.object(sandbox, "_mount_wayland", side_effect=OSError("runtime unavailable")),
+        patch.object(
+            sandbox._desktop, "_proxy_directory", side_effect=OSError("runtime unavailable")
+        ),
     ):
-        prepared, _ = sandbox._prepare_wayland(spec)
+        prepared = sandbox._desktop.prepare(spec)
     saved = load_sidecar(sandbox.config.sidecar_path(spec.container_name)).wayland
-    assert prepared is spec and saved.disabled_reason
-    assert "recreate" in saved.disabled_reason
+    assert prepared.env == spec.env and "-v" not in prepared.extra_args
+    assert saved.disabled_reason and "recreate" in saved.disabled_reason
     with patch("terok_sandbox.wayland._session_socket") as resolve:
-        sandbox._refresh_wayland(spec.container_name)
+        sandbox._desktop.refresh(spec.container_name)
     resolve.assert_not_called()
     assert not load_sidecar(sandbox.config.sidecar_path(spec.container_name)).wayland.proxied
 
 
 @pytest.mark.parametrize("verb", ["run", "create"])
-def test_optional_socket_disappearing_during_assembly_drops_only_desktop_wiring(
+def test_socket_disappearing_before_its_bind_drops_only_desktop_wiring(
     recorded_sandbox: Sandbox, spec: RunSpec, verb: str
 ) -> None:
-    """A late optional failure never aborts a task or removes caller-supplied grants."""
+    """A vanished compositor socket never aborts a task or disturbs the rest of its launch."""
     sandbox = recorded_sandbox
-    spec = replace(
-        spec,
-        wayland=WaylandMode.DIRECT,
-        unrestricted=True,
-        env={"KEEP": "yes"},
-        sockets=(SocketSpec(spec.task_dir / "explicit", str(spec.task_dir / "caller-socket")),),
-    )
+    spec = replace(spec, wayland=WaylandMode.DIRECT, unrestricted=True, env={"KEEP": "yes"})
     session = WaylandSession(WaylandMode.DIRECT, spec.task_dir / "upstream")
     with (
         patch("terok_sandbox.wayland.resolve_session", return_value=session),
         patch("terok_sandbox._util._selinux.is_selinux_enabled", return_value=False),
-        patch.object(
-            SocketSpec,
-            "to_mount_arg",
-            side_effect=["explicit-socket-mount", "valid", FileNotFoundError("vanished")],
-        ),
+        patch("terok_sandbox.desktop.socket_bind_mount", side_effect=FileNotFoundError("vanished")),
         patch.object(sandbox, "pre_start_args", return_value=[]),
         patch.object(sandbox, "_exec_podman") as execute,
         patch.object(sandbox, "_verify_supervision"),
-        patch.object(sandbox, "_verify_wayland"),
+        patch.object(sandbox._desktop, "verify"),
     ):
         getattr(sandbox, verb)(spec)
     command = execute.call_args.args[0]
-    assert "KEEP=yes" in command and "explicit-socket-mount" in command
-    assert not any("type=tmpfs" in arg or "WAYLAND_DISPLAY=" in arg for arg in command)
+    assert "KEEP=yes" in command
+    assert not any("type=" in arg or "WAYLAND_DISPLAY=" in arg for arg in command)
     saved = load_sidecar(sandbox.config.sidecar_path(spec.container_name)).wayland
     assert saved.upstream is None and "vanished" in saved.error
-
-
-def test_explicit_socket_failure_remains_fatal(recorded_sandbox: Sandbox, spec: RunSpec) -> None:
-    """Optional desktop recovery cannot hide a broken caller-requested socket grant."""
-    spec = replace(spec, sockets=(SocketSpec(spec.task_dir / "missing", CONTAINER_WAYLAND_SOCKET),))
-    with patch.object(recorded_sandbox, "_exec_podman") as execute:
-        with pytest.raises(FileNotFoundError):
-            recorded_sandbox.create(spec)
-    execute.assert_not_called()
 
 
 def test_malformed_wayland_payload_remains_visible_to_doctor(
@@ -273,15 +242,14 @@ def test_late_optional_failure_survives_unwritable_metadata(
     with (
         patch("terok_sandbox.wayland.resolve_session", return_value=session),
         patch("terok_sandbox._util._selinux.is_selinux_enabled", return_value=False),
-        patch.object(SocketSpec, "to_mount_arg", side_effect=["valid", OSError("vanished")]),
-        patch(
-            "terok_sandbox.supervisor.sidecar.record_wayland", side_effect=[None, OSError("denied")]
-        ),
+        patch("terok_sandbox.desktop.socket_bind_mount", side_effect=OSError("vanished")),
+        patch("terok_sandbox.supervisor.sidecar.record_wayland", side_effect=OSError("denied")),
         patch.object(sandbox, "pre_start_args", return_value=[]),
     ):
         warnings: list[str] = []
-        command = sandbox._prepare_launch_command(
-            spec, verb="create", hooks=LifecycleHooks(warning=warnings.append)
+        command = sandbox._build_cmd(
+            sandbox._desktop.prepare(spec, hooks=LifecycleHooks(warning=warnings.append)),
+            verb="create",
         )
     assert not any("WAYLAND_DISPLAY=" in arg for arg in command)
     assert any("cannot record desktop wiring: denied" in warning for warning in warnings)
@@ -300,14 +268,14 @@ def test_sidecar_corruption_during_refresh_cannot_restart_direct_mount(
         handle.inspect.return_value, mounts=((str(session.upstream), CONTAINER_WAYLAND_SOCKET),)
     )
 
-    def corrupt(_path: Path) -> None:
+    def corrupt(_path: Path, _update: object) -> None:
         """Replace state after preflight, before the refresh can record it."""
         _path.write_text("{broken")
         raise ValueError("invalid state")
 
     with (
         patch("terok_sandbox.wayland.resolve_session", return_value=session),
-        patch("terok_sandbox.supervisor.sidecar.refresh_wayland", side_effect=corrupt),
+        patch("terok_sandbox.supervisor.sidecar.update_wayland", side_effect=corrupt),
         pytest.raises(WaylandRecreationRequired, match="cannot verify"),
     ):
         sandbox.start(spec.container_name)
