@@ -26,8 +26,6 @@ else
 fi
 
 script_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" &>/dev/null && pwd)
-devel_makefile=/usr/share/selinux/devel/Makefile
-container_interface="${devel_makefile%/*}/include/services/container.if"
 with_wayland=false
 with_wayland_direct=false
 for option in "$@"; do
@@ -113,32 +111,13 @@ for module in "${modules[@]}"; do
     _reject_unsafe "${script_dir}/${module}.te"
 done
 
-_prerequisite_hint() {
-    echo "Install policy build prerequisites on the host, not in a Toolbox:" >&2
-    echo "  Fedora: sudo dnf install selinux-policy-devel policycoreutils container-selinux make m4" >&2
-    echo "  Silverblue: sudo rpm-ostree install --allow-inactive selinux-policy-devel policycoreutils container-selinux make m4" >&2
-    echo "On Silverblue, reboot into the new deployment before retrying." >&2
-    echo "Development headers and build tools are needed to build policy, not to start tasks." >&2
-}
-
-tools=(checkmodule semodule_package semodule)
-if "$with_wayland_direct"; then tools+=(make m4); fi
-for tool in "${tools[@]}"; do
+for tool in checkmodule semodule_package semodule; do
     if ! command -v "$tool" >/dev/null 2>&1; then
         echo "${_red}Required tool '$tool' not found.${_reset}" >&2
-        _prerequisite_hint
+        echo "Install: dnf install selinux-policy-devel policycoreutils" >&2
         exit 1
     fi
 done
-if "$with_wayland_direct"; then
-    for file in "$devel_makefile" "$container_interface"; do
-        if [[ ! -f "$file" || ! -r "$file" ]]; then
-            echo "${_red}Required SELinux development file '$file' is missing or unreadable.${_reset}" >&2
-            _prerequisite_hint
-            exit 1
-        fi
-    done
-fi
 
 workdir=$(mktemp -d -t terok-selinux-XXXXXX)
 trap 'rm -rf "$workdir"' EXIT
@@ -150,16 +129,9 @@ for module in "${modules[@]}"; do
     pp="${workdir}/${module}.pp"
 
     echo "Compiling ${module} policy..."
-    if [[ "$module" == terok_wayland_direct ]]; then
-        # Refpolicy make discovers local .if/.fc inputs. Build only the
-        # validated source in our private directory, never beside user files.
-        cp -- "$te_source" "$workdir/"
-        make -C "$workdir" -f "$devel_makefile" "${module}.pp"
-    else
-        checkmodule -M -m -o "$mod" "$te_source"
-        echo "Packaging module..."
-        semodule_package -o "$pp" -m "$mod"
-    fi
+    checkmodule -M -m -o "$mod" "$te_source"
+    echo "Packaging module..."
+    semodule_package -o "$pp" -m "$mod"
     packages+=("$pp")
 done
 

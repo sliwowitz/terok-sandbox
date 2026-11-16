@@ -1,75 +1,105 @@
 # SPDX-FileCopyrightText: 2026 Jiri Vyskocil
 # SPDX-License-Identifier: Apache-2.0
 
-policy_module(terok_wayland_direct, 1.1)
+module terok_wayland_direct 1.2;
 
-# Optional desktop access for explicitly selected wl-direct containers.
-# Fedora's container interfaces retain normal confinement and per-container
-# MCS separation. Nothing changes container_t or the host compositor label.
-# The launcher selects this type only for wl-direct; existing containers
-# must be recreated to change their process type.
+# Optional container domain for tasks that reach the compositor directly.
 #
-# SELinux cannot identify one compositor among same-label host sockets.
-# The exact socket mount and container namespaces limit reachable endpoints.
-# Direct access exposes every protocol the compositor offers, without a filter.
+# Invariant: terok_wayland_direct_t is container_t plus the grants at the
+# end of this file, and nothing here changes container_t itself.  The
+# launcher selects the type only for wl-direct containers; an existing
+# container keeps the type it was created with.
+#
+# It is a sibling, not a copy: the type joins the attributes container_t
+# carries and so receives the same stock rules, including per-container
+# MCS separation and the host's booleans.  Only what container-selinux
+# grants to container_t by name has to be repeated below.
+#
+# SELinux cannot single out one compositor among unconfined_t sockets;
+# the exact socket mount and the container's namespaces decide what is
+# reachable.  Direct access exposes every protocol the compositor offers.
+#
+# Written in checkmodule-native syntax like terok_socket: no refpolicy
+# macros, so installing needs no policy development packages.
 #
 # Install: sudo bash install_policy.sh --with-wayland-direct
 # Remove:  sudo semodule -r terok_wayland_direct
 
-gen_require(`
-    attribute container_net_domain, container_user_domain;
-    type container_file_t, container_var_run_t, proc_t, terok_socket_t, unconfined_t, user_tmp_t;
-')
+require {
+    attribute domain, container_domain, container_net_domain, container_user_domain;
+    attribute svirt_sandbox_domain, sandbox_net_domain;
+    attribute corenet_unconfined_type, corenet_unlabeled_type, syslog_client_type;
+    attribute process_user_target, mlsrangetrans, mcs_constrained_type;
+    attribute can_dump_kernel, can_receive_kernel_messages, kernel_system_state_reader;
+    attribute proc_type;
+    type container_file_t, container_var_run_t, tmpfs_t, sysfs_t, proc_t, device_t, xserver_misc_device_t;
+    type terok_socket_t, unconfined_t, user_tmp_t;
+    role system_r;
+    bool virt_sandbox_use_sys_admin, virt_sandbox_use_audit, container_use_xserver_devices;
+    class file { ioctl read write getattr lock open map relabelfrom relabelto };
+    class dir { ioctl read getattr lock open search mounton map relabelfrom relabelto };
+    class lnk_file { map relabelfrom relabelto };
+    class chr_file { ioctl read write getattr lock append open map execute watch watch_reads relabelfrom relabelto };
+    class blk_file { map relabelfrom relabelto };
+    class sock_file { write getattr map relabelfrom relabelto };
+    class fifo_file { map relabelfrom relabelto };
+    class filesystem { mount remount unmount };
+    class capability { sys_admin audit_write };
+    class cap_userns sys_admin;
+    class netlink_audit_socket { ioctl read write create getattr setattr lock append bind connect getopt setopt shutdown nlmsg_read nlmsg_relay nlmsg_tty_audit };
+    class unix_stream_socket connectto;
+}
 
-container_domain_template(terok_wayland_direct, container)
-typeattribute terok_wayland_direct_t container_net_domain, container_user_domain;
+# 1. The attributes container_t carries.
+type terok_wayland_direct_t, domain, container_domain, container_net_domain, container_user_domain,
+    svirt_sandbox_domain, sandbox_net_domain, corenet_unconfined_type, corenet_unlabeled_type,
+    syslog_client_type, process_user_target, mlsrangetrans, mcs_constrained_type,
+    can_dump_kernel, can_receive_kernel_messages, kernel_system_state_reader;
+role system_r types terok_wayland_direct_t;
 
-# Fedora splits the ordinary container baseline between container-selinux
-# and the legacy virt interfaces, including execution of host-mounted init.
-virt_sandbox_net_domain(terok_wayland_direct_t)
-corenet_unconfined(terok_wayland_direct_t)
-kernel_read_system_state(terok_wayland_direct_t)
-logging_send_syslog_msg(terok_wayland_direct_t)
+optional {
+    require { attribute sandbox_caps_domain; }
+    typeattribute terok_wayland_direct_t sandbox_caps_domain;
+}
 
-optional_policy(`
-    virt_default_capabilities(terok_wayland_direct_t)
-')
-
-# These stock grants name container_t rather than a shared attribute.
-dev_mounton_sysfs(terok_wayland_direct_t)
-kernel_read_messages(terok_wayland_direct_t)
+# 2. What container-selinux grants to container_t by name.
+allow terok_wayland_direct_t proc_type:file { ioctl read getattr lock open };
+allow terok_wayland_direct_t container_file_t:{ dir lnk_file chr_file blk_file sock_file fifo_file } { relabelfrom relabelto map };
+allow terok_wayland_direct_t container_file_t:chr_file { execute watch watch_reads };
+allow terok_wayland_direct_t container_file_t:filesystem { mount unmount };
+type_transition terok_wayland_direct_t tmpfs_t:{ dir file lnk_file } container_file_t;
+allow terok_wayland_direct_t sysfs_t:dir mounton;
 allow terok_wayland_direct_t proc_t:filesystem remount;
-allow terok_wayland_direct_t container_var_run_t:dir { list_dir_perms mounton };
-
-tunable_policy(`virt_sandbox_use_sys_admin',`
+allow terok_wayland_direct_t container_var_run_t:dir { ioctl read getattr lock open search mounton };
+if (virt_sandbox_use_sys_admin) {
     allow terok_wayland_direct_t self:capability sys_admin;
     allow terok_wayland_direct_t self:cap_userns sys_admin;
-')
+}
+if (virt_sandbox_use_audit) {
+    allow terok_wayland_direct_t self:capability audit_write;
+    allow terok_wayland_direct_t self:netlink_audit_socket { ioctl read write create getattr setattr lock append bind connect getopt setopt shutdown nlmsg_read nlmsg_relay nlmsg_tty_audit };
+}
+if (container_use_xserver_devices) {
+    allow terok_wayland_direct_t device_t:dir { getattr open search };
+    allow terok_wayland_direct_t xserver_misc_device_t:chr_file { ioctl read write getattr lock append open map };
+}
+optional {
+    require { type systemd_coredump_t; class process signull; }
+    allow systemd_coredump_t terok_wayland_direct_t:process signull;
+}
 
-tunable_policy(`virt_sandbox_use_audit',`
-    logging_send_audit_msgs(terok_wayland_direct_t)
-')
-
-# Preserve the host's existing GPU policy without enabling it or adding devices.
-tunable_policy(`container_use_xserver_devices',`
-    dev_getattr_xserver_misc_dev(terok_wayland_direct_t)
-    dev_rw_xserver_misc(terok_wayland_direct_t)
-')
-
-# Existing service-socket grants name container_t, not its sibling domains.
+# 3. The grants that make it the direct domain: terok's own service
+#    sockets, the compositor's socket, and the buffers the compositor
+#    hands over.  Receiving a buffer is not permission to open host files
+#    by pathname.
 allow terok_wayland_direct_t terok_socket_t:unix_stream_socket connectto;
-
-allow terok_wayland_direct_t user_tmp_t:sock_file { write getattr };
 allow terok_wayland_direct_t unconfined_t:unix_stream_socket connectto;
-
-# Receiving an existing compositor buffer is not permission to open host
-# files by pathname. Stock container policy supplies inherited tmpfs access.
-allow terok_wayland_direct_t unconfined_t:fd use;
+allow terok_wayland_direct_t user_tmp_t:sock_file { write getattr };
 allow terok_wayland_direct_t user_tmp_t:file { read write getattr map };
 
-optional_policy(`
-    gen_require(`
-        class memfd_file { read write getattr map };
-    ')
+# A policy that enables the memfd class labels a compositor's memfds with
+# its domain; policies without the class use the rule above.
+optional {
+    require { class memfd_file { read write getattr map }; }
     allow terok_wayland_direct_t unconfined_t:memfd_file { read write getattr map };
-')
+}

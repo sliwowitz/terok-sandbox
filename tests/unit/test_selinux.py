@@ -597,7 +597,7 @@ def test_direct_wayland_domain_has_its_own_policy_query(
     )
     source = _selinux.wayland_direct_policy_source_path()
     assert source.name == "terok_wayland_direct.te"
-    assert "policy_module(terok_wayland_direct," in source.read_text()
+    assert "module terok_wayland_direct " in source.read_text()
 
 
 def test_direct_wayland_policy_is_absent_without_libselinux(

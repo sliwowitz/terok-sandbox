@@ -20,6 +20,10 @@ combined. Omitting either flag later does not remove an installed module.
 flow displays the command and asks before running the installer with `sudo`.
 The `terok` and `terok-executor` frontends expose the same commands.
 
+All three modules are written in plain module syntax and build with
+`checkmodule` and `semodule_package` alone; no policy development packages
+are needed.
+
 Wayland still uses a Unix socket when the other services use TCP. Its optional
 policy is therefore independent of the `services.mode` setting. Install the
 `wl-mitm` binary separately as the desktop user to use `wl-mitm` mode; setup
@@ -37,8 +41,8 @@ automatic transition for other invocations of the binary and no binary relabel.
 The policy permits the transition under `no_new_privs` and on `nosuid` mounts.
 The child enters the domain before arming parent-death signals because SELinux
 clears those signals on a domain transition. The subsequent same-domain proxy
-exec retains them. The trusted child can read its Python installation and task
-sidecar; it sends logs through a pipe instead of obtaining home-file write access.
+exec retains them. The child sends logs through a pipe instead of obtaining
+home-file write access.
 
 The domain can create the task's proxy listener, connect to the desktop
 compositor, and forward the file descriptors that Wayland rendering and focused
@@ -48,19 +52,18 @@ permissions do not grant containers permission to open host files by pathname.
 The module does not add TCP/UDP, D-Bus, ptrace, or GPU-device-open permissions.
 GPU passthrough remains a separate container setting.
 
-The trusted Python child needs to read its installation before starting the
-proxy. Version 1.1 permits directory listing, symlink reads and library loading
-for `data_home_t`, used by pipx environments under `~/.local/share` on Fedora.
-These SELinux permissions apply to the file type, not just the pipx path. They
-grant no writes, relabeling or program entrypoints. The proxy's Landlock rules
-remain narrower and do not expose the pipx environment to `wl-mitm`.
+While Wayland access is experimental the domain is deliberately broad in one
+respect: it may **read and run every file type**. Python and `wl-mitm` then
+start from wherever they are installed — distribution packages, pipx, uv,
+`pip --user`, a checkout in the home directory — without one rule per layout.
+Ordinary file permissions still apply, the domain can write only the task's
+runtime directory, and the proxy's Landlock rules remain much narrower than
+the SELinux domain. This breadth is to be reduced before the feature leaves
+experimental status.
 
-After upgrading from version 1.0, reload the optional policy with
-`terok setup selinux --with-wayland`, then restart the affected task through
-terok. A package reinstall alone does not update the loaded policy. Missing
-runtime permissions can appear as `No module named terok_sandbox` in the
-supervisor log even when the package imports normally in the host shell;
-check the host SELinux audit log rather than disabling enforcement.
+For every container on the host the module adds exactly two things:
+`container_t` may connect to sockets of the proxy domain, and may write and
+map `user_tmp_t` files it has been handed, such as compositor keymaps.
 
 The proxy requires filesystem restrictions that narrow its executable and
 writable paths further. They are not an exact-endpoint Unix-socket sandbox. SELinux also cannot
@@ -73,16 +76,19 @@ containment guarantee.
 ## Direct access: `--with-wayland-direct`
 
 This module defines `terok_wayland_direct_t`. Only `wl-direct` containers select
-that process type. It combines Fedora's `container-selinux` template with the
-legacy virt interfaces used by ordinary containers, retaining Podman's
-per-container MCS categories. Other containers keep their existing type; this
-module does not grant `container_t` permission to connect to desktop sockets.
+that process type. It is `container_t` plus desktop access: the type joins the
+attributes `container_t` carries, so it receives the same stock rules, Podman's
+per-container MCS categories and the host's booleans, and the module repeats
+the few grants `container-selinux` gives `container_t` by name. Other
+containers keep their existing type; this module does not grant `container_t`
+permission to connect to desktop sockets.
 
-The baseline was audited against Fedora 45's policy. It includes execution of
-host-mounted container init helpers, networking, syslog, and the stock runtime
-grants. Existing host booleans still control optional capabilities and audit
-access; this is not an unconfined process domain. Future distribution policy
-changes can require another baseline audit.
+The module links against the current policies of Fedora 43 to 45, CentOS
+Stream 9 and 10, and openSUSE Tumbleweed. On each of them the domain holds
+every permission of `container_t` except the connection to the filtered
+proxy, which a direct task never uses. It is not an unconfined process
+domain. A distribution that renames one of those attributes makes installation
+fail visibly instead of producing a narrower domain.
 
 The selected container can access the mounted compositor socket and receive
 rendering/keymap file descriptors. The policy also preserves its access to
@@ -95,40 +101,6 @@ Direct access has **no protocol filter**. SELinux cannot distinguish the selecte
 compositor from other sockets with the same process and inode labels. The exact
 socket mount and container namespaces limit which endpoints are reachable; the
 policy is not an endpoint-specific compositor permission.
-
-### Host build prerequisites
-
-The direct module uses the distribution's container-policy interfaces rather
-than copying its confinement rules. Install its build prerequisites **on the
-host, not in a Toolbox or task container**:
-
-=== "Fedora"
-
-    ```console
-    sudo dnf install selinux-policy-devel policycoreutils container-selinux make m4
-    ```
-
-=== "Fedora Silverblue"
-
-    ```console
-    sudo rpm-ostree install --allow-inactive selinux-policy-devel policycoreutils container-selinux make m4
-    ```
-
-    Reboot into the new deployment before retrying the policy installer.
-    `--allow-inactive` accepts packages already included in the base image.
-
-`selinux-policy-devel` supplies `/usr/share/selinux/devel/Makefile`, and
-`container-selinux` supplies its `include/services/container.if` interface.
-The installer checks that both are readable before compiling any selected
-module. Missing prerequisites produce installation hints; terok never installs
-host packages automatically. The base and filtered policies do not require
-these development files.
-
-Development headers and build tools are needed when installing or rebuilding
-the direct module, not when starting tasks. The installed container policy
-remains a runtime requirement. Compilation uses a private temporary directory;
-the installer does not compile unvalidated policy files found next to the
-installed package.
 
 ## Failures and removal
 
@@ -146,9 +118,12 @@ sudo semodule -r terok_wayland
 sudo semodule -r terok_wayland_direct
 ```
 
-Package upgrades do not reload host policy. After updating the direct module,
-rerun `terok setup selinux --with-wayland-direct`. Containers already using
-`terok_wayland_direct_t` receive the updated rules without recreation.
+Package upgrades do not reload host policy. After an upgrade that changes a
+module, rerun setup with the same flags. A process already in a domain receives
+the updated rules at once; containers using `terok_wayland_direct_t` need no
+recreation. An older proxy module that does not cover the Python installation
+shows up as `No module named terok_sandbox` in the supervisor log, although the
+package imports normally in the host shell.
 
 Restart filtered tasks after changing their policy. Recreate direct tasks only
 when changing their container process type; an ordinary restart cannot change it.
