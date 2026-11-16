@@ -58,6 +58,9 @@ from terok_sandbox.wayland import (
 from tests.constants import FAKE_SERVICE_PORTS, MOCK_BASE, MOCK_HOST_BIN
 
 _NAME = "wayland-test"
+_as_desktop_user = pytest.mark.skipif(
+    os.geteuid() == 0, reason="desktop sessions require a non-root user"
+)
 _RESOLVER = "terok_sandbox.wayland.resolve_session"
 _VALUED_FLAGS = frozenset({"-v", "--mount", "-e", "--unsetenv", "--security-opt"})
 _UNSET_FLAGS = tuple(arg for name in WAYLAND_ENV_UNSET for arg in ("--unsetenv", name))
@@ -374,6 +377,7 @@ def test_direct_failure_warnings_use_the_same_plain_observer_contract(
     assert capsys.readouterr().err == expected + "\n"
 
 
+@_as_desktop_user
 @pytest.mark.parametrize("mode", [WaylandMode.MITM, WaylandMode.DIRECT])
 @pytest.mark.parametrize("absolute", [False, True])
 def test_desktop_session_resolves_owned_socket_and_selected_binary(
@@ -398,6 +402,7 @@ def test_desktop_session_resolves_owned_socket_and_selected_binary(
         lookup.assert_not_called()
 
 
+@_as_desktop_user
 def test_filtered_session_never_falls_back_when_proxy_missing(session_socket: Path) -> None:
     """A valid desktop socket does not authorize direct access when filtering cannot start."""
     with patch("terok_sandbox.wayland.find_host_tool", return_value=None) as lookup:
@@ -418,6 +423,7 @@ def test_root_invocation_cannot_select_a_user_desktop(session_socket: Path) -> N
     assert session.upstream is None and session.error and "rootless" in session.error
 
 
+@_as_desktop_user
 @pytest.mark.parametrize(
     ("display", "runtime", "reason"),
     [
@@ -447,6 +453,7 @@ def test_session_requires_an_unambiguous_desktop_endpoint(
     assert session.upstream is None and session.error and reason in session.error
 
 
+@_as_desktop_user
 @pytest.mark.parametrize("permissions", [0o770, 0o707])
 def test_other_users_cannot_replace_socket_in_its_parent(
     session_socket: Path, permissions: int
@@ -457,6 +464,7 @@ def test_other_users_cannot_replace_socket_in_its_parent(
     assert session.upstream is None and session.error and "socket directory" in session.error
 
 
+@_as_desktop_user
 @pytest.mark.parametrize(
     ("owned_path", "reason"),
     [("parent", "socket directory"), ("ancestor", "ancestor"), ("socket", "not a socket owned")],
@@ -488,6 +496,7 @@ def test_foreign_ownership_cannot_become_desktop_access(
     assert session.upstream is None and session.error and reason in session.error
 
 
+@_as_desktop_user
 @pytest.mark.parametrize("kind", ["file", "directory", "symlink"])
 def test_session_rejects_non_socket_endpoint(
     session_socket: Path, monkeypatch: pytest.MonkeyPatch, kind: str
@@ -505,6 +514,7 @@ def test_session_rejects_non_socket_endpoint(
     assert session.upstream is None and session.error and "not a socket owned" in session.error
 
 
+@_as_desktop_user
 def test_session_requires_socket_connect_permission(session_socket: Path) -> None:
     """Ownership alone does not grant the write access required for a Unix connection."""
     with patch("terok_sandbox.wayland.os.access", return_value=False) as access:
@@ -730,6 +740,7 @@ def test_raw_failed_mount_does_not_record_a_grant(
     assert MOUNTS_NOT_PREPARED in capsys.readouterr().err
 
 
+@_as_desktop_user
 @pytest.mark.parametrize("variable", ["CONTAINER_HOST", "CONTAINER_CONNECTION"])
 def test_remote_podman_never_mounts_a_local_desktop(
     sandbox: Sandbox, tmp_path: Path, monkeypatch, variable: str
@@ -741,6 +752,7 @@ def test_remote_podman_never_mounts_a_local_desktop(
     assert saved is not None and saved.wayland.disabled_reason
 
 
+@_as_desktop_user
 def test_one_start_from_a_remote_shell_keeps_the_prepared_proxy_mount(
     sandbox: Sandbox, session_socket: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
