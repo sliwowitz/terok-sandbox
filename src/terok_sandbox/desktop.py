@@ -239,13 +239,13 @@ class DesktopAccess:
                 else None
             ),
         )
-        endpoint: tuple[str, ...] = ()
+        endpoint = None
         try:
             if not session.disabled_reason:
                 endpoint = self._endpoint(spec.container_name, session)
         except (OSError, ValueError) as exc:
             session = WaylandSession(spec.wayland, error=str(exc))
-        if not endpoint:
+        if endpoint is None:
             withheld = session.disabled_reason or wayland.MOUNTS_NOT_PREPARED
             return replace(session, disabled_reason=withheld), ()
         if session.mode == WaylandMode.DIRECT and _direct_domain_available():
@@ -253,8 +253,8 @@ class DesktopAccess:
             return replace(session, direct_selinux=True), (*endpoint, "--security-opt", label)
         return session, endpoint
 
-    def _endpoint(self, container_name: str, session: WaylandSession) -> tuple[str, ...]:
-        """Podman arguments exposing *session*'s endpoint; empty when there is none to expose.
+    def _endpoint(self, container_name: str, session: WaylandSession) -> tuple[str, str] | None:
+        """The Podman option exposing *session*'s endpoint, or ``None`` with nothing to expose.
 
         The filtered mode mounts the proxy's own directory, which exists
         whether or not a desktop is reachable yet.  The direct mode binds the
@@ -262,10 +262,10 @@ class DesktopAccess:
         """
         if session.mode == WaylandMode.MITM:
             proxy_dir = self._proxy_directory(container_name)
-            return ("-v", f"{proxy_dir}:{CONTAINER_WAYLAND_DIR}:z,ro")
+            return "-v", f"{proxy_dir}:{CONTAINER_WAYLAND_DIR}:z,ro"
         if session.upstream is None:
-            return ()
-        return ("--mount", socket_bind_mount(session.upstream, CONTAINER_WAYLAND_SOCKET))
+            return None
+        return "--mount", socket_bind_mount(session.upstream, CONTAINER_WAYLAND_SOCKET)
 
     def _proxy_directory(self, container_name: str) -> Path:
         """Ensure the private directory the proxy binds its listener in, and return it."""
