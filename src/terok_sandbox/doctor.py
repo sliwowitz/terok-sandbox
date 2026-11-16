@@ -174,13 +174,13 @@ def _make_supervisor_children_check(container_id: str, container_name: str) -> D
         """Compare the sidecar's wiring against the live children."""
         from ._util._proc import service_children
         from .paths import state_root
-        from .supervisor.sidecar import load_sidecar, wired_services
+        from .supervisor.sidecar import OPTIONAL_SERVICES, load_sidecar, wired_services
 
         sidecar_path = state_root() / "sidecar" / f"{container_name}.json"
         sidecar = load_sidecar(sidecar_path) if sidecar_path.is_file() else None
         if sidecar is None:
             return CheckVerdict("ok", "no sidecar — this container has no supervisor to check")
-        expected = set(wired_services(sidecar))
+        expected = set(wired_services(sidecar)) - OPTIONAL_SERVICES
         running = set(service_children(container_id))
         missing = sorted(expected - running)
         if not missing:

@@ -221,6 +221,7 @@ _LAZY: dict[str, str] = {
     "SocketSpec": "sandbox:SocketSpec",
     "WaylandMode": "wayland:WaylandMode",
     "WaylandRecreationRequired": "supervisor.sidecar:WaylandRecreationRequired",
+    "emit_warning": "wayland:emit_warning",
     # Owned setup readiness
     "check_setup": "setup:check_setup",
     # Vault markers + SSH + credential store
@@ -468,7 +469,7 @@ if TYPE_CHECKING:
         is_available as systemd_creds_available,
     )
     from .vault.store.tiers import PassphraseTier
-    from .wayland import WaylandMode
+    from .wayland import WaylandMode, emit_warning
 
 
 __all__ = [
@@ -535,6 +536,7 @@ __all__ = [
     "SocketSpec",
     "WaylandMode",
     "WaylandRecreationRequired",
+    "emit_warning",
     "check_gpu_available",
     "detect_gpu_vendors",
     "gpu_device_addresses",

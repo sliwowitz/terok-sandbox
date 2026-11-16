@@ -27,7 +27,7 @@ from terok_util import confine_filesystem
 
 from .._util._selinux import require_wayland_exec_context
 from ..wayland import proxy_config
-from .launcher import finish_output, relay_output
+from .launcher import explained_preexec, finish_output, relay_output
 from .sidecar import SidecarConfig, SupervisorPaths
 
 _LIBC = ctypes.CDLL(None, use_errno=True)
@@ -52,21 +52,21 @@ async def run_proxy(cfg: SidecarConfig, paths: SupervisorPaths, stop: asyncio.Ev
         raise RuntimeError("Wayland child launched without proxy wiring")
     assert session.binary is not None and session.upstream is not None  # nosec B101 - narrowed by proxied
     require_wayland_exec_context()
+    confine = partial(_confine_proxy, os.getpid(), session.binary, paths.wayland_socket.parent)
     with _policy_fd(proxy_config(session.upstream, paths.wayland_socket)) as config_fd:
-        process = await asyncio.create_subprocess_exec(
-            str(session.binary),
-            str(_PROC_FDS / str(config_fd)),
-            pass_fds=(config_fd,),
-            close_fds=True,
-            stdin=asyncio.subprocess.DEVNULL,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.STDOUT,
-            env={"LANG": "C.UTF-8", "TOKIO_WORKER_THREADS": "2"},
-            cwd=paths.wayland_socket.parent,
-            preexec_fn=partial(
-                _confine_proxy, os.getpid(), session.binary, paths.wayland_socket.parent
-            ),
-        )
+        with explained_preexec(confine) as preexec_fn:
+            process = await asyncio.create_subprocess_exec(
+                str(session.binary),
+                str(_PROC_FDS / str(config_fd)),
+                pass_fds=(config_fd,),
+                close_fds=True,
+                stdin=asyncio.subprocess.DEVNULL,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.STDOUT,
+                env={"LANG": "C.UTF-8", "TOKIO_WORKER_THREADS": "2"},
+                cwd=paths.wayland_socket.parent,
+                preexec_fn=preexec_fn,
+            )
         exited = asyncio.create_task(_wait_proxy_exit(process))
         stopping = asyncio.create_task(stop.wait())
         output = asyncio.create_task(relay_output(process, "wl-mitm"))

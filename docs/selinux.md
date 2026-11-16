@@ -25,9 +25,8 @@ policy is therefore independent of the `services.mode` setting. Install the
 `wl-mitm` binary separately as the desktop user to use `wl-mitm` mode; setup
 does not install that binary. Direct access does not need it.
 
-The supported modes are `none`, `wl-mitm`, and `wl-direct`. Obsolete mode names
-are not aliases. Update the project configuration and recreate tasks created
-with an obsolete mode; an ordinary restart cannot change the saved access grant.
+The supported modes are `none`, `wl-mitm`, and `wl-direct`. An ordinary restart
+cannot change a task's saved access grant; recreate the task to change its mode.
 
 ## Filtered access: `--with-wayland`
 

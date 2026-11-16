@@ -19,14 +19,15 @@ logic.
 
 The write side lives here too, beside the reader whose rules it has to
 satisfy: [`store_sidecar`][terok_sandbox.supervisor.sidecar.store_sidecar]
-is the one writer,
+is the one writer.  The edits a sidecar takes after creation are
 [`refresh_clearance`][terok_sandbox.supervisor.sidecar.refresh_clearance]
-the one edit a sidecar takes after creation — its ``clearance`` field,
-rewritten from current config before a restart — and
-[`remove_sidecar`][terok_sandbox.supervisor.sidecar.remove_sidecar] the
-one removal.  The three take turns under one lock per sidecar directory,
-so none of them lands between another's check and its act.  All stay
-stdlib-only like the rest of the module.
+— its ``clearance`` field, rewritten from current config before a restart —
+and the desktop wiring kept by
+[`record_wayland`][terok_sandbox.supervisor.sidecar.record_wayland] and
+[`refresh_wayland`][terok_sandbox.supervisor.sidecar.refresh_wayland];
+[`remove_sidecar`][terok_sandbox.supervisor.sidecar.remove_sidecar] is the
+one removal.  They take turns under one lock per sidecar directory, so
+none of them lands between another's check and its act.
 """
 
 from __future__ import annotations
@@ -65,6 +66,10 @@ _logger = logging.getLogger("terok-supervisor")
 #: needing the runners.
 SERVICE_NAMES: tuple[str, ...] = ("verdict", "clearance", "gate", "vault", "signer", "wayland")
 
+#: Services whose loss costs one opt-in feature, never the container's
+#: required plumbing.  Each has a health check of its own.
+OPTIONAL_SERVICES: frozenset[str] = frozenset({"wayland"})
+
 #: The clearance arm: the hub that puts a refusal to the operator and the
 #: verdict server that applies the answer.  ``services.clearance: off``
 #: leaves both out; the shield refuses without them, and its audit log, kept
@@ -73,7 +78,7 @@ _CLEARANCE_ARM: frozenset[str] = frozenset({"verdict", "clearance"})
 
 #: The values ``services.clearance`` takes.  Spelled here rather than read
 #: off [`ClearanceMode`][terok_sandbox.config_schema.ClearanceMode], whose
-#: module imports pydantic: this one stays stdlib-only because the parent
+#: module imports pydantic: this one stays free of it because the parent
 #: supervisor and every child import it.  A test pins the two together.
 _CLEARANCE_MODES: tuple[ClearanceMode, ...] = ("prompt", "mute", "off")
 
@@ -301,7 +306,8 @@ def wired_services(cfg: SidecarConfig) -> tuple[str, ...]:
       binary and desktop endpoint were resolved for this start.
 
     The parent launches no child for a service left out, and the doctor's
-    children check expects none.  Vault and signer run for every container.
+    children check expects none — nor any of ``OPTIONAL_SERVICES``, whose
+    loss their own checks report.  Vault and signer run for every container.
     """
     unwired: set[str] = set()
     if not (cfg.gate_base_path and cfg.gate_token):
@@ -521,10 +527,10 @@ def store_sidecar(
 ) -> None:
     """Create the sidecar at *target*, or atomically replace it, with *payload*.
 
-    The one writer behind both producers of a sidecar —
+    The one writer behind every producer of a sidecar —
     [`write_sidecar`][terok_sandbox.launch.write_sidecar] at creation and
-    [`refresh_clearance`][terok_sandbox.supervisor.sidecar.refresh_clearance]
-    before a restart — so the file's rules are kept in one place:
+    the edits this module makes before a restart — so the file's rules are
+    kept in one place:
 
     * **0600 from the first byte.**  The payload can carry a live gate
       token.  It goes to a temp file ``mkstemp`` creates ``0600`` beside
@@ -664,7 +670,13 @@ def refresh_wayland(sidecar_path: Path) -> WaylandSession:
 
 
 def resolve_wayland_refresh(previous: WaylandSession) -> WaylandSession:
-    """Validate the current desktop against a saved grant without rewriting its sidecar."""
+    """Validate the current desktop against a saved grant without rewriting its sidecar.
+
+    Only this start's endpoints are resolved anew.  What creation decided —
+    the process domain, and whether desktop mounts exist at all — carries
+    over unchanged, so one start from an unsuitable shell cannot cost a
+    container the mounts it has.
+    """
     if previous.mode == WaylandMode.NONE and previous.error:
         raise WaylandRecreationRequired(
             f"Wayland recreation required: cannot verify saved desktop access: {previous.error}"
@@ -672,6 +684,7 @@ def resolve_wayland_refresh(previous: WaylandSession) -> WaylandSession:
     session = replace(
         wayland.resolve_session(previous.mode, unavailable=previous.disabled_reason),
         direct_selinux=previous.direct_selinux,
+        disabled_reason=previous.disabled_reason,
     )
     if previous.mode == WaylandMode.DIRECT and not previous.disabled_reason:
         if session.upstream is None or session.upstream != previous.upstream:

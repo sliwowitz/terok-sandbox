@@ -131,7 +131,8 @@ class TestComponentGuards:
         self, install_spies, component, option: str
     ) -> None:
         with pytest.raises(
-            SystemExit, match=f"--{option.replace('_', '-')} requires 'setup selinux'"
+            SystemExit,
+            match=f"--{option.replace('_', '-')} requires 'terok-sandbox setup selinux'",
         ):
             _handle_sandbox_setup(component=component, **{option: True})
         install_spies["legacy"].assert_not_called()

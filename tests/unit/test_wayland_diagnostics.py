@@ -107,6 +107,7 @@ def test_session_refresh_failure_warns_without_stopping_restart(
     assert len(warnings) == 1
     assert "could not refresh desktop session: state denied" in warnings[0]
     assert "Task continues" in warnings[0]
+    assert not any(mode in warnings[0] for mode in (WaylandMode.MITM, WaylandMode.DIRECT))
     assert warnings[0] in capsys.readouterr().err
 
 

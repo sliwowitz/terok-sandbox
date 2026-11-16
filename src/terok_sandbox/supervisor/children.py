@@ -27,7 +27,7 @@ already binds a per-container filesystem socket (or loopback port); a
 child in a separate process binds the identical path the container
 reaches.
 
-The five children map onto the six former services: ``clearance`` owns
+Five of the children map onto the six former services: ``clearance`` owns
 the hub *and* the desktop notifier/subscriber (they share the clearance
 socket and the notifier only drives the subscriber), while ``verdict``,
 ``vault``, ``signer``, and ``gate`` are one service each.  ``gate`` only
@@ -307,8 +307,9 @@ async def _run_signer(cfg: SidecarConfig, paths: SupervisorPaths, stop: asyncio.
 #: Service name → its runner coroutine.  The parent's launch order is the
 #: insertion order here: verdict before clearance (the hub connects to
 #: it), gate before vault (the container clones through the gate first),
-#: vault and signer last (secret-holders come up once their consumers are
-#: waiting).  The keys are the wire vocabulary of ``supervise-child``.
+#: then vault and signer (secret-holders come up once their consumers are
+#: waiting), the optional Wayland proxy last.  The keys are the wire
+#: vocabulary of ``supervise-child``.
 _RUNNERS: dict[str, _Runner] = {
     "verdict": _run_verdict,
     "clearance": _run_clearance,

@@ -59,15 +59,16 @@ SANDBOX_MANAGED_FLAGS = frozenset(
 )
 _FLAG_ALIASES: dict[str, str] = {"--net": "--network"}
 
+# Container directories sandbox owns wholesale: a user mount on any of
+# them, or anywhere below, would shadow a socket or mount sandbox places there.
+_MANAGED_SUBTREES = (CONTAINER_RUNTIME_DIR, CONTAINER_WAYLAND_DIR, CONTAINER_USER_RUNTIME_DIR)
+
 # Volume mount targets sandbox emits.  A user `-v ...:<target>` that
-# overlaps any of these — or any path under ``CONTAINER_RUNTIME_DIR``
-# itself — would shadow sandbox's sockets/mounts.
+# overlaps any of these would shadow sandbox's sockets/mounts.
 _MANAGED_VOLUME_TARGETS = frozenset(
     {
         CONTAINER_BRIDGES_DIR,
-        CONTAINER_RUNTIME_DIR,
-        CONTAINER_WAYLAND_DIR,
-        CONTAINER_USER_RUNTIME_DIR,
+        *_MANAGED_SUBTREES,
         CONTAINER_VAULT_SOCKET,
         CONTAINER_SSH_SIGNER_SOCKET,
         CONTAINER_GATE_SOCKET,
@@ -122,15 +123,10 @@ def reject_managed_volumes(podman_args: list[str]) -> None:
         if len(parts) < 2:
             continue
         target = parts[1]
-        # Block exact matches plus any path under ``CONTAINER_RUNTIME_DIR``
-        # — sandbox owns that whole subtree, so a deeper user mount would
-        # still hide a freshly-bound supervisor socket.
+        # Block exact matches plus any path under an owned subtree: a deeper
+        # user mount would still hide a freshly-bound supervisor socket.
         if target in _MANAGED_VOLUME_TARGETS or target.startswith(
-            (
-                f"{CONTAINER_RUNTIME_DIR}/",
-                f"{CONTAINER_WAYLAND_DIR}/",
-                f"{CONTAINER_USER_RUNTIME_DIR}/",
-            )
+            tuple(f"{subtree}/" for subtree in _MANAGED_SUBTREES)
         ):
             conflicts.add(target)
     if conflicts:

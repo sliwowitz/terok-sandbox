@@ -235,7 +235,8 @@ def _expected_endpoints(
 ) -> tuple[ServiceEndpoint, ...]:
     """The addresses this container's supervisor children must bind.
 
-    Vault and signer always; the gate only when the sidecar wired one.
+    Vault and signer always; the gate and the Wayland proxy only when the
+    sidecar wired one.
     The clearance and verdict children bind at the cross-package runtime
     root shared by every container, so a bound socket there does not
     belong to this container and is not evidence about it.

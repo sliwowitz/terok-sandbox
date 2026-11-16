@@ -45,7 +45,13 @@ from terok_sandbox.supervisor.sidecar import (
     store_sidecar,
     wired_services,
 )
-from terok_sandbox.wayland import WaylandSession, emit_warning, resolve_session, warn_desktop_access
+from terok_sandbox.wayland import (
+    MOUNTS_NOT_PREPARED,
+    WaylandSession,
+    emit_warning,
+    resolve_session,
+    warn_desktop_access,
+)
 from tests.constants import FAKE_SERVICE_PORTS
 
 _NAME = "wayland-test"
@@ -468,7 +474,7 @@ def test_proxy_restart_reresolves_session(sandbox: Sandbox, tmp_path: Path) -> N
     assert spec.volumes[0].host_path.is_dir()
 
 
-@pytest.mark.parametrize("change", ["missing", "different", "initially-missing"])
+@pytest.mark.parametrize("change", ["missing", "different"])
 def test_raw_restart_requires_recreation_for_changed_source(
     sandbox: Sandbox,
     desktop_socket: Path,
@@ -478,13 +484,28 @@ def test_raw_restart_requires_recreation_for_changed_source(
     """Raw mounts never silently retarget or trigger destructive recreation."""
     old = WaylandSession(WaylandMode.DIRECT, desktop_socket)
     new = replace(old, upstream=None if change == "missing" else tmp_path / "new")
-    if change == "initially-missing":
-        old = replace(old, upstream=None, error="no desktop")
     with patch(_RESOLVER, side_effect=[old, new]):
         sandbox._prepare_wayland(_spec(tmp_path, WaylandMode.DIRECT))
         with pytest.raises(WaylandRecreationRequired, match="recreation required"):
             sandbox.start(_NAME)
     sandbox.runtime.container.assert_not_called()
+
+
+def test_direct_task_created_without_a_desktop_restarts_without_gui(
+    sandbox: Sandbox, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Creation mounted nothing, so a restart has no socket bind to keep or to refuse."""
+    absent = WaylandSession(WaylandMode.DIRECT, error="no desktop")
+    with patch(_RESOLVER, return_value=absent):
+        prepared, _ = sandbox._prepare_wayland(_spec(tmp_path, WaylandMode.DIRECT))
+    assert not prepared.sockets and not prepared.extra_args
+    capsys.readouterr()
+    with patch.object(sandbox, "_verify_supervision"):
+        sandbox.start(_NAME)
+    sandbox.runtime.container.return_value.start.assert_called_once()
+    warnings = capsys.readouterr().err
+    assert MOUNTS_NOT_PREPARED in warnings
+    assert "attack surface" not in warnings
 
 
 def test_same_raw_path_restarts(sandbox: Sandbox, desktop_socket: Path, tmp_path: Path) -> None:
@@ -536,9 +557,9 @@ def test_malformed_optional_state_keeps_other_services(sandbox: Sandbox) -> None
 
 
 def test_raw_failed_mount_does_not_record_a_grant(
-    sandbox: Sandbox, desktop_socket: Path, tmp_path: Path
+    sandbox: Sandbox, desktop_socket: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    """A socket disappearing during preparation cannot become a saved bind source."""
+    """A socket disappearing during preparation leaves no bind for a restart to look for."""
     session = WaylandSession(WaylandMode.DIRECT, desktop_socket)
     with (
         patch(_RESOLVER, return_value=session),
@@ -549,8 +570,10 @@ def test_raw_failed_mount_does_not_record_a_grant(
     assert not prepared.extra_args and "XDG_RUNTIME_DIR" not in prepared.env
     saved = load_sidecar(sandbox.config.sidecar_path(_NAME))
     assert saved is not None and saved.wayland.upstream is None
-    with patch(_RESOLVER, return_value=session), pytest.raises(WaylandRecreationRequired):
-        sandbox._refresh_wayland(_NAME)
+    assert saved.wayland.disabled_reason == MOUNTS_NOT_PREPARED
+    capsys.readouterr()
+    sandbox._refresh_wayland(_NAME)
+    assert MOUNTS_NOT_PREPARED in capsys.readouterr().err
 
 
 @pytest.mark.parametrize("variable", ["CONTAINER_HOST", "CONTAINER_CONNECTION"])
@@ -563,6 +586,26 @@ def test_remote_podman_never_mounts_a_local_desktop(
     assert not prepared.volumes and not prepared.sockets
     saved = load_sidecar(sandbox.config.sidecar_path(_NAME))
     assert saved is not None and saved.wayland.disabled_reason
+
+
+def test_one_start_from_a_remote_shell_keeps_the_prepared_proxy_mount(
+    sandbox: Sandbox, session_socket: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An unsuitable shell costs that start its GUI; creation's mounts stay usable afterwards."""
+    proxy = tmp_path / "wl-mitm"
+    proxy.touch()
+    with patch(_RESOLVER, return_value=WaylandSession(WaylandMode.MITM, session_socket, proxy)):
+        sandbox._prepare_wayland(_spec(tmp_path))
+    monkeypatch.setenv("CONTAINER_HOST", "remote-selection")
+    sandbox._refresh_wayland(_NAME)
+    saved = load_sidecar(sandbox.config.sidecar_path(_NAME))
+    assert saved is not None and "remote connections" in saved.wayland.error
+    assert saved.wayland.disabled_reason is None
+    monkeypatch.delenv("CONTAINER_HOST")
+    with patch("terok_sandbox.wayland.find_host_tool", return_value=str(proxy)):
+        sandbox._refresh_wayland(_NAME)
+    saved = load_sidecar(sandbox.config.sidecar_path(_NAME))
+    assert saved is not None and saved.wayland.proxied
 
 
 async def test_proxy_wrapper_transitions_before_arming_its_death_signal(tmp_path: Path) -> None:
@@ -627,11 +670,11 @@ def test_preflight_failure_warns_once_without_probing(
     launch.assert_called_once()
     sandbox.runtime.exec.assert_not_called()
     assert observed == capsys.readouterr().err.splitlines()
-    assert len(observed) == 2
-    assert "significantly increases host attack surface" in observed[0]
-    assert "WAYLAND_DISPLAY is unset" in observed[1]
-    if mode == WaylandMode.DIRECT:
-        assert "without protocol filtering" in observed[0]
+    *surface, unavailable = observed
+    assert "WAYLAND_DISPLAY is unset" in unavailable
+    # The proxy's mount exists for a later desktop; a direct task got no socket to expose.
+    assert len(surface) == (1 if mode == WaylandMode.MITM else 0)
+    assert all("significantly increases host attack surface" in line for line in surface)
 
 
 @pytest.mark.parametrize(

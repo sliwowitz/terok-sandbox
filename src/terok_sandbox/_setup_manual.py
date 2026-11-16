@@ -52,7 +52,7 @@ from ._util._selinux import (
     SelinuxStatus,
     check_status as _check_selinux,
     install_script_path as _selinux_install_script,
-    is_selinux_enabled,
+    is_selinux_enforcing,
     is_wayland_direct_policy_installed,
     is_wayland_policy_installed,
     policy_source_path as _policy_source_path,
@@ -79,6 +79,9 @@ _SELINUX_STATUS_LINES = {
         "SELinux is disabled or permissive. No policy is needed on this host."
     ),
 }
+
+#: Closes the status of a selected desktop policy, once, whichever were selected.
+_WAYLAND_TRANSPORT_NOTE = " Wayland uses sockets even when other services use TCP."
 
 _APPARMOR_STATUS_LINES = {
     AppArmorStatus.OK: "The terok dnsmasq addendum is installed and current.",
@@ -113,13 +116,14 @@ def handle_setup_component(
             policy. Does not enable the proxy policy or change existing tasks.
     """
     from .config import SandboxConfig
+    from .operator_cli import setup_invocation
 
     for flag, selected in (
         ("--with-wayland", with_wayland),
         ("--with-wayland-direct", with_wayland_direct),
     ):
         if selected and component != "selinux":
-            raise SystemExit(f"{flag} requires 'setup selinux'")
+            raise SystemExit(f"{flag} requires '{setup_invocation()} selinux'")
     with nullcontext() if show_only else setup_lock():
         if component == "selinux":
             comp = _selinux_component(cfg or SandboxConfig())
@@ -130,8 +134,6 @@ def handle_setup_component(
         elif component == "apparmor":
             comp = _apparmor_component()
         else:
-            from .operator_cli import setup_invocation
-
             named = (
                 f"unknown setup component {component!r}"
                 if component
@@ -214,8 +216,8 @@ def _with_wayland_policy(comp: _Component, *, direct: bool = False) -> _Componen
     return replace(
         comp,
         status_line=(
-            f"{comp.status_line}\nThe optional {module} policy is {state}."
-            " Wayland uses sockets even when other services use TCP."
+            f"{comp.status_line.removesuffix(_WAYLAND_TRANSPORT_NOTE)}"
+            f"\nThe optional {module} policy is {state}.{_WAYLAND_TRANSPORT_NOTE}"
         ),
         destination=(
             f"{comp.destination}\nAlso loads {module}"
@@ -229,7 +231,7 @@ def _with_wayland_policy(comp: _Component, *, direct: bool = False) -> _Componen
         ),
         source=comp.source + "\n" + source.read_text(),
         script_args=(*comp.script_args, flag),
-        action_needed=comp.action_needed or (is_selinux_enabled() and not installed),
+        action_needed=comp.action_needed or (is_selinux_enforcing() and not installed),
     )
 
 

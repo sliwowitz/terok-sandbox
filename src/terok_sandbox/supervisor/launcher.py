@@ -23,8 +23,10 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import functools
 import logging
 import os
+import subprocess  # nosec B404 - only the exception type CPython raises for a failed pre-exec step
 import sys
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
@@ -34,7 +36,11 @@ from .._util._subprocess_env import child_process_env
 EXPECTED_PARENT_ENV = "TEROK_SUPERVISOR_PARENT_PID"
 """Internal startup guard against reparenting during the Wayland domain transition."""
 
+_PREEXEC_REASON_BYTES = 4096
+"""Upper bound on the failure reason a pre-exec step hands back to its parent."""
+
 if TYPE_CHECKING:
+    from collections.abc import Callable, Iterator
     from pathlib import Path
 
 
@@ -63,31 +69,66 @@ async def launch_child(service: str, container_id: str, sidecar_path: Path) -> C
     """
     options: dict[str, Any] = {}
     env_overrides: dict[str, str] = {}
-    if service == "wayland":
-        from .._util._selinux import prepare_wayland_exec_context
+    with contextlib.ExitStack() as spawn:
+        if service == "wayland":
+            from .._util._selinux import prepare_wayland_exec_context
 
-        # A SELinux transition clears PDEATHSIG. Transition this trusted
-        # wrapper first; it arms the signal in its final domain, and its
-        # same-domain wl-mitm exec can then retain the descendant signal.
-        options["preexec_fn"] = prepare_wayland_exec_context
-        options["stdin"] = asyncio.subprocess.DEVNULL
-        options["stdout"] = asyncio.subprocess.PIPE
-        options["stderr"] = asyncio.subprocess.STDOUT
-        env_overrides[EXPECTED_PARENT_ENV] = str(os.getpid())
-    process = await asyncio.create_subprocess_exec(
-        sys.executable,
-        "-P",
-        "-m",
-        "terok_sandbox",
-        "supervise-child",
-        service,
-        container_id,
-        str(sidecar_path),
-        env=child_process_env(env_overrides),
-        **options,
-    )
+            # A SELinux transition clears PDEATHSIG. Transition this trusted
+            # wrapper first; it arms the signal in its final domain, and its
+            # same-domain wl-mitm exec can then retain the descendant signal.
+            options["preexec_fn"] = spawn.enter_context(
+                explained_preexec(prepare_wayland_exec_context)
+            )
+            options["stdin"] = asyncio.subprocess.DEVNULL
+            options["stdout"] = asyncio.subprocess.PIPE
+            options["stderr"] = asyncio.subprocess.STDOUT
+            env_overrides[EXPECTED_PARENT_ENV] = str(os.getpid())
+        process = await asyncio.create_subprocess_exec(
+            sys.executable,
+            "-P",
+            "-m",
+            "terok_sandbox",
+            "supervise-child",
+            service,
+            container_id,
+            str(sidecar_path),
+            env=child_process_env(env_overrides),
+            **options,
+        )
     output = asyncio.create_task(relay_output(process, service)) if service == "wayland" else None
     return ChildHandle(service=service, process=process, output=output)
+
+
+@contextlib.contextmanager
+def explained_preexec(step: Callable[[], None]) -> Iterator[Callable[[], None]]:
+    """Yield *step* as a ``preexec_fn`` whose failure reaches the parent with its reason.
+
+    CPython reports whatever a pre-exec step raises only as "Exception
+    occurred in preexec_fn.", so the reason the operator needs never leaves
+    the forked child.  The yielded step writes that reason into a pipe
+    first; the spawn's generic error then leaves this block as a
+    ``RuntimeError`` carrying it.
+    """
+    reader, writer = os.pipe()
+    os.set_blocking(reader, False)
+    with open(reader, "rb", buffering=0) as report, open(writer, "wb", buffering=0) as explain:
+
+        @functools.wraps(step)
+        def explaining_step() -> None:
+            try:
+                step()
+            except Exception as exc:
+                with contextlib.suppress(OSError):
+                    explain.write(str(exc).encode()[:_PREEXEC_REASON_BYTES])
+                raise
+
+        try:
+            yield explaining_step
+        except subprocess.SubprocessError as exc:
+            # A read that finds nothing returns ``None`` rather than waiting.
+            if reason := report.read(_PREEXEC_REASON_BYTES):
+                raise RuntimeError(reason.decode(errors="replace")) from exc
+            raise
 
 
 async def relay_output(process: asyncio.subprocess.Process, service: str) -> None:

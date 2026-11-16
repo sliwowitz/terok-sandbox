@@ -18,6 +18,7 @@ import stat
 import sys
 from dataclasses import dataclass
 from enum import StrEnum
+from functools import partial
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -33,6 +34,9 @@ _logger = logging.getLogger(__name__)
 
 WAYLAND_ENV_UNSET = ("WAYLAND_SOCKET", "DISPLAY", "XAUTHORITY")
 """Endpoints that must not override the selected Wayland socket."""
+
+MOUNTS_NOT_PREPARED = "desktop mounts were not prepared; recreate the task to enable Wayland"
+"""Why a container created without desktop mounts stays without GUI on every restart."""
 
 ALLOWED_GLOBALS = (
     "wl_compositor",
@@ -171,11 +175,16 @@ def resolve_session(mode: WaylandMode, *, unavailable: str | None = None) -> Way
 
 
 def proxy_config(upstream: Path, listener: Path) -> bytes:
-    """Build stock wl-mitm TOML with no command hooks or permissive dry run."""
+    """Build stock wl-mitm TOML with no command hooks or permissive dry run.
+
+    JSON string syntax doubles as TOML basic strings once non-ASCII text is
+    left unescaped: TOML rejects the surrogate pairs JSON would write.
+    """
+    quoted = partial(json.dumps, ensure_ascii=False)
     return (
-        f"[socket]\nlisten = {json.dumps(str(listener))}\n"
-        f"upstream = {json.dumps(str(upstream))}\n"
-        f"[filter]\nallowed_globals = {json.dumps(ALLOWED_GLOBALS)}\n"
+        f"[socket]\nlisten = {quoted(str(listener))}\n"
+        f"upstream = {quoted(str(upstream))}\n"
+        f"[filter]\nallowed_globals = {quoted(ALLOWED_GLOBALS)}\n"
         "requests = []\ndry_run = false\n"
     ).encode()
 
@@ -215,7 +224,12 @@ def warn_desktop_access(
 
 
 def emit_warning(message: str, *, observer: Callable[[str], None] | None = None) -> None:
-    """Print terminal-safe text; observers receive plain text for their own rendering."""
+    """Present one startup warning on stderr, terminal-safe, and hand it to *observer* as plain text.
+
+    The single renderer of these warnings: a front-end that repeats what a
+    [`LifecycleHooks`][terok_sandbox.sandbox.LifecycleHooks] observer
+    collected passes each message back through here.
+    """
     message = sanitize_tty(message)
     rendered = message
     if message.startswith(f"WARNING: Wayland ({WaylandMode.DIRECT})"):

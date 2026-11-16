@@ -57,6 +57,7 @@ from terok_sandbox.podman_args import (
     CONTAINER_SSH_SIGNER_SOCKET,
     CONTAINER_USER_RUNTIME_DIR,
     CONTAINER_VAULT_SOCKET,
+    CONTAINER_WAYLAND_DIR,
     reject_managed_flags,
     reject_managed_volumes,
     validate_passthrough_args,
@@ -1389,6 +1390,8 @@ class TestEdgeCases:
         for target in (
             CONTAINER_RUNTIME_DIR,
             f"{CONTAINER_RUNTIME_DIR}/anything",
+            CONTAINER_WAYLAND_DIR,
+            f"{CONTAINER_WAYLAND_DIR}/anything",
             CONTAINER_USER_RUNTIME_DIR,
             f"{CONTAINER_USER_RUNTIME_DIR}/anything",
         ):

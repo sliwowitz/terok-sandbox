@@ -167,7 +167,11 @@ class LifecycleHooks:
     """Fired after the container exits (caller responsibility)."""
 
     warning: Callable[[str], None] | None = None
-    """Observe rendered startup warnings for later presentation; failures are nonfatal."""
+    """Observe startup warnings as plain text; failures are nonfatal.
+
+    Replay one with [`emit_warning`][terok_sandbox.wayland.emit_warning] to
+    present it exactly as the launch did.
+    """
 
 
 #: In-container loopback port the gate socat bridge listens on (matches
@@ -1091,18 +1095,10 @@ class Sandbox:
 
     @staticmethod
     def _unmounted_wayland(mode: WaylandMode, failure: Exception) -> WaylandSession:
-        """Keep a failed proxy mount from becoming a fictitious grant on restart."""
-        from .wayland import WaylandSession
+        """Keep a failed desktop mount from becoming a fictitious grant on restart."""
+        from .wayland import MOUNTS_NOT_PREPARED, WaylandSession
 
-        return WaylandSession(
-            mode,
-            error=str(failure),
-            disabled_reason=(
-                "desktop mounts were not prepared; recreate the task to enable Wayland"
-                if mode == WaylandMode.MITM
-                else None
-            ),
-        )
+        return WaylandSession(mode, error=str(failure), disabled_reason=MOUNTS_NOT_PREPARED)
 
     def _prepare_wayland(
         self, spec: RunSpec, *, hooks: LifecycleHooks | None = None
@@ -1110,12 +1106,16 @@ class Sandbox:
         """Materialise optional desktop wiring before recording the saved mount grant."""
         from ._util._selinux import is_selinux_enabled, is_wayland_direct_policy_installed
         from .supervisor.sidecar import record_wayland
-        from .wayland import resolve_session, warn_desktop_access, warn_wayland
+        from .wayland import (
+            MOUNTS_NOT_PREPARED,
+            resolve_session,
+            warn_desktop_access,
+            warn_wayland,
+        )
 
         if spec.wayland == WaylandMode.NONE:
             return spec, False
         observer = hooks.warning if hooks else None
-        warn_desktop_access(spec.wayland, observer=observer)
         unavailable = (
             "not supported with sealed isolation or the krun runtime"
             if spec.sealed or spec.runtime == "krun"
@@ -1134,11 +1134,17 @@ class Sandbox:
         except (OSError, ValueError) as exc:
             prepared = spec
             session = self._unmounted_wayland(spec.wayland, exc)
+        if prepared is spec and not session.disabled_reason:
+            # No desktop was reachable, so nothing was mounted: later starts
+            # continue without GUI instead of looking for a socket bind.
+            session = replace(session, disabled_reason=MOUNTS_NOT_PREPARED)
         try:
             record_wayland(self._cfg.sidecar_path(spec.container_name), session)
         except (OSError, ValueError) as exc:
             warn_wayland(spec.wayland, f"cannot record desktop wiring: {exc}", observer=observer)
             return spec, False
+        if prepared is not spec:
+            warn_desktop_access(spec.wayland, observer=observer)
         if session.error:
             warn_wayland(spec.wayland, session.error, observer=observer)
         self._check_direct_wayland_policy(session, hooks=hooks)
@@ -1187,7 +1193,7 @@ class Sandbox:
     def _refresh_wayland(self, container_name: str, *, hooks: LifecycleHooks | None = None) -> None:
         """Refresh the invoking desktop for every restart, including after a host reboot."""
         from .supervisor.sidecar import refresh_wayland
-        from .wayland import warn_desktop_access, warn_wayland
+        from .wayland import emit_warning, warn_desktop_access, warn_wayland
 
         observer = hooks.warning if hooks else None
         self.wayland_preflight(container_name)
@@ -1196,7 +1202,8 @@ class Sandbox:
             return
         try:
             session = refresh_wayland(path)
-            warn_desktop_access(session.mode, observer=observer)
+            if not session.disabled_reason:
+                warn_desktop_access(session.mode, observer=observer)
             self._check_direct_wayland_policy(session, hooks=hooks)
             if session.mode == WaylandMode.MITM and not session.disabled_reason:
                 (
@@ -1206,8 +1213,11 @@ class Sandbox:
                 warn_wayland(session.mode, session.error, observer=observer)
         except (OSError, ValueError) as exc:
             self.wayland_preflight(container_name)
-            warn_wayland(
-                WaylandMode.MITM, f"could not refresh desktop session: {exc}", observer=observer
+            # The saved mode is unknown here, so the warning claims none.
+            emit_warning(
+                f"WARNING: Wayland: could not refresh desktop session: {exc}. "
+                "Task continues; GUI access may be unavailable.",
+                observer=observer,
             )
 
     def _check_direct_wayland_policy(
@@ -1215,16 +1225,18 @@ class Sandbox:
     ) -> None:
         """Keep a container's creation-time domain; never retarget it on restart."""
         from ._util._selinux import is_selinux_enabled, is_wayland_direct_policy_installed
+        from .operator_cli import setup_invocation
         from .supervisor.sidecar import WaylandRecreationRequired
         from .wayland import emit_warning
 
         if session.mode != WaylandMode.DIRECT or not is_selinux_enabled():
             return
         installed = is_wayland_direct_policy_installed()
+        install_policy = f"{setup_invocation()} selinux --with-wayland-direct"
         if session.direct_selinux and not installed:
             raise WaylandRecreationRequired(
                 "wl-direct recreation required: the container's SELinux policy was removed; "
-                "restore it with 'terok setup selinux --with-wayland-direct' or recreate the task"
+                f"restore it with '{install_policy}' or recreate the task"
             )
         if not session.direct_selinux and session.upstream and not session.error:
             reason = (
@@ -1234,8 +1246,8 @@ class Sandbox:
             )
             emit_warning(
                 f"WARNING: Wayland (wl-direct): {reason}. The task keeps its normal SELinux "
-                "domain and GUI access may be denied. Run 'terok setup selinux "
-                "--with-wayland-direct' and recreate the task to enable that domain.",
+                f"domain and GUI access may be denied. Run '{install_policy}' "
+                "and recreate the task to enable that domain.",
                 observer=hooks.warning if hooks else None,
             )
 

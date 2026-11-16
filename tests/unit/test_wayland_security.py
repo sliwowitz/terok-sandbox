@@ -27,7 +27,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock, call, patch
 
 import pytest
-from terok_util import harden_self
+from terok_util import LandlockReport, harden_self
 
 from terok_sandbox.supervisor import wayland as proxy_supervision
 from terok_sandbox.supervisor.launcher import relay_output
@@ -115,7 +115,13 @@ def test_proxy_policy_grants_only_app_surfaces_input_and_rendering(tmp_path: Pat
 
 
 @pytest.mark.parametrize(
-    "filename", ['socket"with-quotes', "socket\\with-backslash", "socket\nnext"]
+    "filename",
+    [
+        'socket"with-quotes',
+        "socket\\with-backslash",
+        "socket\nnext",
+        "socket-\N{GRINNING FACE}-beyond-the-basic-plane",
+    ],
 )
 def test_session_paths_cannot_inject_proxy_policy(tmp_path: Path, filename: str) -> None:
     """Socket paths remain TOML string values even with configuration metacharacters."""
@@ -499,6 +505,19 @@ async def test_proxy_domain_failure_keeps_actionable_diagnostic(tmp_path: Path) 
     ):
         await run_proxy(cfg, paths, asyncio.Event())
     spawn.assert_not_awaited()
+
+
+async def test_proxy_confinement_failure_reaches_the_wrapper_with_its_reason(
+    tmp_path: Path,
+) -> None:
+    """What stopped the proxy between fork and exec is what the supervisor log reports."""
+    cfg, paths = _proxy_fixture(tmp_path)
+    unavailable = LandlockReport(False, "Landlock is disabled on this kernel")
+    with (
+        patch.object(proxy_supervision, "confine_filesystem", return_value=unavailable),
+        pytest.raises(RuntimeError, match="confinement unavailable: Landlock is disabled"),
+    ):
+        await run_proxy(cfg, paths, asyncio.Event())
 
 
 @pytest.mark.parametrize("stopping", [False, True])

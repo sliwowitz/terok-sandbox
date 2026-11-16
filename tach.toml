@@ -521,7 +521,7 @@ layer = "foundation"
 depends_on = []
 
 # Sidecar config schema + per-container path resolution — read by both
-# the parent and the children; stdlib only.
+# the parent and the children.
 [[modules]]
 path = "terok_sandbox.supervisor.sidecar"
 layer = "foundation"

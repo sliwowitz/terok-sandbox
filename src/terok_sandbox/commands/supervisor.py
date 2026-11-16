@@ -100,7 +100,7 @@ SUPERVISE_CHILD: CommandDef = CommandDef(
     handler=LazyHandler("terok_sandbox.commands.supervisor:_handle_supervise_child"),
     group="internal",
     args=(
-        ArgDef(name="service", help="Service to run (verdict|clearance|gate|vault|signer)"),
+        ArgDef(name="service", help="Supervisor service to run"),
         ArgDef(name="container_id", help="Container ID the service belongs to"),
         ArgDef(name="sidecar_path", help="Absolute path to the per-container sidecar JSON"),
     ),

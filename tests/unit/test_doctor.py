@@ -24,7 +24,7 @@ from terok_sandbox.doctor import (
     make_kernel_keyring_quota_check,
     sandbox_doctor_checks,
 )
-from terok_sandbox.supervisor.sidecar import store_sidecar
+from terok_sandbox.supervisor.sidecar import load_sidecar, store_sidecar, wired_services
 from terok_sandbox.wayland import WAYLAND_PROBE, WaylandSession
 
 
@@ -271,7 +271,9 @@ class TestSupervisorChildrenCheck:
     """Host-side check: every service the sidecar wires has a live child."""
 
     @staticmethod
-    def _sidecar(state: Path, *, gate: bool = False, clearance: str | None = None) -> None:
+    def _sidecar(
+        state: Path, *, gate: bool = False, clearance: str | None = None, proxy: bool = False
+    ) -> None:
         """Drop a sidecar for ``demo`` under ``<state>/sidecar/``."""
         sidecar_dir = state / "sidecar"
         sidecar_dir.mkdir(parents=True, exist_ok=True)
@@ -287,6 +289,10 @@ class TestSupervisorChildrenCheck:
             payload["gate_token"] = "tok123"
         if clearance is not None:
             payload["clearance"] = clearance
+        if proxy:
+            payload["wayland"] = WaylandSession(
+                WaylandMode.MITM, state / "wayland-0", state / "wl-mitm"
+            ).payload()
         (sidecar_dir / "demo.json").write_text(json.dumps(payload))
 
     def _verdict(
@@ -332,6 +338,17 @@ class TestSupervisorChildrenCheck:
         verdict = self._verdict(monkeypatch, tmp_path, ("clearance", "signer", "vault", "verdict"))
         assert verdict.severity == "error"
         assert "gate" in verdict.detail
+
+    def test_a_dead_optional_proxy_is_left_to_its_own_check(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A lost Wayland proxy costs GUI access, which the Wayland check reports as a warning."""
+        self._sidecar(tmp_path, proxy=True)
+        sidecar = load_sidecar(tmp_path / "sidecar" / "demo.json")
+        assert sidecar is not None and "wayland" in wired_services(sidecar)
+        verdict = self._verdict(monkeypatch, tmp_path, ("clearance", "signer", "vault", "verdict"))
+        assert verdict.severity == "ok"
+        assert "4 supervisor service(s) running" in verdict.detail
 
     def test_clearance_off_expects_no_clearance_arm(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
