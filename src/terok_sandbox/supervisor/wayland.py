@@ -27,11 +27,9 @@ from terok_util import confine_filesystem
 
 from .._util._selinux import require_wayland_exec_context
 from ..wayland import proxy_config
-from .launcher import explained_preexec, finish_output, relay_output
+from .launcher import arm_parent_death_signal, explained_preexec, finish_output, relay_output
 from .sidecar import SidecarConfig, SupervisorPaths
 
-_LIBC = ctypes.CDLL(None, use_errno=True)
-_PR_SET_PDEATHSIG = 1
 _PROXY_TERM_GRACE = 2.0
 _PROXY_EXIT_POLL_INTERVAL = 0.05
 _PROXY_FD_LIMIT = 1024
@@ -124,7 +122,7 @@ def _confine_proxy(parent_pid: int, binary: Path, runtime_dir: Path) -> None:
     Neither the domain check nor confinement is retried unconfined.
     The signal is armed before comparing parent identity, including subreapers.
     """
-    if _LIBC.prctl(_PR_SET_PDEATHSIG, signal.SIGKILL, 0, 0, 0) != 0:
+    if not arm_parent_death_signal(signal.SIGKILL):
         raise OSError(ctypes.get_errno(), "cannot arm proxy parent-death signal")
     if os.getppid() != parent_pid:
         raise RuntimeError("Wayland wrapper died before proxy startup")

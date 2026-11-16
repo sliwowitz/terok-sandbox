@@ -478,33 +478,43 @@ class TestArmParentDeathSignal:
     """The kernel dead-man's switch — armed best-effort, orphan check binding."""
 
     def test_arms_pdeathsig_and_reports_live_parent(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """prctl is invoked with PR_SET_PDEATHSIG/SIGTERM; a live parent → True."""
-        calls: list[tuple] = []
-        libc = MagicMock()
-        libc.prctl = MagicMock(side_effect=lambda *a: calls.append(a) or 0)
-        monkeypatch.setattr("terok_sandbox.supervisor.children.ctypes.CDLL", lambda *a, **k: libc)
+        """The switch is armed with SIGTERM; a live parent → True."""
+        arm = MagicMock(return_value=True)
+        monkeypatch.setattr("terok_sandbox.supervisor.children.arm_parent_death_signal", arm)
         # Pin a live parent: in a container the pytest process can itself be
         # a direct child of pid 1, which the orphan check would (correctly)
         # read as "parent already gone".
         monkeypatch.setattr("terok_sandbox.supervisor.children.os.getppid", lambda: 1000)
         assert _arm_parent_death_signal() is True
-        assert calls and calls[0][:2] == (1, signal.SIGTERM)
+        arm.assert_called_once_with(signal.SIGTERM)
 
     def test_orphaned_at_startup_is_refused(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """ppid == 1 means the supervisor died before the switch was armed."""
-        monkeypatch.setattr("terok_sandbox.supervisor.children.ctypes.CDLL", MagicMock())
+        monkeypatch.setattr(
+            "terok_sandbox.supervisor.children.arm_parent_death_signal", lambda _sig: True
+        )
         monkeypatch.setattr("terok_sandbox.supervisor.children.os.getppid", lambda: 1)
         assert _arm_parent_death_signal() is False
 
-    def test_missing_prctl_is_best_effort(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """A libc without prctl (non-Linux) degrades silently — reaps still cover."""
+    def test_unarmed_switch_is_best_effort(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """A kernel that will not arm it degrades silently — reaps still cover."""
         monkeypatch.setattr(
-            "terok_sandbox.supervisor.children.ctypes.CDLL",
-            MagicMock(side_effect=OSError("no libc")),
+            "terok_sandbox.supervisor.children.arm_parent_death_signal", lambda _sig: False
         )
         # Pin a live parent — see test_arms_pdeathsig_and_reports_live_parent.
         monkeypatch.setattr("terok_sandbox.supervisor.children.os.getppid", lambda: 1000)
         assert _arm_parent_death_signal() is True
+
+    @pytest.mark.parametrize("parent,armed", [(1000, True), (1000, False), (7, True)])
+    def test_a_named_parent_binds_both_the_switch_and_the_identity(
+        self, monkeypatch: pytest.MonkeyPatch, parent: int, armed: bool
+    ) -> None:
+        """The Wayland wrapper refuses unless it is armed under the parent that launched it."""
+        monkeypatch.setattr(
+            "terok_sandbox.supervisor.children.arm_parent_death_signal", lambda _sig: armed
+        )
+        monkeypatch.setattr("terok_sandbox.supervisor.children.os.getppid", lambda: parent)
+        assert _arm_parent_death_signal(1000) is (armed and parent == 1000)
 
     def test_run_child_exits_when_orphaned(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch

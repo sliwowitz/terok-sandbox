@@ -253,7 +253,7 @@ def test_proxy_confinement_requires_every_gate_in_order(
     binary, runtime_dir = tmp_path / "wl-mitm", tmp_path / "runtime"
     parent_pid = os.getpid()
     gates = Mock()
-    gates.prctl.return_value = -1 if failure == "parent-death" else 0
+    gates.arm.return_value = failure != "parent-death"
     gates.parent.return_value = parent_pid + (failure == "parent-race")
     if failure == "selinux":
         gates.selinux.side_effect = RuntimeError("wrong proxy domain")
@@ -266,7 +266,7 @@ def test_proxy_confinement_requires_every_gate_in_order(
         partially_confined=failure == "partial",
         reason="test confinement report",
     )
-    monkeypatch.setattr(proxy_supervision, "_LIBC", SimpleNamespace(prctl=gates.prctl))
+    monkeypatch.setattr(proxy_supervision, "arm_parent_death_signal", gates.arm)
     monkeypatch.setattr(proxy_supervision.ctypes, "get_errno", lambda: errno.EPERM)
     monkeypatch.setattr(proxy_supervision.os, "getppid", gates.parent)
     monkeypatch.setattr(proxy_supervision, "require_wayland_exec_context", gates.selinux)
@@ -285,7 +285,7 @@ def test_proxy_confinement_requires_every_gate_in_order(
     assert (
         gates.mock_calls
         == [
-            call.prctl(proxy_supervision._PR_SET_PDEATHSIG, signal.SIGKILL, 0, 0, 0),
+            call.arm(signal.SIGKILL),
             call.parent(),
             call.selinux(),
             call.limit(

@@ -23,9 +23,11 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import ctypes
 import functools
 import logging
 import os
+import signal
 import subprocess  # nosec B404 - only the exception type CPython raises for a failed pre-exec step
 import sys
 from dataclasses import dataclass
@@ -38,6 +40,12 @@ EXPECTED_PARENT_ENV = "TEROK_SUPERVISOR_PARENT_PID"
 
 _PREEXEC_REASON_BYTES = 4096
 """Upper bound on the failure reason a pre-exec step hands back to its parent."""
+
+_LIBC = ctypes.CDLL(None, use_errno=True)
+"""Loaded at import, so a forked pre-exec step never has to load it."""
+
+_PR_SET_PDEATHSIG = 1
+"""``prctl`` option arming the parent-death signal (Linux)."""
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterator
@@ -129,6 +137,21 @@ def explained_preexec(step: Callable[[], None]) -> Iterator[Callable[[], None]]:
             if reason := report.read(_PREEXEC_REASON_BYTES):
                 raise RuntimeError(reason.decode(errors="replace")) from exc
             raise
+
+
+def arm_parent_death_signal(sig: signal.Signals) -> bool:
+    """Ask the kernel to send *sig* to this process when its parent dies.
+
+    The one dead-man's switch behind every supervisor child: a parent killed
+    without teardown must not strand what it launched.  ``False`` when the
+    kernel refused or this libc has no ``prctl``; ``ctypes.get_errno()``
+    then holds the reason.  Whether that is fatal is the caller's call, and
+    so is checking that the parent it meant is the one still alive.
+    """
+    try:
+        return _LIBC.prctl(_PR_SET_PDEATHSIG, sig, 0, 0, 0) == 0
+    except AttributeError:
+        return False
 
 
 async def relay_output(process: asyncio.subprocess.Process, service: str) -> None:

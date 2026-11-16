@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import asyncio
 import errno
+import signal
 import subprocess
 import sys
 from pathlib import Path
@@ -21,7 +22,12 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from terok_sandbox.supervisor.launcher import explained_preexec, launch_child
+from terok_sandbox.supervisor import launcher
+from terok_sandbox.supervisor.launcher import (
+    arm_parent_death_signal,
+    explained_preexec,
+    launch_child,
+)
 
 _SIDECAR = Path("/state/sidecar/demo.json")
 
@@ -134,3 +140,21 @@ class TestExplainedPreexec:
                 await asyncio.create_subprocess_exec(
                     sys.executable, "-c", "pass", preexec_fn=preexec_fn
                 )
+
+
+class TestArmParentDeathSignal:
+    """One prctl behind every child's dead-man's switch."""
+
+    @pytest.mark.parametrize("status", [0, -1])
+    def test_asks_the_kernel_for_the_given_signal(
+        self, monkeypatch: pytest.MonkeyPatch, status: int
+    ) -> None:
+        libc = MagicMock()
+        libc.prctl.return_value = status
+        monkeypatch.setattr(launcher, "_LIBC", libc)
+        assert arm_parent_death_signal(signal.SIGKILL) is (status == 0)
+        libc.prctl.assert_called_once_with(launcher._PR_SET_PDEATHSIG, signal.SIGKILL, 0, 0, 0)
+
+    def test_a_libc_without_prctl_cannot_arm(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(launcher, "_LIBC", object())
+        assert arm_parent_death_signal(signal.SIGTERM) is False

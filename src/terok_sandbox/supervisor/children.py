@@ -40,8 +40,6 @@ the credential store.
 from __future__ import annotations
 
 import asyncio
-import contextlib
-import ctypes
 import logging
 import os
 import signal
@@ -52,7 +50,7 @@ from typing import TYPE_CHECKING
 
 from terok_util import confine_filesystem, find_host_tool, harden_self
 
-from .launcher import EXPECTED_PARENT_ENV
+from .launcher import EXPECTED_PARENT_ENV, arm_parent_death_signal
 from .sidecar import SERVICE_NAMES as _SERVICE_NAMES, SupervisorPaths, load_sidecar
 from .wayland import run_proxy
 
@@ -73,9 +71,6 @@ _logger = logging.getLogger("terok-supervisor.child")
 _EXIT_OK = 0
 _EXIT_BAD_SIDECAR = 2
 _EXIT_START_FAILED = 4
-
-#: ``prctl`` option arming the parent-death signal (Linux).
-_PR_SET_PDEATHSIG = 1
 
 #: Filesystem roots every confined child needs to read or execute: the OS,
 #: its shared libraries, this interpreter, and this package's source tree
@@ -342,10 +337,7 @@ def _arm_parent_death_signal(expected_parent: int | None = None) -> bool:
     raced the supervisor's death — and the caller must exit rather
     than run as a stray the switch will never fire for.
     """
-    armed = False
-    with contextlib.suppress(OSError, AttributeError):
-        libc = ctypes.CDLL(None, use_errno=True)
-        armed = libc.prctl(_PR_SET_PDEATHSIG, signal.SIGTERM, 0, 0, 0) == 0
+    armed = arm_parent_death_signal(signal.SIGTERM)
     parent = os.getppid()
     return armed and parent == expected_parent if expected_parent is not None else parent != 1
 
