@@ -754,7 +754,12 @@ class Sandbox:
     # future krun backend will push this down into the runtime as well.
 
     def _build_cmd(
-        self, spec: RunSpec, verb: str = "run", *, direct_selinux: bool = False
+        self,
+        spec: RunSpec,
+        verb: str = "run",
+        *,
+        direct_selinux: bool = False,
+        socket_mounts: tuple[str, ...] | None = None,
     ) -> list[str]:
         """Assemble the ``podman`` command line for *spec*.
 
@@ -851,8 +856,12 @@ class Sandbox:
 
         if spec.sockets and spec.sealed:
             raise ValueError("existing host sockets are not supported in sealed isolation")
-        for sock in spec.sockets:
-            cmd += ["--mount", sock.to_mount_arg()]
+        for mount in (
+            socket_mounts
+            if socket_mounts is not None
+            else (sock.to_mount_arg() for sock in spec.sockets)
+        ):
+            cmd += ["--mount", mount]
 
         if spec.wayland != WaylandMode.NONE:
             from .wayland import WAYLAND_ENV_UNSET
@@ -947,8 +956,7 @@ class Sandbox:
             self.start(spec.container_name, hooks=hooks)
             return
 
-        spec, direct_selinux = self._prepare_wayland(spec, hooks=hooks)
-        cmd = self._build_cmd(spec, verb="run", direct_selinux=direct_selinux)
+        cmd = self._prepare_launch_command(spec, verb="run", hooks=hooks)
         print("$", shlex.join(redact_env_args(cmd)))
 
         if hooks and hooks.pre_start:
@@ -970,8 +978,7 @@ class Sandbox:
         via [`copy_to`][terok_sandbox.sandbox.Sandbox.copy_to] before being started with [`start`][terok_sandbox.sandbox.Sandbox.start].
         """
         require_setup(check_setup(self._cfg, live=True))
-        spec, direct_selinux = self._prepare_wayland(spec, hooks=hooks)
-        cmd = self._build_cmd(spec, verb="create", direct_selinux=direct_selinux)
+        cmd = self._prepare_launch_command(spec, verb="create", hooks=hooks)
         print("$", shlex.join(redact_env_args(cmd)))
 
         if hooks and hooks.pre_start:
@@ -1008,13 +1015,102 @@ class Sandbox:
         self._verify_supervision(container_name)
         self._verify_wayland(container_name, hooks=hooks)
 
+    def wayland_preflight(self, container_name: str) -> None:
+        """Validate retained desktop access without stopping the task or rewriting state.
+
+        Orchestrators call this before disrupting a running task. Start-time
+        refresh repeats validation because a desktop may change after preflight.
+        A retained direct bind requires readable metadata matching that grant;
+        missing optional state cannot remove a mount Podman already recorded.
+
+        Raises:
+            WaylandRecreationRequired: The retained desktop grant cannot be verified.
+            RuntimeError: The runtime cannot inspect the retained container reliably.
+        """
+        from .podman_args import CONTAINER_WAYLAND_SOCKET
+        from .supervisor.sidecar import (
+            WaylandRecreationRequired,
+            load_sidecar,
+            resolve_wayland_refresh,
+        )
+
+        path = self._cfg.sidecar_path(container_name)
+        sidecar = load_sidecar(path) if path.exists() else None
+        if sidecar is not None and sidecar.wayland.mode != WaylandMode.MITM:
+            session = resolve_wayland_refresh(sidecar.wayland)
+            if session.direct_selinux:
+                self._check_direct_wayland_policy(session)
+        inspection = self._runtime.container(container_name).inspect()
+        direct_sources = (
+            tuple(
+                Path(source)
+                for source, target in inspection.mounts
+                if target == CONTAINER_WAYLAND_SOCKET
+            )
+            if inspection is not None
+            else ()
+        )
+        if direct_sources and (
+            sidecar is None
+            or sidecar.wayland.mode != WaylandMode.DIRECT
+            or sidecar.wayland.disabled_reason
+            or direct_sources != (sidecar.wayland.upstream,)
+        ):
+            raise WaylandRecreationRequired(
+                "wl-direct recreation required: cannot verify saved desktop access "
+                "against the retained compositor bind"
+            )
+
+    def _prepare_launch_command(
+        self, spec: RunSpec, *, verb: str, hooks: LifecycleHooks | None
+    ) -> list[str]:
+        """Validate explicit grants strictly and roll back only optional desktop wiring."""
+        socket_mounts = tuple(socket.to_mount_arg() for socket in spec.sockets)
+        prepared, direct_selinux = self._prepare_wayland(spec, hooks=hooks)
+        try:
+            socket_mounts += tuple(
+                socket.to_mount_arg() for socket in prepared.sockets[len(spec.sockets) :]
+            )
+        except (OSError, ValueError) as exc:
+            from .supervisor.sidecar import record_wayland
+            from .wayland import warn_wayland
+
+            session = self._unmounted_wayland(spec.wayland, exc)
+            observer = hooks.warning if hooks else None
+            try:
+                record_wayland(self._cfg.sidecar_path(spec.container_name), session)
+            except (OSError, ValueError) as record_error:
+                warn_wayland(
+                    spec.wayland, f"cannot record desktop wiring: {record_error}", observer=observer
+                )
+            warn_wayland(spec.wayland, str(exc), observer=observer)
+            prepared, direct_selinux = spec, False
+        return self._build_cmd(
+            prepared, verb=verb, direct_selinux=direct_selinux, socket_mounts=socket_mounts
+        )
+
+    @staticmethod
+    def _unmounted_wayland(mode: WaylandMode, failure: Exception) -> WaylandSession:
+        """Keep a failed proxy mount from becoming a fictitious grant on restart."""
+        from .wayland import WaylandSession
+
+        return WaylandSession(
+            mode,
+            error=str(failure),
+            disabled_reason=(
+                "desktop mounts were not prepared; recreate the task to enable Wayland"
+                if mode == WaylandMode.MITM
+                else None
+            ),
+        )
+
     def _prepare_wayland(
         self, spec: RunSpec, *, hooks: LifecycleHooks | None = None
     ) -> tuple[RunSpec, bool]:
         """Materialise optional desktop wiring before recording the saved mount grant."""
         from ._util._selinux import is_selinux_enabled, is_wayland_direct_policy_installed
         from .supervisor.sidecar import record_wayland
-        from .wayland import WaylandSession, resolve_session, warn_desktop_access, warn_wayland
+        from .wayland import resolve_session, warn_desktop_access, warn_wayland
 
         if spec.wayland == WaylandMode.NONE:
             return spec, False
@@ -1037,7 +1133,7 @@ class Sandbox:
                 )
         except (OSError, ValueError) as exc:
             prepared = spec
-            session = WaylandSession(spec.wayland, error=str(exc))
+            session = self._unmounted_wayland(spec.wayland, exc)
         try:
             record_wayland(self._cfg.sidecar_path(spec.container_name), session)
         except (OSError, ValueError) as exc:
@@ -1094,6 +1190,7 @@ class Sandbox:
         from .wayland import warn_desktop_access, warn_wayland
 
         observer = hooks.warning if hooks else None
+        self.wayland_preflight(container_name)
         path = self._cfg.sidecar_path(container_name)
         if not path.exists():
             return
@@ -1108,6 +1205,7 @@ class Sandbox:
             if session.error:
                 warn_wayland(session.mode, session.error, observer=observer)
         except (OSError, ValueError) as exc:
+            self.wayland_preflight(container_name)
             warn_wayland(
                 WaylandMode.MITM, f"could not refresh desktop session: {exc}", observer=observer
             )

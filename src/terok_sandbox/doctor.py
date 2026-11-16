@@ -137,7 +137,7 @@ def _make_wayland_check(container_name: str) -> DoctorCheck | None:
 
     path = SandboxConfig().sidecar_path(container_name)
     sidecar = load_sidecar(path) if path.exists() else None
-    if sidecar is None or sidecar.wayland.mode == WaylandMode.NONE:
+    if sidecar is None or (sidecar.wayland.mode == WaylandMode.NONE and not sidecar.wayland.error):
         return None
     session = sidecar.wayland
 

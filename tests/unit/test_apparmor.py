@@ -196,10 +196,15 @@ def test_installer_accepts_home_and_venv_directory_aliases(tmp_path: Path) -> No
     home = tmp_path / "var" / "home"
     library = home / "user" / "venv" / "lib"
     library.mkdir(parents=True)
+    for directory in (library, *library.parents):
+        if directory == tmp_path:
+            break
+        directory.chmod(0o755)
     (tmp_path / "home").symlink_to(home, target_is_directory=True)
     (library.parent / "lib64").symlink_to("lib", target_is_directory=True)
     target = library / "install.sh"
     target.write_text("#!/bin/bash\n")
+    target.chmod(0o644)
     alias = Path("home/user/venv/lib64/install.sh")
     assert "ACCEPTED" in _tamper_verdict(tmp_path / alias)
     assert "ACCEPTED" in _tamper_verdict(alias, cwd=tmp_path)
@@ -219,6 +224,7 @@ def test_installer_checks_every_directory_link_ancestry(
     library = target / "lib"
     library.mkdir(mode=0o755)
     (library / "install.sh").write_text("#!/bin/bash\n")
+    (library / "install.sh").chmod(0o644)
     (intermediate / "redirect").symlink_to(target, target_is_directory=True)
     link_target = str(intermediate / "redirect" / "lib") + ("/" if trailing_slash else "")
     (lexical / "lib64").symlink_to(link_target, target_is_directory=True)
@@ -236,12 +242,36 @@ def test_installer_directory_alias_does_not_waive_file_checks(tmp_path: Path, un
     (tmp_path / "lib64").symlink_to(directory, target_is_directory=True)
     target = directory / "install.sh"
     target.write_text("#!/bin/bash\n")
+    target.chmod(0o644)
     if unsafe == "symlink":
         target.rename(directory / "real.sh")
         target.symlink_to("real.sh")
     else:
         target.chmod(0o666)
     assert "Refusing to run" in _tamper_verdict(tmp_path / "lib64" / target.name)
+
+
+def test_repeated_directory_aliases_are_checked_once(tmp_path: Path) -> None:
+    """Valid alias chains do not recursively recheck every previous prefix."""
+    directory = tmp_path / "safe"
+    directory.mkdir(mode=0o700)
+    (directory / "again").symlink_to(".", target_is_directory=True)
+    target = directory / "install.sh"
+    target.write_text("#!/bin/bash\n")
+    target.chmod(0o600)
+    aliases = 12
+    alias = directory.joinpath(*(["again"] * aliases), target.name)
+    guard = (
+        _prologue_of(_apparmor.install_script_path()) + '\n_red=""; _reset=""; _reject_unsafe "$1"'
+    )
+    result = subprocess.run(
+        ["bash", "-eux", "-c", guard, "-", str(alias)],
+        capture_output=True,
+        text=True,
+        timeout=5,
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stderr.count("readlink -z --") == aliases
 
 
 def test_both_installers_share_one_tamper_prologue() -> None:

@@ -408,3 +408,18 @@ class TestOutdatedContainer:
         """A container from a newer host is not this check's business."""
         env = {"TEROK_CONTAINER_PROTOCOL": str(MIN_RUNTIME_PROTOCOL + 1)}
         assert outdated_container_warning(_NAME, env) is None
+
+
+@pytest.mark.parametrize("socket_ready", [False, True])
+def test_unreadable_tcp_status_does_not_hide_wayland_socket(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, socket_ready: bool
+) -> None:
+    """Unknown TCP listeners never suppress a known missing Unix endpoint."""
+    from terok_sandbox.supervision import ServiceEndpoint, _poll_until_bound
+    from tests.constants import FAKE_SERVICE_PORTS
+
+    endpoint = ServiceEndpoint("wayland", socket=tmp_path / "wayland")
+    monkeypatch.setattr("terok_sandbox.supervision._listening_ports", lambda: None)
+    monkeypatch.setattr("terok_sandbox.supervision._is_socket", lambda _: socket_ready)
+    result = _poll_until_bound((ServiceEndpoint("vault", port=FAKE_SERVICE_PORTS[0]), endpoint), 0)
+    assert result == (None if socket_ready else (endpoint,))

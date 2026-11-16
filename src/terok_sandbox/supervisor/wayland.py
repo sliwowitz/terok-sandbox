@@ -33,6 +33,7 @@ from .sidecar import SidecarConfig, SupervisorPaths
 _LIBC = ctypes.CDLL(None, use_errno=True)
 _PR_SET_PDEATHSIG = 1
 _PROXY_TERM_GRACE = 2.0
+_PROXY_EXIT_POLL_INTERVAL = 0.05
 _PROXY_FD_LIMIT = 1024
 _PROXY_MEMORY_LIMIT = 1024 * 1024 * 1024
 _PROC_FDS = Path("/proc/self/fd")
@@ -50,6 +51,7 @@ async def run_proxy(cfg: SidecarConfig, paths: SupervisorPaths, stop: asyncio.Ev
     if not session.proxied:
         raise RuntimeError("Wayland child launched without proxy wiring")
     assert session.binary is not None and session.upstream is not None  # nosec B101 - narrowed by proxied
+    require_wayland_exec_context()
     with _policy_fd(proxy_config(session.upstream, paths.wayland_socket)) as config_fd:
         process = await asyncio.create_subprocess_exec(
             str(session.binary),
@@ -65,7 +67,7 @@ async def run_proxy(cfg: SidecarConfig, paths: SupervisorPaths, stop: asyncio.Ev
                 _confine_proxy, os.getpid(), session.binary, paths.wayland_socket.parent
             ),
         )
-        exited = asyncio.create_task(process.wait())
+        exited = asyncio.create_task(_wait_proxy_exit(process))
         stopping = asyncio.create_task(stop.wait())
         output = asyncio.create_task(relay_output(process, "wl-mitm"))
         try:
@@ -74,18 +76,32 @@ async def run_proxy(cfg: SidecarConfig, paths: SupervisorPaths, stop: asyncio.Ev
                 raise RuntimeError(f"wl-mitm exited with status {exited.result()}")
         finally:
             stopping.cancel()
-            if process.returncode is None:
-                with contextlib.suppress(ProcessLookupError):
-                    process.terminate()
-                try:
-                    await asyncio.wait_for(asyncio.shield(exited), _PROXY_TERM_GRACE)
-                except TimeoutError:
+            try:
+                if process.returncode is None:
                     with contextlib.suppress(ProcessLookupError):
-                        process.kill()
-            await exited
-            await finish_output(output)
-            with contextlib.suppress(asyncio.CancelledError):
-                await stopping
+                        process.terminate()
+                    try:
+                        await asyncio.wait_for(asyncio.shield(exited), _PROXY_TERM_GRACE)
+                    except TimeoutError:
+                        with contextlib.suppress(ProcessLookupError):
+                            process.kill()
+                await asyncio.wait_for(asyncio.shield(exited), _PROXY_TERM_GRACE)
+            finally:
+                exited.cancel()
+                await finish_output(output)
+                await asyncio.gather(stopping, exited, return_exceptions=True)
+
+
+async def _wait_proxy_exit(process: asyncio.subprocess.Process) -> int:
+    """Observe process death independently of inherited output pipes.
+
+    Python 3.12's pending ``Process.wait()`` also waits for pipe EOF. Its
+    child watcher sets ``returncode`` immediately, even if a descendant
+    retains stdout, so that state is the portable liveness signal here.
+    """
+    while process.returncode is None:
+        await asyncio.sleep(_PROXY_EXIT_POLL_INTERVAL)
+    return process.returncode
 
 
 @contextlib.contextmanager

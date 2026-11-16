@@ -17,6 +17,7 @@ import shutil
 import signal
 import socket
 import struct
+import subprocess
 import sys
 import textwrap
 import tomllib
@@ -140,10 +141,13 @@ def test_disabled_wayland_never_resolves_desktop_or_binary() -> None:
     binary.assert_not_called()
 
 
+@pytest.mark.skipif(os.geteuid() == 0, reason="desktop sessions require a non-root user")
 def test_socket_below_replaceable_ancestor_is_rejected(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """A private socket parent does not protect it from a writable ancestor rename."""
+    for name in ("CONTAINER_HOST", "CONTAINER_CONNECTION"):
+        monkeypatch.delenv(name, raising=False)
     ancestor = tmp_path / "shared"
     parent = ancestor / "private"
     parent.mkdir(parents=True, mode=0o700)
@@ -200,7 +204,9 @@ async def test_probe_requires_compositor_roundtrip(
             if process.returncode is None:
                 process.kill()
                 await process.wait()
-        assert await request == struct.pack("=III", 1, 12 << 16, 2)
+        assert await asyncio.wait_for(request, _PROCESS_TIMEOUT) == struct.pack(
+            "=III", 1, 12 << 16, 2
+        )
         assert (process.returncode == 0) == (reply == "fragmented")
         await asyncio.wait_for(finished.wait(), _PROCESS_TIMEOUT)
 
@@ -439,6 +445,11 @@ def _proxy_fixture(
     interpreter = shutil.which("python3", path=os.defpath)
     if interpreter is None:
         pytest.skip("a system Python interpreter is required for the confined executable fixture")
+    available = subprocess.run(
+        [interpreter, "-c", "import tomllib"], capture_output=True, timeout=_PROCESS_TIMEOUT
+    )
+    if available.returncode:
+        pytest.skip("the confined proxy fixture requires a system Python with tomllib")
     binary = root / "fake-wl-mitm"
     binary.write_text(
         f"#!{interpreter}\n"
@@ -470,3 +481,68 @@ async def _wait_for_report(paths: SupervisorPaths, running: asyncio.Task) -> dic
                 raise AssertionError("proxy exited before reporting readiness")
             await asyncio.sleep(0.01)
     return json.loads(paths.wayland_socket.with_suffix(".json").read_text())
+
+
+async def test_proxy_domain_failure_keeps_actionable_diagnostic(tmp_path: Path) -> None:
+    """A wrapper-side preflight preserves the error erased by subprocess preexec handling."""
+    cfg, paths = _proxy_fixture(tmp_path)
+    with (
+        patch.object(
+            proxy_supervision,
+            "require_wayland_exec_context",
+            side_effect=OSError("restart to enter domain"),
+        ),
+        patch.object(
+            proxy_supervision.asyncio, "create_subprocess_exec", new_callable=AsyncMock
+        ) as spawn,
+        pytest.raises(OSError, match="restart to enter domain"),
+    ):
+        await run_proxy(cfg, paths, asyncio.Event())
+    spawn.assert_not_awaited()
+
+
+@pytest.mark.parametrize("stopping", [False, True])
+async def test_proxy_exit_does_not_wait_for_inherited_output(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, stopping: bool
+) -> None:
+    """A descendant's stdout cannot hide proxy death or stall wrapper shutdown."""
+    monkeypatch.setattr(proxy_supervision, "_PROXY_TERM_GRACE", 0.05)
+    cfg, paths = _proxy_fixture(
+        tmp_path,
+        prepare=(
+            "descendant = os.fork()\n"
+            f"if descendant == 0: signal.alarm({_PROCESS_TIMEOUT * 2}); signal.pause()\n"
+            "os.environ['DESCENDANT_PID'] = str(descendant)"
+        ),
+        ending="signal.pause()" if stopping else "sys.exit(7)",
+    )
+    stop = asyncio.Event()
+    running = asyncio.create_task(run_proxy(cfg, paths, stop))
+    descendant = None
+    try:
+        report = await _wait_for_report(paths, running)
+        descendant = int(report["environment"]["DESCENDANT_PID"])
+        if stopping:
+            stop.set()
+            await asyncio.wait_for(running, _PROCESS_TIMEOUT)
+        else:
+            with pytest.raises(RuntimeError, match="status 7"):
+                await asyncio.wait_for(running, _PROCESS_TIMEOUT)
+    finally:
+        if descendant is not None:
+            with contextlib.suppress(ProcessLookupError):
+                os.kill(descendant, signal.SIGKILL)
+        stop.set()
+        if not running.done():
+            running.cancel()
+            with contextlib.suppress(asyncio.CancelledError, RuntimeError):
+                await running
+        await asyncio.sleep(0.05)
+
+
+def test_proxy_fixture_skips_system_python_without_tomllib(tmp_path: Path) -> None:
+    """A modern uv interpreter does not imply a modern executable under the system roots."""
+    with patch.object(subprocess, "run", return_value=SimpleNamespace(returncode=1)):
+        with pytest.raises(pytest.skip.Exception, match="tomllib"):
+            _proxy_fixture(tmp_path)
+    assert not (tmp_path / "fake-wl-mitm").exists()

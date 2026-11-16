@@ -299,24 +299,27 @@ def _poll_until_bound(
 ) -> tuple[ServiceEndpoint, ...] | None:
     """Return the endpoints from *expected* still unbound when *timeout* elapses.
 
-    ``None`` when a TCP-mode endpoint cannot be answered at all because
-    this host's listening ports are unreadable — an unknown, which the
-    caller reports as skipped rather than as a failure.
+    ``None`` when TCP status is unknown and no observable endpoint failed.
+    Unix sockets are checked independently, even when the TCP tables are
+    unreadable, so an unknown port cannot hide a missing Wayland listener.
 
     A healthy start returns on the first pass and waits for nothing; the
     budget elapses in full only when a service genuinely never binds.
     """
     deadline = time.monotonic() + timeout
     remaining = expected
+    unknown_tcp = False
     while True:
         listening = (
             _listening_ports() if any(e.port is not None for e in remaining) else frozenset()
         )
         if listening is None:
-            return None
+            unknown_tcp = True
+            remaining = tuple(e for e in remaining if e.socket is not None)
+            listening = frozenset()
         remaining = tuple(e for e in remaining if not _is_bound(e, listening))
         if not remaining or time.monotonic() >= deadline:
-            return remaining
+            return remaining if remaining or not unknown_tcp else None
         time.sleep(_POLL_INTERVAL_S)
 
 

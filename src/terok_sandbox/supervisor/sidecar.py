@@ -656,26 +656,30 @@ def refresh_wayland(sidecar_path: Path) -> WaylandSession:
     compositor; the creation-time domain choice remains unchanged.
     """
     with _own_sidecar(sidecar_path) as (payload, identity):
-        previous = WaylandSession.from_payload(payload.get("wayland"))
-        if previous.mode == WaylandMode.NONE and previous.error:
-            raise WaylandRecreationRequired(
-                f"Wayland recreation required: cannot verify saved desktop access: {previous.error}"
-            )
-        selected = previous.mode
-        session = replace(
-            wayland.resolve_session(selected, unavailable=previous.disabled_reason),
-            direct_selinux=previous.direct_selinux,
-        )
-        if selected == WaylandMode.DIRECT and not previous.disabled_reason:
-            if session.upstream is None or session.upstream != previous.upstream:
-                raise WaylandRecreationRequired(
-                    "wl-direct recreation required: the saved compositor socket is missing "
-                    "or the current session selects another socket"
-                )
-        if selected != WaylandMode.NONE:
+        session = resolve_wayland_refresh(WaylandSession.from_payload(payload.get("wayland")))
+        if session.mode != WaylandMode.NONE:
             payload["wayland"] = session.payload()
             _replace_sidecar(sidecar_path, payload, identity)
         return session
+
+
+def resolve_wayland_refresh(previous: WaylandSession) -> WaylandSession:
+    """Validate the current desktop against a saved grant without rewriting its sidecar."""
+    if previous.mode == WaylandMode.NONE and previous.error:
+        raise WaylandRecreationRequired(
+            f"Wayland recreation required: cannot verify saved desktop access: {previous.error}"
+        )
+    session = replace(
+        wayland.resolve_session(previous.mode, unavailable=previous.disabled_reason),
+        direct_selinux=previous.direct_selinux,
+    )
+    if previous.mode == WaylandMode.DIRECT and not previous.disabled_reason:
+        if session.upstream is None or session.upstream != previous.upstream:
+            raise WaylandRecreationRequired(
+                "wl-direct recreation required: the saved compositor socket is missing "
+                "or the current session selects another socket"
+            )
+    return session
 
 
 class WaylandRecreationRequired(RuntimeError):

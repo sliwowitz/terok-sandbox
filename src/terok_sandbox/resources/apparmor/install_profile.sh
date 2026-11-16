@@ -48,6 +48,7 @@ state_root="${state_root%/}"
 _reject_unsafe() {
     local f="$1" _perm _dir _parent _dir_perm _link
     local -a _pending
+    local -A _checked=()
     [[ "$f" == /* ]] || f="$PWD/$f"
     if [[ -L "$f" ]]; then
         echo "${_red}Refusing to run:${_reset} $f is a symlink." >&2
@@ -76,6 +77,8 @@ _reject_unsafe() {
         while :; do
             while [[ "$_dir" == */ ]]; do _dir="${_dir%/}"; done
             _dir="${_dir:-/}"
+            [[ ${_checked["$_dir"]+visited} ]] && break
+            _checked["$_dir"]=1
             _parent="${_dir%/*}"
             _parent="${_parent:-/}"
             if [[ -L "$_dir" ]]; then

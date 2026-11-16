@@ -27,7 +27,7 @@ _CONTAINER_INTERFACE = _DEVEL_MAKEFILE.parent / "include/services/container.if"
 def installer(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[Path, Path]:
     """Copy installer inputs and substitute tools that record, but never install, policy."""
     resources = tmp_path / "resources"
-    resources.mkdir()
+    resources.mkdir(mode=0o700)
     for name in (
         "install_policy.sh",
         "terok_socket.te",
@@ -35,17 +35,17 @@ def installer(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[Path, Pa
         "terok_wayland_direct.te",
     ):
         shutil.copyfile(install_script_path().parent / name, resources / name)
+        (resources / name).chmod(0o600)
     makefile = resources / _DEVEL_MAKEFILE.name
     interface = resources / _CONTAINER_INTERFACE.relative_to(_DEVEL_MAKEFILE.parent)
     interface.parent.mkdir(parents=True)
     makefile.touch()
     interface.touch()
     script = resources / "install_policy.sh"
-    script.write_text(
-        script.read_text().replace(
-            f"devel_makefile={_DEVEL_MAKEFILE}", f"devel_makefile={shlex.quote(str(makefile))}"
-        )
-    )
+    original = f"devel_makefile={_DEVEL_MAKEFILE}"
+    source = script.read_text()
+    assert original in source, "installer no longer defines devel_makefile as expected"
+    script.write_text(source.replace(original, f"devel_makefile={shlex.quote(str(makefile))}"))
     binaries = tmp_path / "bin"
     binaries.mkdir()
     trace = tmp_path / "trace"
