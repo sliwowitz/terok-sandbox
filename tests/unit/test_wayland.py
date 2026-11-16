@@ -12,7 +12,9 @@ import os
 import socket
 import stat
 import subprocess
+from collections import Counter
 from dataclasses import replace
+from itertools import pairwise
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -33,7 +35,9 @@ from terok_sandbox._util import _selinux
 from terok_sandbox.podman_args import (
     CONTAINER_RUNTIME_DIR,
     CONTAINER_USER_RUNTIME_DIR,
+    CONTAINER_WAYLAND_DIR,
     CONTAINER_WAYLAND_SOCKET,
+    WAYLAND_RUNTIME_SUBDIR,
 )
 from terok_sandbox.runtime.protocol import ExecResult
 from terok_sandbox.supervision import _expected_endpoints
@@ -47,6 +51,7 @@ from terok_sandbox.supervisor.sidecar import (
 )
 from terok_sandbox.wayland import (
     MOUNTS_NOT_PREPARED,
+    WAYLAND_ENV_UNSET,
     WaylandSession,
     emit_warning,
     resolve_session,
@@ -56,6 +61,20 @@ from tests.constants import FAKE_SERVICE_PORTS
 
 _NAME = "wayland-test"
 _RESOLVER = "terok_sandbox.wayland.resolve_session"
+_VALUED_FLAGS = frozenset({"-v", "--mount", "-e", "--unsetenv", "--security-opt"})
+_UNSET_INHERITED = Counter(("--unsetenv", name) for name in WAYLAND_ENV_UNSET)
+_PRIVATE_RUNTIME = Counter(
+    {
+        (
+            "--mount",
+            f"type=tmpfs,destination={CONTAINER_USER_RUNTIME_DIR},"
+            "tmpfs-mode=0700,U,nosuid,nodev,noexec,notmpcopyup",
+        ): 1,
+        ("-e", f"WAYLAND_DISPLAY={CONTAINER_WAYLAND_SOCKET}"): 1,
+        ("-e", f"XDG_RUNTIME_DIR={CONTAINER_USER_RUNTIME_DIR}"): 1,
+    }
+)
+"""What every wired desktop adds besides its endpoint: the app's own runtime dir and its address."""
 
 
 @pytest.fixture
@@ -109,6 +128,142 @@ def _spec(tmp_path: Path, mode: WaylandMode = WaylandMode.MITM, **kwargs) -> Run
         wayland=mode,
         **kwargs,
     )
+
+
+def _launch(
+    sandbox: Sandbox, spec: RunSpec, session: WaylandSession | None = None, *, verb: str = "run"
+) -> list[str]:
+    """The podman command launching *spec* would run, with the desktop resolved to *session*."""
+    with (
+        patch(_RESOLVER, return_value=session),
+        patch("terok_sandbox.sandbox.podman_hosts_file_args", return_value=[]),
+        patch.object(sandbox, "pre_start_args", return_value=[]),
+        patch.object(sandbox, "_exec_podman") as launch,
+        patch.object(sandbox, "_verify_supervision"),
+    ):
+        getattr(sandbox, verb)(spec)
+    return launch.call_args.args[0]
+
+
+def _options(command: list[str]) -> Counter[tuple[str, ...]]:
+    """A podman command as a multiset of options, their order aside."""
+    options: Counter[tuple[str, ...]] = Counter()
+    tokens = iter(command)
+    for token in tokens:
+        options[(token, next(tokens)) if token in _VALUED_FLAGS else (token,)] += 1
+    return options
+
+
+def _desktop_options(
+    sandbox: Sandbox, spec: RunSpec, session: WaylandSession, *, verb: str = "run"
+) -> Counter[tuple[str, ...]]:
+    """What *spec*'s desktop request adds to the same launch without one; it removes nothing."""
+    plain = _options(_launch(sandbox, replace(spec, wayland=WaylandMode.NONE), verb=verb))
+    wired = _options(_launch(sandbox, spec, session, verb=verb))
+    assert not plain - wired
+    return wired - plain
+
+
+def test_filtered_desktop_adds_the_proxy_directory_and_a_private_runtime(
+    sandbox: Sandbox, desktop_socket: Path, tmp_path: Path
+) -> None:
+    """The container gets the proxy's directory read-only, never the compositor's."""
+    session = WaylandSession(WaylandMode.MITM, desktop_socket, tmp_path / "wl-mitm")
+    added = _desktop_options(sandbox, _spec(tmp_path), session)
+    proxy_dir = sandbox.config.ensure_container_runtime_dir(_NAME) / WAYLAND_RUNTIME_SUBDIR
+    assert added == (
+        Counter({("-v", f"{proxy_dir}:{CONTAINER_WAYLAND_DIR}:z,ro"): 1})
+        + _PRIVATE_RUNTIME
+        + _UNSET_INHERITED
+    )
+    assert proxy_dir.is_dir() and stat.S_IMODE(proxy_dir.stat().st_mode) == 0o700
+    saved = load_sidecar(sandbox.config.sidecar_path(_NAME))
+    assert saved is not None and saved.wayland == session
+
+
+def test_filtered_desktop_keeps_its_mounts_while_no_desktop_is_reachable(
+    sandbox: Sandbox, tmp_path: Path
+) -> None:
+    """A later start from a desktop session finds the proxy directory already in place."""
+    absent = WaylandSession(WaylandMode.MITM, error="no desktop")
+    added = _desktop_options(sandbox, _spec(tmp_path), absent)
+    assert added - _PRIVATE_RUNTIME - _UNSET_INHERITED == Counter(
+        {
+            (
+                "-v",
+                f"{sandbox.config.ensure_container_runtime_dir(_NAME) / WAYLAND_RUNTIME_SUBDIR}"
+                f":{CONTAINER_WAYLAND_DIR}:z,ro",
+            ): 1
+        }
+    )
+    saved = load_sidecar(sandbox.config.sidecar_path(_NAME))
+    assert saved is not None and saved.wayland == absent
+
+
+@pytest.mark.parametrize("verb", ["run", "create"])
+@pytest.mark.parametrize("domain", [False, True])
+def test_direct_desktop_adds_one_socket_bind_and_only_then_its_domain(
+    sandbox: Sandbox,
+    desktop_socket: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    verb: str,
+    domain: bool,
+) -> None:
+    """The selected socket is bound without relabelling; the domain needs the installed policy."""
+    monkeypatch.setattr(_selinux, "is_selinux_enabled", lambda: domain)
+    monkeypatch.setattr(_selinux, "is_wayland_direct_policy_installed", lambda: domain)
+    session = WaylandSession(WaylandMode.DIRECT, desktop_socket)
+    added = _desktop_options(sandbox, _spec(tmp_path, WaylandMode.DIRECT), session, verb=verb)
+    bind = f"type=bind,source={desktop_socket},destination={CONTAINER_WAYLAND_SOCKET},readonly"
+    label = ("--security-opt", f"label=type:{_selinux.SELINUX_WAYLAND_DIRECT_TYPE}")
+    assert added == (
+        Counter({("--mount", bind): 1})
+        + (Counter({label: 1}) if domain else Counter())
+        + _PRIVATE_RUNTIME
+        + _UNSET_INHERITED
+    )
+    saved = load_sidecar(sandbox.config.sidecar_path(_NAME))
+    assert saved is not None and saved.wayland == replace(session, direct_selinux=domain)
+
+
+@pytest.mark.parametrize(
+    "mode,kwargs,session",
+    [
+        (WaylandMode.DIRECT, {}, WaylandSession(WaylandMode.DIRECT, error="no desktop")),
+        (WaylandMode.MITM, {"runtime": "krun"}, None),
+        (WaylandMode.DIRECT, {"runtime": "krun"}, None),
+    ],
+)
+def test_a_request_that_wires_nothing_only_clears_inherited_display_variables(
+    sandbox: Sandbox, tmp_path: Path, mode: WaylandMode, kwargs: dict, session: WaylandSession
+) -> None:
+    """No mount, no runtime directory and no address without a grant."""
+    resolved = session or resolve_session(mode, unavailable="unsupported")
+    added = _desktop_options(sandbox, _spec(tmp_path, mode, **kwargs), resolved)
+    assert added == _UNSET_INHERITED
+    saved = load_sidecar(sandbox.config.sidecar_path(_NAME))
+    assert saved is not None and saved.wayland.disabled_reason
+
+
+def test_a_wired_desktop_overrides_inherited_addresses_and_keeps_the_rest(
+    sandbox: Sandbox, desktop_socket: Path, tmp_path: Path
+) -> None:
+    """The caller's own display variables never reach a task that was given an endpoint."""
+    spec = replace(
+        _spec(tmp_path),
+        env={"DISPLAY": ":0", "WAYLAND_DISPLAY": "host-0", "XDG_RUNTIME_DIR": "/host", "KEEP": "1"},
+        extra_args=("--user", "1234:5678"),
+    )
+    session = WaylandSession(WaylandMode.MITM, desktop_socket, tmp_path / "wl-mitm")
+    command = _launch(sandbox, spec, session)
+    assert {value for flag, value in pairwise(command) if flag == "-e"} == {
+        f"WAYLAND_DISPLAY={CONTAINER_WAYLAND_SOCKET}",
+        f"XDG_RUNTIME_DIR={CONTAINER_USER_RUNTIME_DIR}",
+        "KEEP=1",
+    }
+    assert command[command.index("--user") + 1] == "1234:5678"
+    assert spec.env["XDG_RUNTIME_DIR"] == "/host"
 
 
 def test_socket_mount_preserves_labels(desktop_socket: Path) -> None:
