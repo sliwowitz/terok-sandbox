@@ -10,19 +10,20 @@ module terok_wayland 1.2;
 # can be allowed to reach the proxy without being allowed to reach the
 # compositor, which stays unconfined_t.
 #
-# Experimental, and deliberately broad where breadth buys compatibility:
-#
-#   * The domain may read and run every file type.  Python and wl-mitm
-#     start from wherever the operator installed them (distribution
-#     packages, pipx, uv, pip --user, a checkout) without one rule per
-#     layout.  Unix permissions still apply, and Landlock narrows the
-#     proxy itself to its own runtime directory.
-#   * It writes only the task's runtime directory and descriptors handed
-#     to it.  No network, D-Bus, ptrace or device access is granted.
+# Experimental, and deliberately broad where breadth buys compatibility.
+# The domain may open, read and run every file the base policy does not
+# class as a security file, so Python and wl-mitm start from any install
+# layout.  SSH and GPG keys are within that reach; shadow passwords,
+# Kerberos keytabs, audit logs and SELinux's own files are not.  Because
+# it can open everything, the few writes it holds work by path too: it
+# may write and create container files and append to any temporary file.
+# Unix permissions still apply, and Landlock keeps the proxy itself to
+# its runtime directory.  No network, D-Bus, ptrace or device access.
 #
 # What changes for every container on the host: container_t may connect
 # to sockets of this domain, and may write and map user_tmp_t files it
-# has been handed (compositor keymaps and buffers).  Nothing else.
+# has been handed (compositor keymaps and buffers; memfds too where the
+# policy knows that class).  Nothing else.
 #
 # SELinux cannot tell the selected compositor from other unconfined_t
 # sockets with the same user_tmp_t inode label, so the protocol filter
@@ -34,6 +35,7 @@ module terok_wayland 1.2;
 require {
     attribute domain;
     attribute file_type;
+    attribute non_security_file_type;
     type unconfined_t, container_runtime_t, container_t, container_file_t;
     type user_tmp_t, tmpfs_t, security_t;
     role unconfined_r, system_r;
@@ -65,10 +67,14 @@ allow terok_wayland_t self:process { fork sigchld signal getattr getsched setrli
 allow terok_wayland_t self:fifo_file { read write getattr };
 allow terok_wayland_t self:unix_stream_socket { create bind listen accept connect read write getattr getopt setopt shutdown };
 
-# 3. Read and run anything the invoking user may.  No write, no create.
-allow terok_wayland_t file_type:dir { search getattr open read };
-allow terok_wayland_t file_type:lnk_file { read getattr };
-allow terok_wayland_t file_type:file { entrypoint execute execute_no_trans read getattr open map };
+# 3. Walk any path; open, read and run anything but the security files,
+#    which keeps the base policy's assertion on who reads shadow_t.  No
+#    write here, yet open turns the writes of section 6 into writes by
+#    path.
+allow terok_wayland_t file_type:dir { search getattr };
+allow terok_wayland_t non_security_file_type:dir { open read };
+allow terok_wayland_t non_security_file_type:lnk_file { read getattr };
+allow terok_wayland_t non_security_file_type:file { entrypoint execute execute_no_trans read getattr open map };
 
 # 4. The child confirms its own domain before it execs the proxy.  That
 #    query goes through selinuxfs and cannot change the loaded policy.

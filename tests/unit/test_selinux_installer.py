@@ -190,18 +190,33 @@ def test_proxy_policy_changes_other_domains_only_as_its_header_says() -> None:
     }
 
 
-def test_proxy_policy_reads_and_runs_every_file_type_without_writing_any() -> None:
-    """Breadth buys install-layout compatibility; it never extends to mutation."""
-    wide = [
-        (classes, perms)
+def test_proxy_policy_breadth_rules_only_open_read_and_run() -> None:
+    """Breadth buys install-layout compatibility: no write of its own, no security file."""
+    rules = _allow_rules(wayland_policy_source_path())
+    wide = {
+        next(iter(classes)): perms
+        for _sources, targets, classes, perms in rules
+        if targets == {"non_security_file_type"}
+    }
+    assert set(wide) == {"dir", "lnk_file", "file"}
+    assert all(perms <= _READ_AND_RUN for perms in wide.values())
+    assert {"entrypoint", "execute", "read", "open", "map"} <= wide["file"]
+    # Every file type, shadow_t included, offers no more than a way through its directories.
+    assert [
+        (classes, perms) for _sources, targets, classes, perms in rules if "file_type" in targets
+    ] == [({"dir"}, {"search", "getattr"})]
+
+
+def test_proxy_policy_names_every_file_type_it_may_write() -> None:
+    """With open granted everywhere each write grant is a write by path, so the list stays short."""
+    writable = {
+        target
         for sources, targets, classes, perms in _allow_rules(wayland_policy_source_path())
-        if "file_type" in targets
-    ]
-    assert {next(iter(classes)) for classes, _ in wide} == {"dir", "lnk_file", "file"}
-    assert all(perms <= _READ_AND_RUN for _classes, perms in wide)
-    assert {"entrypoint", "execute", "read", "open", "map"} <= next(
-        perms for classes, perms in wide if classes == {"file"}
-    )
+        if sources == {"terok_wayland_t"} and "file" in classes
+        if perms & {"write", "append", "create", "unlink", "rename", "setattr"}
+        for target in targets
+    }
+    assert writable == {"container_file_t", "user_tmp_t", "tmpfs_t", "security_t"}
 
 
 def test_direct_policy_changes_no_other_domain() -> None:

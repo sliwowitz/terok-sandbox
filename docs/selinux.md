@@ -53,13 +53,19 @@ The module does not add TCP/UDP, D-Bus, ptrace, or GPU-device-open permissions.
 GPU passthrough remains a separate container setting.
 
 While Wayland access is experimental the domain is deliberately broad in one
-respect: it may **read and run every file type**. Python and `wl-mitm` then
-start from wherever they are installed — distribution packages, pipx, uv,
-`pip --user`, a checkout in the home directory — without one rule per layout.
-Ordinary file permissions still apply, the domain can write only the task's
-runtime directory, and the proxy's Landlock rules remain much narrower than
-the SELinux domain. This breadth is to be reduced before the feature leaves
-experimental status.
+respect: it may **open, read and run every file the base policy does not class
+as a security file**. Python and `wl-mitm` then start from wherever they are
+installed — distribution packages, pipx, uv, `pip --user`, a checkout in the
+home directory — without one rule per layout. That reach includes the
+invoking user's SSH and GPG keys; it excludes shadow passwords, Kerberos
+keytabs, audit logs and SELinux's own configuration.
+
+Opening everything has a second effect. What the domain could otherwise write
+only through a descriptor handed to it, it can now reach by path: it may write
+and create container files, and append to temporary files of any type. It
+cannot delete regular files. Ordinary file permissions still apply, and the
+proxy's Landlock rules remain much narrower than the SELinux domain. This
+breadth is to be reduced before the feature leaves experimental status.
 
 For every container on the host the module adds exactly two things:
 `container_t` may connect to sockets of the proxy domain, and may write and
