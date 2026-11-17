@@ -56,6 +56,15 @@ tunable_policy(`container_use_xserver_devices',`
     dev_rw_xserver_misc(terok_wayland_direct_t)
 ')
 
+# systemd-coredump probes a crashed process; newer base policies let it
+# signal container_t by name, which a sibling type does not inherit.
+optional_policy(`
+    gen_require(`
+        type systemd_coredump_t;
+    ')
+    allow systemd_coredump_t terok_wayland_direct_t:process signull;
+')
+
 # Existing service-socket grants name container_t, not its sibling domains.
 allow terok_wayland_direct_t terok_socket_t:unix_stream_socket connectto;
 

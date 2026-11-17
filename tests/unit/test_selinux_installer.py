@@ -310,11 +310,11 @@ def test_direct_policy_scopes_new_access_to_its_container_domain() -> None:
     source = wayland_direct_policy_source_path().read_text()
     rules = [line.strip() for line in source.splitlines() if not line.startswith("#")]
     assert "container_domain_template(terok_wayland_direct, container)" in rules
-    assert all(
-        line.startswith("allow terok_wayland_direct_t ")
+    assert [
+        line
         for line in rules
-        if line.startswith("allow ")
-    )
+        if line.startswith("allow ") and not line.startswith("allow terok_wayland_direct_t ")
+    ] == ["allow systemd_coredump_t terok_wayland_direct_t:process signull;"]
     assert "allow terok_wayland_direct_t terok_socket_t:unix_stream_socket connectto;" in rules
     assert "allow terok_wayland_direct_t user_tmp_t:sock_file { write getattr };" in rules
     assert "allow terok_wayland_direct_t unconfined_t:unix_stream_socket connectto;" in rules
