@@ -1,5 +1,12 @@
 # Changelog
 
+## v0.7.1 — Twenty-Six Hours
+
+## What's Changed
+* fix: hand clearance.verdict_ttl to the confined clearance hub in https://github.com/terok-ai/terok-sandbox/pull/615
+
+**Full Changelog**: https://github.com/terok-ai/terok-sandbox/compare/v0.7.0...v0.7.1
+
 ## v0.7.0 — A Man Alone
 
 - **Breaking:** no shield profile applies unless one is named. `shield_profiles` is empty by

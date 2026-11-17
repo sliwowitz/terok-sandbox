@@ -1,5 +1,5 @@
 version = 1
-revision = 5
+revision = 3
 requires-python = ">=3.12, <4.0"
 resolution-markers = [
     "python_full_version >= '3.15'",
@@ -2616,8 +2616,8 @@ wheels = [
 
 [[package]]
 name = "terok-clearance"
-version = "0.8.3.dev271+g30e591a91"
-source = { git = "https://github.com/sliwowitz/terok-clearance?rev=feat%2Fconfig-schema#30e591a91eeba376d9ec0f80d6527e5f126a36e1" }
+version = "0.8.3"
+source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "asyncvarlink" },
     { name = "dbus-fast" },
@@ -2625,11 +2625,14 @@ dependencies = [
     { name = "pyyaml" },
     { name = "terok-util" },
 ]
+sdist = { url = "https://files.pythonhosted.org/packages/0c/61/6b53dc4150c6e5f35be27d90117e4193c61bd8a4a759b23d6cdf7d9b431f/terok_clearance-0.8.3.tar.gz", hash = "sha256:2731b93887b2184dc264e391ca6e7419e763865a58fb51e1d59233a296e34a8f", size = 261610, upload-time = "2026-11-17T14:02:42.649Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/a0/11/9648779f17c7d8583ded0a42d9d63a0035f74914243a5a4d69955054ea17/terok_clearance-0.8.3-py3-none-any.whl", hash = "sha256:b4edcb6650c926aba3f2b0a9badaaea284ff05d7ba442e1b79c64112baf13108", size = 88689, upload-time = "2026-11-17T14:02:41.292Z" },
+]
 
 [[package]]
 name = "terok-sandbox"
 source = { editable = "." }
-default-groups = ["dev", "test"]
 dependencies = [
     { name = "aiohttp" },
     { name = "cryptography" },
@@ -2687,7 +2690,7 @@ requires-dist = [
     { name = "pydantic", specifier = "~=2.13" },
     { name = "ruamel-yaml", specifier = "==0.19.1" },
     { name = "sqlcipher3", specifier = "==0.6.4" },
-    { name = "terok-clearance", git = "https://github.com/sliwowitz/terok-clearance?rev=feat%2Fconfig-schema" },
+    { name = "terok-clearance", specifier = ">=0.8.3,<0.9.0" },
     { name = "terok-shield", specifier = ">=0.10.0,<0.11.0" },
     { name = "terok-util", specifier = ">=0.5.0,<0.6.0" },
 ]
