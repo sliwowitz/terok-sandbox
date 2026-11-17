@@ -20,10 +20,6 @@ combined. Omitting either flag later does not remove an installed module.
 flow displays the command and asks before running the installer with `sudo`.
 The `terok` and `terok-executor` frontends expose the same commands.
 
-All three modules are written in plain module syntax and build with
-`checkmodule` and `semodule_package` alone; no policy development packages
-are needed.
-
 Wayland still uses a Unix socket when the other services use TCP. Its optional
 policy is therefore independent of the `services.mode` setting. Install the
 `wl-mitm` binary separately as the desktop user to use `wl-mitm` mode; setup
@@ -82,19 +78,16 @@ containment guarantee.
 ## Direct access: `--with-wayland-direct`
 
 This module defines `terok_wayland_direct_t`. Only `wl-direct` containers select
-that process type. It is `container_t` plus desktop access: the type joins the
-attributes `container_t` carries, so it receives the same stock rules, Podman's
-per-container MCS categories and the host's booleans, and the module repeats
-the few grants `container-selinux` gives `container_t` by name. Other
-containers keep their existing type; this module does not grant `container_t`
-permission to connect to desktop sockets.
+that process type. It combines Fedora's `container-selinux` template with the
+legacy virt interfaces used by ordinary containers, retaining Podman's
+per-container MCS categories. Other containers keep their existing type; this
+module does not grant `container_t` permission to connect to desktop sockets.
 
-The module links against the current policies of Fedora 43 to 45, CentOS
-Stream 9 and 10, and openSUSE Tumbleweed. On each of them the domain holds
-every permission of `container_t` except the connection to the filtered
-proxy, which a direct task never uses. It is not an unconfined process
-domain. A distribution that renames one of those attributes makes installation
-fail visibly instead of producing a narrower domain.
+The baseline was audited against Fedora 45's policy. It includes execution of
+host-mounted container init helpers, networking, syslog, and the stock runtime
+grants. Existing host booleans still control optional capabilities and audit
+access; this is not an unconfined process domain. Future distribution policy
+changes can require another baseline audit.
 
 The selected container can access the mounted compositor socket and receive
 rendering/keymap file descriptors. The policy also preserves its access to
@@ -107,6 +100,40 @@ Direct access has **no protocol filter**. SELinux cannot distinguish the selecte
 compositor from other sockets with the same process and inode labels. The exact
 socket mount and container namespaces limit which endpoints are reachable; the
 policy is not an endpoint-specific compositor permission.
+
+### Host build prerequisites
+
+The direct module uses the distribution's container-policy interfaces rather
+than copying its confinement rules. Install its build prerequisites **on the
+host, not in a Toolbox or task container**:
+
+=== "Fedora"
+
+    ```console
+    sudo dnf install selinux-policy-devel policycoreutils container-selinux make m4
+    ```
+
+=== "Fedora Silverblue"
+
+    ```console
+    sudo rpm-ostree install --allow-inactive selinux-policy-devel policycoreutils container-selinux make m4
+    ```
+
+    Reboot into the new deployment before retrying the policy installer.
+    `--allow-inactive` accepts packages already included in the base image.
+
+`selinux-policy-devel` supplies `/usr/share/selinux/devel/Makefile`, and
+`container-selinux` supplies its `include/services/container.if` interface.
+The installer checks that both are readable before compiling any selected
+module. Missing prerequisites produce installation hints; terok never installs
+host packages automatically. The base and filtered policies do not require
+these development files.
+
+Development headers and build tools are needed when installing or rebuilding
+the direct module, not when starting tasks. The installed container policy
+remains a runtime requirement. Compilation uses a private temporary directory;
+the installer does not compile unvalidated policy files found next to the
+installed package.
 
 ## Failures and removal
 
