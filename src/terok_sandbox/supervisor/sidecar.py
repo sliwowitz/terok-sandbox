@@ -21,7 +21,7 @@ The write side lives here too, beside the reader whose rules it has to
 satisfy: [`store_sidecar`][terok_sandbox.supervisor.sidecar.store_sidecar]
 is the one writer.  The edits a sidecar takes after creation are
 [`refresh_clearance`][terok_sandbox.supervisor.sidecar.refresh_clearance]
-— its ``clearance`` field, rewritten from current config before a restart —
+— its two clearance fields, rewritten from current config before a restart —
 and the desktop wiring kept by
 [`record_wayland`][terok_sandbox.supervisor.sidecar.record_wayland] and
 [`update_wayland`][terok_sandbox.supervisor.sidecar.update_wayland];
@@ -106,8 +106,9 @@ class SidecarConfig:
     stop/start cycles — its ports and tokens must keep matching the
     container's immutable env — and is removed at real teardown by
     [`remove_container_state`][terok_sandbox.launch.remove_container_state].
-    Restarts refresh ``clearance`` from current config and the selected
-    Wayland session endpoint without changing the saved mount policy.
+    Restarts refresh ``clearance`` and ``clearance_verdict_ttl`` from
+    current config, and the selected Wayland session endpoint without
+    changing the saved mount policy.
     """
 
     broker_context: BrokerContext
@@ -173,6 +174,17 @@ class SidecarConfig:
     Recorded at creation and refreshed by a restart, so a changed setting
     reaches the supervisor at the task's next start; a running supervisor
     keeps the mode it started with."""
+    clearance_verdict_ttl: str | None = None
+    """How long an unanswered prompt stays pending (``clearance.verdict_ttl``).
+
+    The operator's value as the launcher read it, for the clearance child
+    to parse and hand to its hub: the child is confined before the hub
+    starts, so the hub cannot read ``config.yml`` there.  ``None`` leaves
+    the hub on its default.  It also stands in for a sidecar written before
+    the field existed and for a value that is not text: a bad value costs
+    the setting, never the supervisor.
+
+    Recorded at creation and refreshed by a restart, like ``clearance``."""
     _resolved_passphrase: str | None = field(default=None, repr=False, compare=False)
     """Ephemeral in-memory passphrase; never present in sidecar JSON."""
 
@@ -381,6 +393,7 @@ def _build_config(raw: dict, sidecar_path: Path) -> SidecarConfig:
         dossier_path=_optional_absolute_path(raw, "dossier_path", sidecar_path),
         allow_debugger=_optional_bool(raw, "allow_debugger"),
         clearance=_lenient_clearance(raw, sidecar_path),
+        clearance_verdict_ttl=_lenient_verdict_ttl(raw, sidecar_path),
         wayland=WaylandSession.from_payload(raw.get("wayland")),
     )
 
@@ -453,6 +466,26 @@ def _lenient_clearance(raw: dict, sidecar_path: Path) -> ClearanceMode:
         sidecar_path,
     )
     return "prompt"
+
+
+def _lenient_verdict_ttl(raw: dict, sidecar_path: Path) -> str | None:
+    """The prompt lifetime as recorded — ``None`` when absent, and when it is not text.
+
+    Lenient for the reason ``_lenient_clearance`` is: no clearance value
+    is worth the container's whole supervisor.  An absent key is a sidecar
+    written before the field existed.  Whether the text is a duration is
+    the hub's grammar to decide, in the child that builds the hub; here a
+    value that is not text at all is logged, by type, and read as unset.
+    """
+    value = raw.get("clearance_verdict_ttl")
+    if value is None or isinstance(value, str):
+        return value or None
+    _logger.warning(
+        "sidecar clearance_verdict_ttl must be text; got %s — using the hub's default: %s",
+        type(value).__name__,
+        sidecar_path,
+    )
+    return None
 
 
 def _optional_int(raw: dict, key: str) -> int | None:
@@ -596,23 +629,28 @@ def _replace_sidecar(
         raise
 
 
-def refresh_clearance(sidecar_path: Path, clearance: ClearanceMode) -> None:
-    """Rewrite an existing sidecar's ``clearance`` field, and nothing else.
+def refresh_clearance(
+    sidecar_path: Path, clearance: ClearanceMode, verdict_ttl: str | None
+) -> None:
+    """Rewrite an existing sidecar's two clearance fields, and nothing else.
 
-    ``services.clearance`` reaches a supervisor only through the sidecar,
-    and every ``podman start`` re-reads it; a restart that should honour
-    the current setting rewrites this one field first.  The
+    ``services.clearance`` and ``clearance.verdict_ttl`` reach a supervisor
+    only through the sidecar, and every ``podman start`` re-reads it; a
+    restart that should honour the current settings rewrites these two
+    fields first.  The
     orchestrator-facing verb is
     [`Sandbox.clearance_refresh`][terok_sandbox.Sandbox.clearance_refresh].
     Every other field — the ports and tokens that must keep matching the
     container's immutable env, the paths, the task identity — is written
     back exactly as parsed: same keys, same order, same values.  A sidecar
-    written before the setting existed gains the key.
+    written before a setting existed gains its key.
 
     Strict where the reader is lenient.  The reader takes any stored value
     and falls back to ``prompt``, because a bad value must never cost the
     supervisor; here an unknown *clearance* is refused before anything is
-    touched, so nothing outside the vocabulary is ever written.  The file
+    touched, so nothing outside the vocabulary is ever written.  So is a
+    *verdict_ttl* that is neither text nor ``None``.  Whether its text is a
+    duration is for the hub's parser to say, in the clearance child.  The file
     is trusted only the way the OCI hook trusts it — a regular file this
     user owns, never reached through a symlink — and replaced under the
     rules of [`store_sidecar`][terok_sandbox.supervisor.sidecar.store_sidecar],
@@ -628,8 +666,9 @@ def refresh_clearance(sidecar_path: Path, clearance: ClearanceMode) -> None:
     with.
 
     Raises:
-        ValueError: *clearance* is not ``prompt``, ``mute`` or ``off``, or
-            the sidecar is not a JSON object.
+        ValueError: *clearance* is not ``prompt``, ``mute`` or ``off``,
+            *verdict_ttl* is neither text nor ``None``, or the sidecar is
+            not a JSON object.
         FileNotFoundError: No sidecar exists at *sidecar_path*.
         OSError: The sidecar is a symlink, not a regular file, or owned by
             another user; it changed while being rewritten; the directory's
@@ -640,8 +679,11 @@ def refresh_clearance(sidecar_path: Path, clearance: ClearanceMode) -> None:
         raise ValueError(
             f"unknown clearance mode {clearance!r}: expected one of {', '.join(_CLEARANCE_MODES)}"
         )
+    if verdict_ttl is not None and not isinstance(verdict_ttl, str):
+        raise ValueError(f"verdict_ttl must be text or None, got {type(verdict_ttl).__name__}")
     with _own_sidecar(sidecar_path) as (payload, identity):
         payload["clearance"] = clearance
+        payload["clearance_verdict_ttl"] = verdict_ttl
         _replace_sidecar(sidecar_path, payload, identity)
 
 

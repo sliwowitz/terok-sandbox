@@ -1666,6 +1666,27 @@ class TestClearanceRefresh:
         assert refreshed == {**recorded, "clearance": "off"}
         assert list(refreshed) == list(recorded)
 
+    @pytest.mark.parametrize(
+        ("created", "refreshed"), [(None, "2h"), ("2h", "never"), ("2h", None)]
+    )
+    def test_prompt_lifetime_follows_todays_config(
+        self, tmp_path: Path, created: str | None, refreshed: str | None
+    ) -> None:
+        """``clearance.verdict_ttl`` travels the way the mode does, so a restart refreshes it too.
+
+        Byte for byte, the refreshed sidecar is the one creation writes under
+        today's config.  A container created before the lifetime was recorded
+        gets it this way at its next start.
+        """
+        cfg = _tcp_cfg(tmp_path, "prompt")
+        path = _launch_sidecar(dataclasses.replace(cfg, clearance_verdict_ttl=created), tmp_path)
+        today = dataclasses.replace(cfg, clearance_verdict_ttl=refreshed)
+        Sandbox(today).clearance_refresh("myc", clearance="prompt")
+        after_refresh = path.read_bytes()
+        assert json.loads(after_refresh)["clearance_verdict_ttl"] == refreshed
+        _launch_sidecar(today, tmp_path)
+        assert after_refresh == path.read_bytes()
+
     @pytest.mark.parametrize("mode", ["prompt", "mute", "off"])
     def test_supervisor_parses_the_new_mode_and_nothing_else(
         self, tmp_path: Path, mode: ClearanceMode

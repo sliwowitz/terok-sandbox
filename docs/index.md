@@ -139,6 +139,28 @@ with `shield.audit` off as well, nothing records it at all.
   and costs that key alone: `services.mode` beside it keeps what the
   operator wrote, so a typo here cannot quietly undo a `tcp` opt-out.
 
+### How long a prompt waits
+
+A prompt that nobody answers expires.  `clearance.verdict_ttl` sets
+how long the hub keeps it answerable:
+
+```yaml
+clearance:
+  verdict_ttl: 24h   # seconds, or a count with s, m, h or d; never = until the container ends
+```
+
+The key belongs to terok-clearance: its hub owns the grammar, and the
+default is 24 hours.  The value reaches the hub the way
+`services.clearance` does.  The hub's process is confined before the
+hub starts and cannot read `config.yml`, which can hold the vault
+passphrase.  So the launcher reads the key and records it in the
+sidecar, and the clearance child hands it to the hub that it builds.
+Creation writes it, `Sandbox.clearance_refresh` rewrites it before a
+restart, and a running task keeps the lifetime it started with.
+Embedded callers set `SandboxConfig(clearance_verdict_ttl=…)`.  A value
+that is not a duration leaves the hub on its default, with a warning in
+the supervisor log.
+
 ## Where it sits in the stack
 
 terok-sandbox is the boundary layer.  Above it, single-task callers

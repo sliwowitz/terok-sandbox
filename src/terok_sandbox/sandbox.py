@@ -700,7 +700,11 @@ class Sandbox:
         container's sidecar, which every start re-reads; this rewrites the
         sidecar's ``clearance`` field and writes every other field back as
         it was — the ports and tokens there must keep matching the
-        container's immutable env.  The file rules are the creation
+        container's immutable env.  The prompt lifetime travels the same
+        way, so this also rewrites ``clearance_verdict_ttl`` from this
+        sandbox's config
+        ([`SandboxConfig.clearance_verdict_ttl`][terok_sandbox.config.SandboxConfig.clearance_verdict_ttl]).
+        The file rules are the creation
         writer's (see
         [`refresh_clearance`][terok_sandbox.supervisor.sidecar.refresh_clearance]).
 
@@ -720,7 +724,9 @@ class Sandbox:
         """
         from .supervisor.sidecar import refresh_clearance
 
-        refresh_clearance(self._cfg.sidecar_path(container), clearance)
+        refresh_clearance(
+            self._cfg.sidecar_path(container), clearance, self._cfg.clearance_verdict_ttl
+        )
 
     # -- Container launch ---------------------------------------------------
     #

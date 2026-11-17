@@ -450,6 +450,56 @@ class TestClearanceField:
         assert get_args(ClearanceMode) == _CLEARANCE_MODES
 
 
+class TestVerdictTtlField:
+    """``clearance_verdict_ttl`` carries text for the hub's parser, and is read as leniently.
+
+    The launcher records ``clearance.verdict_ttl`` as the operator wrote it,
+    and the clearance child turns it into seconds with the hub's own grammar.
+    The reader therefore asks only that it is text.  Anything else reads as
+    unset, which leaves the hub on its default; the supervisor still starts.
+    """
+
+    _base = staticmethod(TestClearanceField._base)
+
+    def _load(self, tmp_path: Path, value: object) -> SidecarConfig:
+        """The sidecar parsed with ``clearance_verdict_ttl`` set to *value*."""
+        payload = {**self._base(tmp_path), "clearance_verdict_ttl": value}
+        cfg = load_sidecar(_write_sidecar(tmp_path, payload))
+        assert cfg is not None
+        return cfg
+
+    def test_absent_key_is_unset(self, tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
+        """A sidecar written before the field existed leaves the hub on its default — quietly."""
+        with caplog.at_level("WARNING"):
+            cfg = load_sidecar(_write_sidecar(tmp_path, self._base(tmp_path)))
+        assert cfg is not None
+        assert cfg.clearance_verdict_ttl is None
+        assert "clearance_verdict_ttl" not in caplog.text
+
+    @pytest.mark.parametrize("value", [None, ""], ids=repr)
+    def test_null_and_empty_are_unset(self, tmp_path: Path, value: object) -> None:
+        """Neither a JSON ``null`` nor an empty text names a lifetime."""
+        assert self._load(tmp_path, value).clearance_verdict_ttl is None
+
+    @pytest.mark.parametrize("value", ["24h", "3600", "never", "not a duration"])
+    def test_text_is_carried_as_recorded(self, tmp_path: Path, value: str) -> None:
+        """Whether the text is a duration is the hub's grammar to decide, in the child."""
+        assert self._load(tmp_path, value).clearance_verdict_ttl == value
+
+    @pytest.mark.parametrize(
+        "value", [3600, 1.5, True, ["2h"], {"private": "do-not-log-this-value"}], ids=repr
+    )
+    def test_what_is_not_text_is_unset_and_keeps_the_supervisor(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture, value: object
+    ) -> None:
+        """A bad value is a warning, never ``_BadSidecar`` — and is reported by type, not echoed."""
+        with caplog.at_level("WARNING"):
+            cfg = self._load(tmp_path, value)
+        assert cfg.clearance_verdict_ttl is None
+        assert "sidecar clearance_verdict_ttl must be text" in caplog.text
+        assert "do-not-log-this-value" not in caplog.text
+
+
 _MODES = ("prompt", "mute", "off")
 
 
@@ -464,6 +514,7 @@ def _launch_payload(tmp_path: Path) -> dict[str, object]:
         "container_name": "demo",
         "ipc_mode": "tcp",
         "clearance": "prompt",
+        "clearance_verdict_ttl": None,
         "db_path": str(tmp_path / "vault" / "credentials.db"),
         "routes_path": str(tmp_path / "vault" / "routes.json"),
         "vault_systemd_creds_file": str(tmp_path / "vault" / "vault.passphrase.cred"),
@@ -495,13 +546,14 @@ def _entries(directory: Path) -> list[str]:
 
 
 class TestRefreshClearance:
-    """``refresh_clearance`` edits one field of an existing sidecar, under the writer's rules.
+    """``refresh_clearance`` edits the two clearance fields of a sidecar, under the writer's rules.
 
     A restart calls it (through ``Sandbox.clearance_refresh``) so the next
-    start honours the current ``services.clearance``.  The file holds the
-    gate token and the ports the container's immutable env was created
-    with, so everything but that one field must come back unchanged, and
-    the file is trusted only the way the OCI hook trusts it.
+    start honours the current ``services.clearance`` and
+    ``clearance.verdict_ttl``.  The file holds the gate token and the ports
+    the container's immutable env was created with, so everything but those
+    two fields must come back unchanged, and the file is trusted only the
+    way the OCI hook trusts it.
     """
 
     @pytest.mark.parametrize("mode", _MODES)
@@ -509,7 +561,7 @@ class TestRefreshClearance:
         """Same keys, same order, same values — bar the one field asked for."""
         original = _launch_payload(tmp_path)
         path = _write_sidecar(tmp_path, original)
-        refresh_clearance(path, mode)
+        refresh_clearance(path, mode, None)
         rewritten = json.loads(path.read_text())
         assert rewritten == {**original, "clearance": mode}
         assert list(rewritten) == list(original)
@@ -519,8 +571,42 @@ class TestRefreshClearance:
         original = _launch_payload(tmp_path)
         del original["clearance"]
         path = _write_sidecar(tmp_path, original)
-        refresh_clearance(path, "mute")
+        refresh_clearance(path, "mute", None)
         assert json.loads(path.read_text()) == {**original, "clearance": "mute"}
+
+    @pytest.mark.parametrize("ttl", [None, "2h", "never"])
+    def test_rewrites_the_prompt_lifetime_with_the_mode(
+        self, tmp_path: Path, ttl: str | None
+    ) -> None:
+        """The lifetime is the second field a restart refreshes; the rest comes back as it was."""
+        original = _launch_payload(tmp_path)
+        path = _write_sidecar(tmp_path, original)
+        refresh_clearance(path, "mute", ttl)
+        rewritten = json.loads(path.read_text())
+        assert rewritten == {**original, "clearance": "mute", "clearance_verdict_ttl": ttl}
+        assert list(rewritten) == list(original)
+        refreshed = load_sidecar(path)
+        assert refreshed is not None
+        assert refreshed.clearance_verdict_ttl == ttl
+
+    def test_sidecar_from_before_the_lifetime_gains_the_key(self, tmp_path: Path) -> None:
+        """A container created before the lifetime travelled this way gets it at its restart."""
+        original = _launch_payload(tmp_path)
+        del original["clearance_verdict_ttl"]
+        path = _write_sidecar(tmp_path, original)
+        refresh_clearance(path, "prompt", "2h")
+        assert json.loads(path.read_text()) == {**original, "clearance_verdict_ttl": "2h"}
+
+    @pytest.mark.parametrize("value", [3600, 1.5, True, ["2h"]], ids=repr)
+    def test_lifetime_that_is_not_text_is_refused_before_anything_is_touched(
+        self, tmp_path: Path, value: object
+    ) -> None:
+        """Strict where the parser is lenient: only text or ``None`` is ever written."""
+        path = _write_sidecar(tmp_path, _launch_payload(tmp_path))
+        before = path.read_bytes()
+        with pytest.raises(ValueError, match="verdict_ttl must be text or None"):
+            refresh_clearance(path, "mute", value)  # type: ignore[arg-type]
+        assert path.read_bytes() == before
 
     @pytest.mark.parametrize("mode", _MODES)
     def test_round_trips_through_the_parser(self, tmp_path: Path, mode: ClearanceMode) -> None:
@@ -528,14 +614,14 @@ class TestRefreshClearance:
         path = _write_sidecar(tmp_path, _launch_payload(tmp_path))
         before = load_sidecar(path)
         assert before is not None
-        refresh_clearance(path, mode)
+        refresh_clearance(path, mode, None)
         assert load_sidecar(path) == dataclasses.replace(before, clearance=mode)
 
     def test_missing_sidecar_is_refused_and_never_created(self, tmp_path: Path) -> None:
         """No sidecar means no supervisor to configure; writing one would invent wiring."""
         path = tmp_path / "sidecar" / "demo.json"
         with pytest.raises(FileNotFoundError, match="no sidecar to refresh"):
-            refresh_clearance(path, "mute")
+            refresh_clearance(path, "mute", None)
         assert not path.parent.exists()
 
     def test_symlinked_sidecar_is_refused(self, tmp_path: Path) -> None:
@@ -547,7 +633,7 @@ class TestRefreshClearance:
         path.parent.mkdir()
         path.symlink_to(victim)
         with pytest.raises(OSError, match="symlink") as caught:
-            refresh_clearance(path, "off")
+            refresh_clearance(path, "off", None)
         assert caught.value.errno == errno.ELOOP
         assert path.is_symlink()
         assert victim.read_bytes() == before
@@ -564,7 +650,7 @@ class TestRefreshClearance:
         path.parent.mkdir()
         os.mkfifo(path)
         with pytest.raises(OSError, match="not a regular file"):
-            refresh_clearance(path, "off")
+            refresh_clearance(path, "off", None)
         assert stat.S_ISFIFO(path.lstat().st_mode)
 
     def test_sidecar_owned_by_another_user_is_refused(
@@ -576,14 +662,14 @@ class TestRefreshClearance:
         owner = path.stat().st_uid
         monkeypatch.setattr(os, "geteuid", lambda: owner + 1)
         with pytest.raises(PermissionError, match=f"owned by uid {owner}"):
-            refresh_clearance(path, "off")
+            refresh_clearance(path, "off", None)
         assert path.read_bytes() == before
 
     def test_rewrite_is_0600_over_a_looser_file(self, tmp_path: Path) -> None:
         """The gate token never sits world-readable: a 0644 leftover comes back 0600."""
         path = _write_sidecar(tmp_path, _launch_payload(tmp_path))
         path.chmod(0o644)
-        refresh_clearance(path, "mute")
+        refresh_clearance(path, "mute", None)
         assert stat.S_IMODE(path.stat().st_mode) == 0o600
         assert _entries(path.parent) == ["demo.json"]
 
@@ -595,7 +681,7 @@ class TestRefreshClearance:
         path = _write_sidecar(tmp_path, _launch_payload(tmp_path))
         before = path.read_bytes()
         with pytest.raises(ValueError, match="unknown clearance mode"):
-            refresh_clearance(path, value)  # type: ignore[arg-type]
+            refresh_clearance(path, value, None)  # type: ignore[arg-type]
         assert path.read_bytes() == before
 
     @pytest.mark.parametrize(
@@ -610,7 +696,7 @@ class TestRefreshClearance:
         path.write_bytes(content.encode("utf-8", "surrogateescape"))
         before = path.read_bytes()
         with pytest.raises(ValueError, match="sidecar is not"):
-            refresh_clearance(path, "off")
+            refresh_clearance(path, "off", None)
         assert path.read_bytes() == before
 
     def test_sidecar_directory_that_is_a_file_is_refused(self, tmp_path: Path) -> None:
@@ -618,7 +704,7 @@ class TestRefreshClearance:
         not_a_directory = tmp_path / "sidecar"
         not_a_directory.write_text("x")
         with pytest.raises(NotADirectoryError):
-            refresh_clearance(not_a_directory / "demo.json", "off")
+            refresh_clearance(not_a_directory / "demo.json", "off", None)
         assert not_a_directory.is_file()
         assert not_a_directory.read_text() == "x"
 
@@ -634,7 +720,7 @@ class TestRefreshClearance:
         directory.mkdir()
         too_long = "x" * (os.pathconf(directory, "PC_NAME_MAX") + 1)
         with pytest.raises(OSError) as caught:
-            refresh_clearance(directory / too_long, "off")
+            refresh_clearance(directory / too_long, "off", None)
         assert caught.value.errno == errno.ENAMETOOLONG
         assert _entries(directory) == []
 
@@ -816,7 +902,7 @@ class TestOneChangeAtATime:
         path = _write_sidecar(tmp_path, _launch_payload(tmp_path))
         with ThreadPoolExecutor(max_workers=1) as pool:
             racing = _race_into_the_window(monkeypatch, pool, remove_sidecar)
-            refresh_clearance(path, "mute")
+            refresh_clearance(path, "mute", None)
             [teardown] = racing
             teardown.result(timeout=_HANG_GUARD_S)
         assert _entries(path.parent) == []
@@ -832,7 +918,7 @@ class TestOneChangeAtATime:
             racing = _race_into_the_window(
                 monkeypatch, pool, lambda target: store_sidecar(target, fresh)
             )
-            refresh_clearance(path, "mute")
+            refresh_clearance(path, "mute", None)
             [relaunch] = racing
             relaunch.result(timeout=_HANG_GUARD_S)
         assert json.loads(path.read_text()) == fresh
@@ -844,7 +930,7 @@ class TestOneChangeAtATime:
         path = _write_sidecar(tmp_path, _launch_payload(tmp_path))
         with ThreadPoolExecutor(max_workers=1) as pool:
             with sidecar_module._sidecars_locked(path.parent):
-                edit = pool.submit(refresh_clearance, path, "mute")
+                edit = pool.submit(refresh_clearance, path, "mute", None)
                 started, _ = wait([edit], timeout=_RACE_GRACE_S)
                 assert not started, "the edit ran while another change held the lock"
                 path.unlink()

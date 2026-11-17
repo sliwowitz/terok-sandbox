@@ -609,6 +609,28 @@ class TestWriteSidecar:
         assert loaded is not None
         assert loaded.clearance == value
 
+    @pytest.mark.parametrize("value", [None, "2h", "never"])
+    def test_prompt_lifetime_round_trips_to_the_supervisor(
+        self, tmp_path: Path, value: str | None
+    ) -> None:
+        """``cfg.clearance_verdict_ttl`` travels with ``clearance``; unset is a JSON ``null``."""
+        from terok_sandbox.supervisor.sidecar import load_sidecar
+
+        cfg = dataclasses.replace(
+            _make_cfg(tmp_path, services_mode="socket"), clearance_verdict_ttl=value
+        )
+        path = write_sidecar(
+            "myc",
+            broker_context=BrokerContext("proj", "t1", "default"),
+            cfg=cfg,
+            per_container=_socket_resources(tmp_path),
+        )
+        assert path is not None
+        assert json.loads(path.read_text())["clearance_verdict_ttl"] == value
+        loaded = load_sidecar(path)
+        assert loaded is not None
+        assert loaded.clearance_verdict_ttl == value
+
     def test_sidecar_not_world_readable(self, tmp_path: Path) -> None:
         """The payload can carry a live gate token → 0600, even on re-launch.
 
