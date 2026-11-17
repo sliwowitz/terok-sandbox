@@ -149,6 +149,12 @@ async def _run_clearance(cfg: SidecarConfig, paths: SupervisorPaths, stop: async
     its ingester, so not even the first refusal is put to anyone; the seed
     is re-applied on every container start, while a runtime unmute lasts
     until the hub stops.
+
+    The hub also gets its prompt lifetime here.  Left to itself it would
+    read ``clearance.verdict_ttl`` from ``config.yml``, but this process is
+    confined before it runs and the operator's config is outside what it
+    may read, so the hub would always land on its default.  The launcher
+    recorded the value in the sidecar instead (see ``_verdict_ttl``).
     """
     from terok_sandbox._util._selinux import socket_selinux_context
     from terok_sandbox.integrations.clearance import (
@@ -168,6 +174,7 @@ async def _run_clearance(cfg: SidecarConfig, paths: SupervisorPaths, stop: async
         reader_socket=paths.events_socket,
         verdict_client=VerdictClient(socket_path=paths.verdict_socket),
         socket_context=socket_selinux_context,
+        verdict_ttl=_verdict_ttl(cfg.clearance_verdict_ttl),
         container=short_id,
         aliases=(paths.container_id, cfg.container_name),
         muted=(short_id,) if cfg.clearance == "mute" else (),
@@ -186,6 +193,23 @@ async def _run_clearance(cfg: SidecarConfig, paths: SupervisorPaths, stop: async
         await subscriber.stop()
         await hub.stop()
         await notifier.disconnect()
+
+
+def _verdict_ttl(recorded: str | None) -> float | None:
+    """Seconds an unanswered prompt stays pending, from what the launcher recorded.
+
+    The hub's own grammar turns the text into seconds; ``None`` back from
+    it means no expiry.  Nothing recorded gives the hub's default.  So does
+    text that the grammar refuses, which is logged: a bad lifetime costs
+    the setting, never the hub.
+    """
+    from terok_sandbox.integrations.clearance import parse_verdict_ttl
+
+    try:
+        return parse_verdict_ttl(recorded)
+    except ValueError:
+        _logger.warning("sidecar clearance_verdict_ttl is not a duration — using the hub's default")
+        return parse_verdict_ttl(None)
 
 
 async def _run_gate(cfg: SidecarConfig, paths: SupervisorPaths, stop: asyncio.Event) -> None:

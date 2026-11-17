@@ -534,7 +534,10 @@ def write_sidecar(
     ``clearance`` records ``cfg.clearance`` (``services.clearance``), the
     per-project choice of who is asked about a refusal: ``off`` and the
     supervisor launches no verdict or clearance child, ``mute`` and its
-    clearance hub starts with the container muted.  It is the one field a
+    clearance hub starts with the container muted.
+    ``clearance_verdict_ttl`` records ``cfg.clearance_verdict_ttl``
+    (``clearance.verdict_ttl``) for that hub, which is confined before it
+    starts and cannot read the key itself.  These two are the fields a
     later restart may rewrite from current config
     ([`Sandbox.clearance_refresh`][terok_sandbox.Sandbox.clearance_refresh]),
     so a changed setting applies at the task's next start.
@@ -582,6 +585,7 @@ def write_sidecar(
         "container_name": container_name,
         "ipc_mode": cfg.services_mode,
         "clearance": cfg.clearance,
+        "clearance_verdict_ttl": cfg.clearance_verdict_ttl,
         "db_path": str(cfg.db_path),
         "routes_path": str(cfg.routes_path),
         "vault_systemd_creds_file": str(cfg.vault_systemd_creds_file),

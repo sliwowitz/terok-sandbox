@@ -23,6 +23,7 @@ from pydantic import BaseModel, ValidationError
 
 from .paths import (
     config_root as _config_root,
+    read_config_section,
     read_config_top_level,
     runtime_root as _runtime_root,
     state_root as _state_root,
@@ -130,6 +131,32 @@ def services_clearance() -> ClearanceMode:
 def _default_services_clearance() -> ClearanceMode:
     """Default-factory indirection so tests can patch ``services_clearance``."""
     return services_clearance()
+
+
+def clearance_verdict_ttl() -> str | None:
+    """Read ``clearance.verdict_ttl`` for the clearance hub, as the operator wrote it.
+
+    The key belongs to terok-clearance: its hub reads the key and owns
+    the grammar.  The hub runs in a supervisor child, though, and that
+    child is confined before the hub starts.  The operator's
+    ``config.yml`` is outside what the child may read, because the file
+    can hold the vault passphrase.  So the launcher reads the key here,
+    where the whole layered config is visible, and the value reaches the
+    child in the sidecar.
+
+    The value is carried, not interpreted.  It is read with the reader
+    the hub itself uses, which gives the text of what the operator wrote,
+    and the child parses it with the hub's own parser.  The hub therefore
+    gets what it would have read unconfined.  This foundation module may
+    not import terok-clearance, and a copy of the grammar here could only
+    drift from the hub's.  ``None`` means the key is unset.
+    """
+    return read_config_section("clearance").get("verdict_ttl")
+
+
+def _default_clearance_verdict_ttl() -> str | None:
+    """Default-factory indirection so tests can patch ``clearance_verdict_ttl``."""
+    return clearance_verdict_ttl()
 
 
 def _credentials_section() -> RawCredentialsSection:
@@ -476,6 +503,19 @@ class SandboxConfig:
     copy first
     ([`Sandbox.clearance_refresh`][terok_sandbox.Sandbox.clearance_refresh]),
     so a change applies at the task's next start.
+    """
+
+    clearance_verdict_ttl: str | None = field(default_factory=_default_clearance_verdict_ttl)
+    """How long an unanswered clearance prompt stays pending, as ``clearance.verdict_ttl`` spells it.
+
+    Default-factory reads the key from the layered config.yml
+    ([`clearance_verdict_ttl`][terok_sandbox.config.clearance_verdict_ttl]);
+    ``None`` leaves the hub on its own default.  It travels with
+    ``clearance``: creation writes it to the sidecar, the clearance child
+    hands it to the hub it builds, and
+    [`Sandbox.clearance_refresh`][terok_sandbox.Sandbox.clearance_refresh]
+    rewrites it before a restart.  The hub cannot read the key itself
+    there, because the child is confined before the hub starts.
     """
 
     experimental: bool = field(default_factory=_default_experimental)

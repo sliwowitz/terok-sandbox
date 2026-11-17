@@ -31,7 +31,7 @@ from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from terok_clearance import container_mutes, set_container_mute
+from terok_clearance import container_mutes, parse_verdict_ttl, set_container_mute
 
 from terok_sandbox.supervisor.children import (
     _RUNNERS,
@@ -198,6 +198,7 @@ class TestSelinuxSocketContext:
                 reader_socket: Path,
                 verdict_client: object,
                 socket_context: object = None,
+                verdict_ttl: float | None = None,
                 container: str | None = None,
                 aliases: object = (),
                 muted: object = (),
@@ -232,6 +233,67 @@ class TestSelinuxSocketContext:
         assert captured["reader_socket"].parent.parent.name == "events"  # type: ignore[union-attr]
         assert captured["clearance_socket"].name == "hub.sock"  # type: ignore[union-attr]
         assert captured["clearance_socket"].parent.parent.name == "clearance"  # type: ignore[union-attr]
+
+
+_HUB_DEFAULT_TTL = parse_verdict_ttl(None)
+"""The hub's own prompt lifetime, whatever terok-clearance sets it to."""
+
+
+class TestClearancePromptLifetime:
+    """The clearance child builds its hub with the lifetime the launcher recorded.
+
+    The hub cannot read ``clearance.verdict_ttl`` in this child: the child is
+    confined before the hub starts, and the operator's ``config.yml`` is
+    outside what it may read.  Left to read it, the hub always took its
+    default.  The launcher records the operator's text in the sidecar, and the
+    child turns it into seconds with the hub's own grammar.
+    """
+
+    @staticmethod
+    async def _hub_lifetime(tmp_path: Path, recorded: str | None) -> float | None:
+        """Run the child with *recorded* in its sidecar; return the lifetime its hub was given.
+
+        ``autospec`` holds the call to the real constructor's signature, so a
+        renamed keyword fails here rather than in a live supervisor.
+        """
+        cfg = _socket_cfg(tmp_path, clearance_verdict_ttl=recorded)
+        paths = SupervisorPaths.for_container(
+            FAKE_CONTAINER_ID, cfg.container_name, tmp_path / "sidecar.json", cfg.runtime_dir
+        )
+        with (
+            patch("terok_sandbox.integrations.clearance.ClearanceHub", autospec=True) as hub_cls,
+            patch("terok_sandbox.integrations.clearance.VerdictClient", return_value=MagicMock()),
+            _notifier_stubbed(),
+        ):
+            await _run_clearance(cfg, paths, _preset_stop())
+        return hub_cls.call_args.kwargs["verdict_ttl"]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("recorded", "seconds"),
+        [("2h", 7200.0), ("3600", 3600.0), ("90m", 5400.0), ("never", None), ("0", None)],
+    )
+    async def test_hub_gets_the_recorded_lifetime(
+        self, tmp_path: Path, recorded: str, seconds: float | None
+    ) -> None:
+        """The operator's text reaches the hub as seconds; ``None`` there means no expiry."""
+        assert await self._hub_lifetime(tmp_path, recorded) == seconds
+
+    @pytest.mark.asyncio
+    async def test_nothing_recorded_gives_the_hubs_default(self, tmp_path: Path) -> None:
+        """An unset key, or a sidecar from before the field, is the default — given, not left to a read."""
+        assert await self._hub_lifetime(tmp_path, None) == _HUB_DEFAULT_TTL
+
+    @pytest.mark.asyncio
+    async def test_text_that_is_no_duration_costs_the_setting_not_the_hub(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """The hub still starts, on its default, and the log says why — without the text."""
+        with caplog.at_level("WARNING"):
+            lifetime = await self._hub_lifetime(tmp_path, "do-not-log-this-value")
+        assert lifetime == _HUB_DEFAULT_TTL
+        assert "clearance_verdict_ttl is not a duration" in caplog.text
+        assert "do-not-log-this-value" not in caplog.text
 
 
 @pytest.fixture

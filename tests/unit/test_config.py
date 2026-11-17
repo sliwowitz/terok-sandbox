@@ -128,6 +128,57 @@ class TestServicesClearance:
         assert "invalid services section" not in err
 
 
+class TestClearanceVerdictTtl:
+    """``clearance.verdict_ttl`` is carried into ``SandboxConfig`` as the operator wrote it.
+
+    The clearance hub owns the key and would read it itself, but its
+    supervisor child is confined before the hub starts and cannot read the
+    operator's ``config.yml``.  The launcher reads it instead, with the
+    reader the hub uses, and the child parses it with the hub's parser.
+    """
+
+    @staticmethod
+    def _configured(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, yaml_value: str) -> None:
+        """Make ``clearance.verdict_ttl: <yaml_value>`` the only config."""
+        path = tmp_path / "config.yml"
+        path.write_text(f"clearance:\n  verdict_ttl: {yaml_value}\n")
+        monkeypatch.setenv("TEROK_CONFIG_FILE", str(path))
+
+    def test_unset_leaves_the_hub_on_its_default(self) -> None:
+        """No setting records nothing, and the hub keeps its own default."""
+        assert SandboxConfig().clearance_verdict_ttl is None
+
+    @pytest.mark.parametrize(
+        ("yaml_value", "text"),
+        [("24h", "24h"), ("3600", "3600"), ("1.5", "1.5"), ("never", "never"), ("soon", "soon")],
+    )
+    def test_reads_global_config_as_written(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, yaml_value: str, text: str
+    ) -> None:
+        """The value is carried as text and not judged here; the hub's parser does that."""
+        self._configured(tmp_path, monkeypatch, yaml_value)
+        assert SandboxConfig().clearance_verdict_ttl == text
+
+    def test_explicit_value_wins(self) -> None:
+        """An orchestrator may pass its own value instead of the configured one."""
+        with unittest.mock.patch("terok_sandbox.config.clearance_verdict_ttl", return_value="1h"):
+            assert SandboxConfig().clearance_verdict_ttl == "1h"
+            assert SandboxConfig(clearance_verdict_ttl="5m").clearance_verdict_ttl == "5m"
+
+    @pytest.mark.parametrize("yaml_value", ["2h", "3600", "0.0", "off", "never", "soon", "[1]"])
+    def test_the_child_gives_the_hub_what_the_hub_would_have_read(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, yaml_value: str
+    ) -> None:
+        """Launcher read plus child parse equals the hub's own unconfined read of the file."""
+        from terok_clearance.hub.server import _read_verdict_ttl_from_config
+
+        from terok_sandbox.supervisor.children import _verdict_ttl
+
+        self._configured(tmp_path, monkeypatch, yaml_value)
+        handed_over = _verdict_ttl(SandboxConfig().clearance_verdict_ttl)
+        assert handed_over == _read_verdict_ttl_from_config()
+
+
 class TestShieldBypassDuration:
     """``shield.bypass_duration`` resolves through the shield schema into ``SandboxConfig``."""
 

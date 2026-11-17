@@ -24,6 +24,11 @@ setup phase to skip.  Whether a container runs the two children is
 decided per launch by ``services.clearance``: ``off`` and the
 supervisor starts neither, ``mute`` and the hub starts with the
 container muted.
+
+``parse_verdict_ttl`` is the hub's grammar for ``clearance.verdict_ttl``.
+The clearance child is confined before its hub starts and cannot read
+``config.yml``, so the launcher hands the value over in the sidecar and
+the child parses it with this function before it builds the hub.
 """
 
 from terok_clearance import (  # noqa: F401 - re-exported public API
@@ -39,4 +44,5 @@ from terok_clearance import (  # noqa: F401 - re-exported public API
     VerdictServer,
     create_notifier,
     default_clearance_socket_path,
+    parse_verdict_ttl,
 )
