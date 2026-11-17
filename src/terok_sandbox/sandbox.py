@@ -32,6 +32,7 @@ from terok_util import (
 
 from ._util import warn_user
 from .config import SandboxConfig
+from .desktop import DesktopAccess
 from .runtime import ContainerRuntime, PodmanRuntime
 from .runtime.gpu import GpuSelector, check_gpu_error, gpu_run_args
 from .runtime.podman import (
@@ -42,6 +43,7 @@ from .runtime.podman import (
 from .runtime.seccomp import seccomp_args
 from .runtime.storage_diagnostics import storage_permission_diagnostics
 from .setup import check_setup
+from .wayland import WaylandMode
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Mapping
@@ -161,6 +163,13 @@ class LifecycleHooks:
     post_stop: Callable[[], None] | None = None
     """Fired after the container exits (caller responsibility)."""
 
+    warning: Callable[[str], None] | None = None
+    """Observe startup warnings as plain text; failures are nonfatal.
+
+    Replay one with [`emit_warning`][terok_sandbox.wayland.emit_warning] to
+    present it exactly as the launch did.
+    """
+
 
 #: In-container loopback port the gate socat bridge listens on (matches
 #: ``TCP-LISTEN:9418`` in ``ensure-bridges.sh``).  The bridge forwards it to
@@ -267,6 +276,9 @@ class RunSpec:
 
     volumes: tuple[VolumeSpec, ...]
     """Host↔container directory bindings (mounted or injected per *sealed*)."""
+
+    wayland: WaylandMode = WaylandMode.NONE
+    """Optional desktop access; none by default, never an automatic raw fallback."""
 
     command: tuple[str, ...]
     """Command to execute inside the container."""
@@ -402,6 +414,7 @@ class RunSpec:
         Also folds the deprecated ``gpu_enabled`` bool into ``gpus``.
         """
         object.__setattr__(self, "annotations", MappingProxyType(dict(self.annotations)))
+        object.__setattr__(self, "wayland", WaylandMode(self.wayland))
         if gpu_enabled is not None:
             if self.gpus is not None:
                 raise ValueError(
@@ -549,6 +562,7 @@ class Sandbox:
         # stays pure — only the cfg ``Sandbox`` carries is allocated.
         self._cfg = (config or SandboxConfig()).with_resolved_ports()
         self._runtime: ContainerRuntime = runtime or PodmanRuntime()
+        self._desktop = DesktopAccess(self._cfg, self._runtime)
 
     @property
     def config(self) -> SandboxConfig:
@@ -892,7 +906,7 @@ class Sandbox:
             self.start(spec.container_name, hooks=hooks)
             return
 
-        cmd = self._build_cmd(spec, verb="run")
+        cmd = self._build_cmd(self._desktop.prepare(spec, hooks=hooks), verb="run")
         print("$", shlex.join(redact_env_args(cmd)))
 
         if hooks and hooks.pre_start:
@@ -904,6 +918,7 @@ class Sandbox:
             hooks.post_start()
 
         self._verify_supervision(spec.container_name)
+        self._desktop.verify(spec.container_name, hooks=hooks)
 
     def create(self, spec: RunSpec, *, hooks: LifecycleHooks | None = None) -> str:
         """Create a container without starting it.
@@ -913,7 +928,7 @@ class Sandbox:
         via [`copy_to`][terok_sandbox.sandbox.Sandbox.copy_to] before being started with [`start`][terok_sandbox.sandbox.Sandbox.start].
         """
         require_setup(check_setup(self._cfg, live=True))
-        cmd = self._build_cmd(spec, verb="create")
+        cmd = self._build_cmd(self._desktop.prepare(spec, hooks=hooks), verb="create")
         print("$", shlex.join(redact_env_args(cmd)))
 
         if hooks and hooks.pre_start:
@@ -941,12 +956,26 @@ class Sandbox:
         """
         require_setup(check_setup(self._cfg, live=True))
         self._cfg.ensure_container_runtime_dir(container_name)
+        self._desktop.refresh(container_name, hooks=hooks)
         handle = self._runtime.container(container_name)
         self._warn_if_outdated(container_name, handle)
         handle.start()
         if hooks and hooks.post_start:
             hooks.post_start()
         self._verify_supervision(container_name)
+        self._desktop.verify(container_name, hooks=hooks)
+
+    def wayland_preflight(self, container_name: str) -> None:
+        """Validate retained desktop access without stopping the task or rewriting state.
+
+        Orchestrators call this before disrupting a running task; see
+        [`DesktopAccess.preflight`][terok_sandbox.desktop.DesktopAccess.preflight].
+
+        Raises:
+            WaylandRecreationRequired: The retained desktop grant cannot be verified.
+            RuntimeError: The runtime cannot inspect the retained container reliably.
+        """
+        self._desktop.preflight(container_name)
 
     def _warn_if_outdated(self, container_name: str, handle: Container) -> None:
         """Shout if the container predates the current ``/run/terok`` socket layout.

@@ -1,0 +1,98 @@
+# SPDX-FileCopyrightText: 2026 Jiri Vyskocil
+# SPDX-License-Identifier: Apache-2.0
+
+policy_module(terok_wayland, 1.2)
+
+# Optional domain for the Wayland supervisor child and the stock wl-mitm
+# it runs.  The launcher asks for this domain when it execs the Python
+# child; nothing is relabelled and nothing enters the domain on its own.
+# The proxy's listening socket carries the domain's label, so a container
+# can be allowed to reach the proxy without being allowed to reach the
+# compositor, which stays unconfined_t.
+#
+# Experimental, and deliberately broad where breadth buys compatibility.
+# The domain may open, read and run every file the base policy does not
+# class as a security file, so Python and wl-mitm start from any install
+# layout.  SSH and GPG keys are within that reach; shadow passwords,
+# Kerberos keytabs, audit logs and SELinux's own files are not.  Because
+# it can open everything, the few writes it holds work by path too: it
+# may write and create container files and append to any temporary file.
+# Unix permissions still apply, and Landlock keeps the proxy itself to
+# its runtime directory.  No network, D-Bus, ptrace or device access.
+#
+# What changes for every container on the host: container_t may connect
+# to sockets of this domain, and may write and map user_tmp_t files it
+# has been handed (compositor keymaps and buffers; memfds too where the
+# policy knows that class).  Nothing else.
+#
+# SELinux cannot tell the selected compositor from other unconfined_t
+# sockets with the same user_tmp_t inode label, so the protocol filter
+# and the immutable proxy configuration remain the boundary that matters.
+#
+# Install: sudo bash install_policy.sh --with-wayland
+# Remove:  sudo semodule -r terok_wayland
+
+gen_require(`
+    attribute domain, file_type, non_security_file_type;
+    type unconfined_t, container_runtime_t, container_t, container_file_t;
+    type user_tmp_t, tmpfs_t, security_t;
+    role unconfined_r;
+')
+
+type terok_wayland_t, domain;
+role unconfined_r types terok_wayland_t;
+role system_r types terok_wayland_t;
+
+# 1. Entry.  Only the supervisor's own domains enter, and only by asking.
+#    no_new_privs and nosuid mounts stay as the launcher set them.
+allow { unconfined_t container_runtime_t } terok_wayland_t:process { transition siginh rlimitinh signal sigkill signull getattr };
+allow { unconfined_t container_runtime_t } terok_wayland_t:process2 { nnp_transition nosuid_transition };
+allow terok_wayland_t { unconfined_t container_runtime_t }:process sigchld;
+allow terok_wayland_t { unconfined_t container_runtime_t }:fifo_file { read write getattr };
+
+# 2. The domain's own processes, pipes and sockets.
+allow terok_wayland_t self:process { fork sigchld signal getattr getsched setrlimit };
+allow terok_wayland_t self:fifo_file { read write getattr };
+allow terok_wayland_t self:unix_stream_socket { create bind listen accept connect read write getattr getopt setopt shutdown };
+
+# 3. Walk any path; open, read and run anything but the security files,
+#    which keeps the base policy's assertion on who reads shadow_t.  No
+#    write here, yet open turns the writes of section 6 into writes by
+#    path.
+allow terok_wayland_t file_type:dir { search getattr };
+allow terok_wayland_t non_security_file_type:dir { open read };
+allow terok_wayland_t non_security_file_type:lnk_file { read getattr };
+allow terok_wayland_t non_security_file_type:file { entrypoint execute execute_no_trans read getattr open map };
+
+# 4. The child confirms its own domain before it execs the proxy.  That
+#    query goes through selinuxfs and cannot change the loaded policy.
+allow terok_wayland_t security_t:file { read write getattr open };
+allow terok_wayland_t security_t:security check_context;
+
+# 5. The listener in the task's runtime directory (container_file_t once
+#    Podman has labelled it), and the compositor upstream of it.
+allow terok_wayland_t container_file_t:dir { create write setattr add_name remove_name };
+allow terok_wayland_t container_file_t:sock_file { create unlink write getattr setattr };
+allow container_t terok_wayland_t:unix_stream_socket connectto;
+allow terok_wayland_t user_tmp_t:sock_file { write getattr };
+allow terok_wayland_t unconfined_t:unix_stream_socket connectto;
+
+# 6. Descriptors passed through the proxy: shared memory, keymaps, render
+#    buffers.  Owner and inode keep their labels; receiving a compositor's
+#    read-write buffer must work even for a client that only maps it.
+#    DMA-buf and syncobj exports are anonymous inodes that fd use covers,
+#    so no GPU device can be opened from here.
+allow terok_wayland_t { unconfined_t container_runtime_t container_t }:fd use;
+allow terok_wayland_t { container_file_t user_tmp_t tmpfs_t }:file { write append create };
+allow container_t user_tmp_t:file { write map };
+
+# A policy that enables the memfd class labels memfds with their creator's
+# domain; policies without the class use the tmpfs rules above.
+optional_policy(`
+    gen_require(`
+        class memfd_file { create read write getattr open map };
+    ')
+    allow terok_wayland_t self:memfd_file { create read write getattr open map };
+    allow terok_wayland_t { unconfined_t container_runtime_t container_t }:memfd_file { read write getattr open map };
+    allow container_t unconfined_t:memfd_file { read write getattr map };
+')

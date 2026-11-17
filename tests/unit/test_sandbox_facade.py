@@ -18,7 +18,7 @@ import pytest
 
 from terok_sandbox import BrokerContext, GpuConfigError, SandboxConfig
 from terok_sandbox.launch import PerContainerResources, write_sidecar
-from terok_sandbox.runtime import ContainerRemoveResult
+from terok_sandbox.runtime import ContainerInspection, ContainerRemoveResult
 from terok_sandbox.runtime.gpu import check_gpu_error
 from terok_sandbox.runtime.podman import redact_env_args, unshielded_network_args
 from terok_sandbox.sandbox import (
@@ -38,6 +38,7 @@ from tests.constants import (
     CONTAINER_HOSTNAME,
     DOCKER_HOSTNAME,
     DRIFTED_SERVICE_PORTS,
+    FAKE_CONTAINER_ID,
     FAKE_SERVICE_PORTS,
     MISSING_PODMAN_INIT,
     MOCK_BASE,
@@ -517,7 +518,8 @@ class TestSandbox:
 
         assert run_dir.is_dir()
         assert (run_dir.stat().st_mode & 0o777) == 0o700
-        container.assert_called_once_with("ctr")
+        assert container.call_args_list == [call("ctr"), call("ctr")]
+        container.return_value.inspect.assert_called_once_with()
         container.return_value.start.assert_called_once_with()
 
     def test_stream_logs_uses_ready_marker(self) -> None:
@@ -1414,6 +1416,14 @@ class TestSandboxCopyTo:
 
 class TestSandboxStart:
     """Verify ``Sandbox.start`` delegates through the runtime."""
+
+    @pytest.fixture(autouse=True)
+    def _retained_container(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Model the saved mounts without running a real Podman inspection."""
+        monkeypatch.setattr(
+            "terok_sandbox.runtime.podman.PodmanContainer.inspect",
+            lambda _: ContainerInspection(FAKE_CONTAINER_ID, "exited", None, {}, ()),
+        )
 
     def test_start_invokes_podman_start(self) -> None:
         """The runtime ``Container.start`` drives ``podman start``."""

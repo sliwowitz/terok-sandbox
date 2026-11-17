@@ -27,19 +27,19 @@ already binds a per-container filesystem socket (or loopback port); a
 child in a separate process binds the identical path the container
 reaches.
 
-The five children map onto the six former services: ``clearance`` owns
+Five of the children map onto the six former services: ``clearance`` owns
 the hub *and* the desktop notifier/subscriber (they share the clearance
 socket and the notifier only drives the subscriber), while ``verdict``,
 ``vault``, ``signer``, and ``gate`` are one service each.  ``gate`` only
 runs when the sidecar wired it, and ``verdict`` and ``clearance`` not at
 all when the sidecar says ``services.clearance: off``.
+``wayland`` supervises an optional stock wl-mitm process without opening
+the credential store.
 """
 
 from __future__ import annotations
 
 import asyncio
-import contextlib
-import ctypes
 import logging
 import os
 import signal
@@ -50,7 +50,9 @@ from typing import TYPE_CHECKING
 
 from terok_util import confine_filesystem, find_host_tool, harden_self
 
+from .launcher import EXPECTED_PARENT_ENV, arm_parent_death_signal
 from .sidecar import SERVICE_NAMES as _SERVICE_NAMES, SupervisorPaths, load_sidecar
+from .wayland import run_proxy
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
@@ -69,9 +71,6 @@ _logger = logging.getLogger("terok-supervisor.child")
 _EXIT_OK = 0
 _EXIT_BAD_SIDECAR = 2
 _EXIT_START_FAILED = 4
-
-#: ``prctl`` option arming the parent-death signal (Linux).
-_PR_SET_PDEATHSIG = 1
 
 #: Filesystem roots every confined child needs to read or execute: the OS,
 #: its shared libraries, this interpreter, and this package's source tree
@@ -303,14 +302,16 @@ async def _run_signer(cfg: SidecarConfig, paths: SupervisorPaths, stop: asyncio.
 #: Service name → its runner coroutine.  The parent's launch order is the
 #: insertion order here: verdict before clearance (the hub connects to
 #: it), gate before vault (the container clones through the gate first),
-#: vault and signer last (secret-holders come up once their consumers are
-#: waiting).  The keys are the wire vocabulary of ``supervise-child``.
+#: then vault and signer (secret-holders come up once their consumers are
+#: waiting), the optional Wayland proxy last.  The keys are the wire
+#: vocabulary of ``supervise-child``.
 _RUNNERS: dict[str, _Runner] = {
     "verdict": _run_verdict,
     "clearance": _run_clearance,
     "gate": _run_gate,
     "vault": _run_vault,
     "signer": _run_signer,
+    "wayland": run_proxy,
 }
 
 #: The service names, in launch order — consumed by the parent supervisor.
@@ -320,7 +321,7 @@ _RUNNERS: dict[str, _Runner] = {
 SERVICE_NAMES: tuple[str, ...] = _SERVICE_NAMES
 
 
-def _arm_parent_death_signal() -> bool:
+def _arm_parent_death_signal(expected_parent: int | None = None) -> bool:
     """Arm the kernel dead-man's switch: SIGTERM this child when its parent dies.
 
     A supervisor killed without teardown (crash, OOM, SIGKILL past the
@@ -336,10 +337,9 @@ def _arm_parent_death_signal() -> bool:
     raced the supervisor's death — and the caller must exit rather
     than run as a stray the switch will never fire for.
     """
-    with contextlib.suppress(OSError, AttributeError):
-        libc = ctypes.CDLL(None, use_errno=True)
-        libc.prctl(_PR_SET_PDEATHSIG, signal.SIGTERM, 0, 0, 0)
-    return os.getppid() != 1
+    armed = arm_parent_death_signal(signal.SIGTERM)
+    parent = os.getppid()
+    return armed and parent == expected_parent if expected_parent is not None else parent != 1
 
 
 def run_child(service: str, container_id: str, sidecar_path: Path) -> int:
@@ -355,7 +355,13 @@ def run_child(service: str, container_id: str, sidecar_path: Path) -> int:
     ``_EXIT_START_FAILED`` (4) so the parent can log it and carry on,
     degrading one service without taking the rest down.
     """
-    if not _arm_parent_death_signal():
+    expected_parent = os.environ.get(EXPECTED_PARENT_ENV) if service == "wayland" else None
+    armed = (
+        _arm_parent_death_signal(int(expected_parent))
+        if expected_parent is not None
+        else _arm_parent_death_signal()
+    )
+    if not armed:
         _logger.error(
             "%s child: supervisor died before startup — refusing to run as a stray", service
         )
@@ -396,11 +402,12 @@ def run_child(service: str, container_id: str, sidecar_path: Path) -> int:
 
         install_hooks(paths.gate_socket.parent / _GATE_HOOKS_DIRNAME)
 
-    if not cfg.allow_debugger and service != "verdict":
+    if not cfg.allow_debugger and service not in {"verdict", "wayland"}:
         # Pin filesystem path access to this service's lane.  Verdict is
         # intentionally exempt: it is the small Podman/nsenter broker, whose
         # job requires the operator's container-runtime state.  Debug mode
-        # likewise keeps paths open for dump/trace tools.
+        # likewise keeps paths open for dump/trace tools. The Wayland wrapper
+        # confines its external proxy immediately before exec instead.
         #
         # This is path isolation, not a same-UID kernel-keyring boundary:
         # vault and signer still resolve the shared vault key through the
@@ -540,6 +547,7 @@ def _writable_paths(
         "gate": (paths.gate_socket,),
         "vault": (paths.vault_socket,),
         "signer": (paths.ssh_signer_socket,),
+        "wayland": (paths.wayland_socket,),
     }[service]
     writable = list(dict.fromkeys(socket.parent for socket in sockets))
 
@@ -584,6 +592,7 @@ def _ensure_socket_dirs(service: str, paths: SupervisorPaths) -> None:
         "gate": (paths.gate_socket,),
         "vault": (paths.vault_socket,),
         "signer": (paths.ssh_signer_socket,),
+        "wayland": (paths.wayland_socket,),
     }[service]
     for sock in sockets:
         sock.parent.mkdir(parents=True, exist_ok=True)

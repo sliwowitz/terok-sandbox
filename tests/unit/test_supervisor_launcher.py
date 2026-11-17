@@ -12,13 +12,22 @@ interpreter, the ``supervise-child`` verb — without forking a real child.
 
 from __future__ import annotations
 
+import asyncio
+import errno
+import signal
+import subprocess
 import sys
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from terok_sandbox.supervisor.launcher import launch_child
+from terok_sandbox.supervisor import launcher
+from terok_sandbox.supervisor.launcher import (
+    arm_parent_death_signal,
+    explained_preexec,
+    launch_child,
+)
 
 _SIDECAR = Path("/state/sidecar/demo.json")
 
@@ -78,3 +87,74 @@ class TestLaunchChild:
         handle = await launch_child("vault", "abc123", marker)
         assert await handle.process.wait() == 0
         assert marker.read_text() == "trusted"
+
+
+class TestExplainedPreexec:
+    """A pre-exec step's own words survive CPython's generic spawn error."""
+
+    @pytest.mark.asyncio
+    async def test_failed_step_reaches_the_parent_with_its_reason(self) -> None:
+        def refuse() -> None:
+            raise OSError(errno.EACCES, "cannot enter the proxy domain")
+
+        with pytest.raises(RuntimeError, match="cannot enter the proxy domain"):
+            with explained_preexec(refuse) as preexec_fn:
+                await asyncio.create_subprocess_exec(
+                    sys.executable, "-c", "pass", preexec_fn=preexec_fn
+                )
+
+    def test_both_halves_of_the_relay_without_a_fork(self) -> None:
+        """What the forked child runs, then what its parent sees, in one process."""
+
+        def refuse() -> None:
+            raise OSError("no proxy domain on this host")
+
+        with pytest.raises(RuntimeError, match="no proxy domain on this host"):
+            with explained_preexec(refuse) as preexec_fn:
+                with pytest.raises(OSError, match="no proxy domain"):
+                    preexec_fn()
+                raise subprocess.SubprocessError("Exception occurred in preexec_fn.")
+
+    @pytest.mark.asyncio
+    async def test_successful_step_leaves_the_spawn_alone(self) -> None:
+        with explained_preexec(lambda: None) as preexec_fn:
+            process = await asyncio.create_subprocess_exec(
+                sys.executable, "-c", "pass", preexec_fn=preexec_fn
+            )
+        assert await process.wait() == 0
+
+    def test_step_keeps_its_name_for_spawn_assertions(self) -> None:
+        def enter_domain() -> None:
+            """Stand in for a named pre-exec step."""
+
+        with explained_preexec(enter_domain) as preexec_fn:
+            assert preexec_fn.__name__ == "enter_domain"
+
+    @pytest.mark.asyncio
+    async def test_silent_failure_keeps_the_generic_error(self) -> None:
+        def refuse_quietly() -> None:
+            raise OSError
+
+        with pytest.raises(subprocess.SubprocessError, match="preexec_fn"):
+            with explained_preexec(refuse_quietly) as preexec_fn:
+                await asyncio.create_subprocess_exec(
+                    sys.executable, "-c", "pass", preexec_fn=preexec_fn
+                )
+
+
+class TestArmParentDeathSignal:
+    """One prctl behind every child's dead-man's switch."""
+
+    @pytest.mark.parametrize("status", [0, -1])
+    def test_asks_the_kernel_for_the_given_signal(
+        self, monkeypatch: pytest.MonkeyPatch, status: int
+    ) -> None:
+        libc = MagicMock()
+        libc.prctl.return_value = status
+        monkeypatch.setattr(launcher, "_LIBC", libc)
+        assert arm_parent_death_signal(signal.SIGKILL) is (status == 0)
+        libc.prctl.assert_called_once_with(launcher._PR_SET_PDEATHSIG, signal.SIGKILL, 0, 0, 0)
+
+    def test_a_libc_without_prctl_cannot_arm(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(launcher, "_LIBC", object())
+        assert arm_parent_death_signal(signal.SIGTERM) is False

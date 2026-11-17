@@ -24,7 +24,7 @@ from terok_util import LazyHandler
 from ._types import ArgDef, CommandDef
 
 
-def _configure_supervisor_logging() -> None:
+def _configure_supervisor_logging(*, stderr_only: bool = False) -> None:
     """Route supervisor / child logs through the unified facility, keeping stderr.
 
     The supervisor is a **host** process — the OCI hook spawns it detached,
@@ -34,6 +34,12 @@ def _configure_supervisor_logging() -> None:
     / ``terok_clearance.*`` module loggers to the host journal when one is
     present.  On a non-systemd host it falls back to that same stderr file.
     """
+    if stderr_only:
+        import logging
+
+        logging.basicConfig(level=logging.INFO)
+        return
+
     from terok_util import configure
 
     configure(identifier="terok-supervisor", stderr=True)
@@ -66,7 +72,7 @@ def _handle_supervise_child(service: str, container_id: str, sidecar_path: str) 
     """
     from ..supervisor.children import run_child
 
-    _configure_supervisor_logging()
+    _configure_supervisor_logging(stderr_only=service == "wayland")
     return run_child(service, container_id, Path(sidecar_path))
 
 
@@ -94,7 +100,7 @@ SUPERVISE_CHILD: CommandDef = CommandDef(
     handler=LazyHandler("terok_sandbox.commands.supervisor:_handle_supervise_child"),
     group="internal",
     args=(
-        ArgDef(name="service", help="Service to run (verdict|clearance|gate|vault|signer)"),
+        ArgDef(name="service", help="Supervisor service to run"),
         ArgDef(name="container_id", help="Container ID the service belongs to"),
         ArgDef(name="sidecar_path", help="Absolute path to the per-container sidecar JSON"),
     ),

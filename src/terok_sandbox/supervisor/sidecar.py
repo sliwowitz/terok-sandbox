@@ -19,14 +19,15 @@ logic.
 
 The write side lives here too, beside the reader whose rules it has to
 satisfy: [`store_sidecar`][terok_sandbox.supervisor.sidecar.store_sidecar]
-is the one writer,
+is the one writer.  The edits a sidecar takes after creation are
 [`refresh_clearance`][terok_sandbox.supervisor.sidecar.refresh_clearance]
-the one edit a sidecar takes after creation — its ``clearance`` field,
-rewritten from current config before a restart — and
-[`remove_sidecar`][terok_sandbox.supervisor.sidecar.remove_sidecar] the
-one removal.  The three take turns under one lock per sidecar directory,
-so none of them lands between another's check and its act.  All stay
-stdlib-only like the rest of the module.
+— its ``clearance`` field, rewritten from current config before a restart —
+and the desktop wiring kept by
+[`record_wayland`][terok_sandbox.supervisor.sidecar.record_wayland] and
+[`update_wayland`][terok_sandbox.supervisor.sidecar.update_wayland];
+[`remove_sidecar`][terok_sandbox.supervisor.sidecar.remove_sidecar] is the
+one removal.  They take turns under one lock per sidecar directory, so
+none of them lands between another's check and its act.
 """
 
 from __future__ import annotations
@@ -41,10 +42,12 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from ..podman_args import WAYLAND_RUNTIME_SUBDIR, WAYLAND_SOCKET_NAME
 from ..vault.context import BrokerContext
+from ..wayland import WaylandMode, WaylandSession
 
 if TYPE_CHECKING:
-    from collections.abc import Iterator, Mapping
+    from collections.abc import Callable, Iterator, Mapping
 
     from ..config_schema import ClearanceMode
 
@@ -52,8 +55,7 @@ _logger = logging.getLogger("terok-supervisor")
 
 #: Every supervisor service, in launch order: verdict before clearance
 #: (the hub connects to it), gate before vault (the container clones
-#: through the gate first), vault and signer last (the secret-holders come
-#: up once their consumers are waiting).  The runner table in
+#: through the gate first), then vault, signer, and optional Wayland. The runner table in
 #: [`children`][terok_sandbox.supervisor.children] keys on these names and
 #: takes its launch order from them.
 #:
@@ -61,7 +63,11 @@ _logger = logging.getLogger("terok-supervisor")
 #: wired, because every reader of that decision — the parent supervisor,
 #: the post-start check, the doctor — needs the vocabulary without
 #: needing the runners.
-SERVICE_NAMES: tuple[str, ...] = ("verdict", "clearance", "gate", "vault", "signer")
+SERVICE_NAMES: tuple[str, ...] = ("verdict", "clearance", "gate", "vault", "signer", "wayland")
+
+#: Services whose loss costs one opt-in feature, never the container's
+#: required plumbing.  Each has a health check of its own.
+OPTIONAL_SERVICES: frozenset[str] = frozenset({"wayland"})
 
 #: The clearance arm: the hub that puts a refusal to the operator and the
 #: verdict server that applies the answer.  ``services.clearance: off``
@@ -71,7 +77,7 @@ _CLEARANCE_ARM: frozenset[str] = frozenset({"verdict", "clearance"})
 
 #: The values ``services.clearance`` takes.  Spelled here rather than read
 #: off [`ClearanceMode`][terok_sandbox.config_schema.ClearanceMode], whose
-#: module imports pydantic: this one stays stdlib-only because the parent
+#: module imports pydantic: this one stays free of it because the parent
 #: supervisor and every child import it.  A test pins the two together.
 _CLEARANCE_MODES: tuple[ClearanceMode, ...] = ("prompt", "mute", "off")
 
@@ -100,9 +106,8 @@ class SidecarConfig:
     stop/start cycles — its ports and tokens must keep matching the
     container's immutable env — and is removed at real teardown by
     [`remove_container_state`][terok_sandbox.launch.remove_container_state].
-    Between those two points only ``clearance`` may change: a restart
-    rewrites it from current config
-    ([`refresh_clearance`][terok_sandbox.supervisor.sidecar.refresh_clearance]).
+    Restarts refresh ``clearance`` from current config and the selected
+    Wayland session endpoint without changing the saved mount policy.
     """
 
     broker_context: BrokerContext
@@ -171,6 +176,9 @@ class SidecarConfig:
     _resolved_passphrase: str | None = field(default=None, repr=False, compare=False)
     """Ephemeral in-memory passphrase; never present in sidecar JSON."""
 
+    wayland: WaylandSession = field(default_factory=WaylandSession)
+    """Optional desktop wiring, refreshed from the invoking session on every start."""
+
 
 @dataclass(frozen=True)
 class SupervisorPaths:
@@ -207,6 +215,11 @@ class SupervisorPaths:
     verdict_socket: Path
     control_socket: Path
     log_path: Path
+
+    @property
+    def wayland_socket(self) -> Path:
+        """The proxy's listener, independent of the other services' transport."""
+        return self.container_runtime_dir / WAYLAND_RUNTIME_SUBDIR / WAYLAND_SOCKET_NAME
 
     @classmethod
     def for_container(
@@ -277,7 +290,7 @@ class SupervisorPaths:
 def wired_services(cfg: SidecarConfig) -> tuple[str, ...]:
     """The services *cfg* wires, in launch order.
 
-    Two parts of the set are conditional:
+    Three parts of the set are conditional:
 
     * the gate — a sidecar without a mirror path and a token has no repo
       to serve;
@@ -288,15 +301,20 @@ def wired_services(cfg: SidecarConfig) -> tuple[str, ...]:
       is asked about them, and no verdict path is left that could widen the
       firewall.  (``mute`` keeps both: the hub runs, it just starts with
       the container muted.)
+    * Wayland — included only when the task requested a proxy and its host
+      binary and desktop endpoint were resolved for this start.
 
     The parent launches no child for a service left out, and the doctor's
-    children check expects none.  Vault and signer run for every container.
+    children check expects none — nor any of ``OPTIONAL_SERVICES``, whose
+    loss their own checks report.  Vault and signer run for every container.
     """
     unwired: set[str] = set()
     if not (cfg.gate_base_path and cfg.gate_token):
         unwired.add("gate")
     if cfg.clearance == "off":
         unwired |= _CLEARANCE_ARM
+    if not cfg.wayland.proxied:
+        unwired.add("wayland")
     return tuple(name for name in SERVICE_NAMES if name not in unwired)
 
 
@@ -363,6 +381,7 @@ def _build_config(raw: dict, sidecar_path: Path) -> SidecarConfig:
         dossier_path=_optional_absolute_path(raw, "dossier_path", sidecar_path),
         allow_debugger=_optional_bool(raw, "allow_debugger"),
         clearance=_lenient_clearance(raw, sidecar_path),
+        wayland=WaylandSession.from_payload(raw.get("wayland")),
     )
 
 
@@ -507,10 +526,10 @@ def store_sidecar(
 ) -> None:
     """Create the sidecar at *target*, or atomically replace it, with *payload*.
 
-    The one writer behind both producers of a sidecar —
+    The one writer behind every producer of a sidecar —
     [`write_sidecar`][terok_sandbox.launch.write_sidecar] at creation and
-    [`refresh_clearance`][terok_sandbox.supervisor.sidecar.refresh_clearance]
-    before a restart — so the file's rules are kept in one place:
+    the edits this module makes before a restart — so the file's rules are
+    kept in one place:
 
     * **0600 from the first byte.**  The payload can carry a live gate
       token.  It goes to a temp file ``mkstemp`` creates ``0600`` beside
@@ -624,6 +643,30 @@ def refresh_clearance(sidecar_path: Path, clearance: ClearanceMode) -> None:
     with _own_sidecar(sidecar_path) as (payload, identity):
         payload["clearance"] = clearance
         _replace_sidecar(sidecar_path, payload, identity)
+
+
+def record_wayland(sidecar_path: Path, session: WaylandSession) -> None:
+    """Record desktop wiring only after its creation-time mounts were prepared."""
+    with _own_sidecar(sidecar_path) as (payload, identity):
+        payload["wayland"] = session.payload()
+        _replace_sidecar(sidecar_path, payload, identity)
+
+
+def update_wayland(
+    sidecar_path: Path, update: Callable[[WaylandSession], WaylandSession]
+) -> WaylandSession:
+    """Replace the saved desktop wiring with ``update(saved)`` as one locked edit.
+
+    Storage only: what the new wiring is, and whether it may differ from the
+    old, is *update*'s decision.  Nothing is written when it raises, or when
+    the result requests no desktop.
+    """
+    with _own_sidecar(sidecar_path) as (payload, identity):
+        session = update(WaylandSession.from_payload(payload.get("wayland")))
+        if session.mode != WaylandMode.NONE:
+            payload["wayland"] = session.payload()
+            _replace_sidecar(sidecar_path, payload, identity)
+        return session
 
 
 @contextlib.contextmanager

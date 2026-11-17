@@ -19,7 +19,9 @@ launch time — both import from here, so the two can never disagree.
 
 from __future__ import annotations
 
+import stat
 from collections.abc import Sequence
+from pathlib import Path
 
 # Container-side mount point for the host runtime directory (socket mode).
 CONTAINER_RUNTIME_DIR = "/run/terok"
@@ -30,6 +32,11 @@ CONTAINER_RUNTIME_DIR = "/run/terok"
 CONTAINER_VAULT_SOCKET = f"{CONTAINER_RUNTIME_DIR}/vault/vault.sock"
 CONTAINER_SSH_SIGNER_SOCKET = f"{CONTAINER_RUNTIME_DIR}/signer/ssh-agent.sock"
 CONTAINER_GATE_SOCKET = f"{CONTAINER_RUNTIME_DIR}/gate/gate-server.sock"
+WAYLAND_RUNTIME_SUBDIR = "wayland"
+WAYLAND_SOCKET_NAME = "wayland.sock"
+CONTAINER_WAYLAND_DIR = "/run/terok-wayland"
+CONTAINER_WAYLAND_SOCKET = f"{CONTAINER_WAYLAND_DIR}/{WAYLAND_SOCKET_NAME}"
+CONTAINER_USER_RUNTIME_DIR = "/run/terok-user"
 
 # Container-side path where bridge resources are bind-mounted (runtime
 # pattern) or `COPY`ed into the image (build-time pattern).  The host
@@ -54,13 +61,16 @@ SANDBOX_MANAGED_FLAGS = frozenset(
 )
 _FLAG_ALIASES: dict[str, str] = {"--net": "--network"}
 
+# Container directories sandbox owns wholesale: a user mount on any of
+# them, or anywhere below, would shadow a socket or mount sandbox places there.
+_MANAGED_SUBTREES = (CONTAINER_RUNTIME_DIR, CONTAINER_WAYLAND_DIR, CONTAINER_USER_RUNTIME_DIR)
+
 # Volume mount targets sandbox emits.  A user `-v ...:<target>` that
-# overlaps any of these — or any path under ``CONTAINER_RUNTIME_DIR``
-# itself — would shadow sandbox's sockets/mounts.
+# overlaps any of these would shadow sandbox's sockets/mounts.
 _MANAGED_VOLUME_TARGETS = frozenset(
     {
         CONTAINER_BRIDGES_DIR,
-        CONTAINER_RUNTIME_DIR,
+        *_MANAGED_SUBTREES,
         CONTAINER_VAULT_SOCKET,
         CONTAINER_SSH_SIGNER_SOCKET,
         CONTAINER_GATE_SOCKET,
@@ -99,6 +109,27 @@ def reject_managed_flags(podman_args: list[str]) -> None:
         )
 
 
+def socket_bind_mount(source: Path, destination: str) -> str:
+    """Render a ``--mount`` value binding one existing Unix socket read-only, label untouched.
+
+    Read-only protects the inode, not the protocol available through it.
+    The checks keep a path from being read as mount options, and keep
+    Podman from creating a source that vanished as a directory.
+
+    Raises:
+        ValueError: A path is relative or carries a mount-option delimiter,
+            or *source* is not a socket.
+        OSError: *source* cannot be examined.
+    """
+    if not source.is_absolute() or not Path(destination).is_absolute():
+        raise ValueError("socket bind paths must be absolute")
+    if any(c in f"{source}{destination}" for c in ':,"\r\n\0'):
+        raise ValueError("socket bind path contains mount-option delimiters")
+    if not stat.S_ISSOCK(source.lstat().st_mode):
+        raise ValueError(f"not a Unix socket: {source}")
+    return f"type=bind,source={source},destination={destination},readonly"
+
+
 def reject_managed_volumes(podman_args: list[str]) -> None:
     """Reject ``-v host:target`` whose target overlaps a sandbox mount."""
     conflicts: set[str] = set()
@@ -115,10 +146,11 @@ def reject_managed_volumes(podman_args: list[str]) -> None:
         if len(parts) < 2:
             continue
         target = parts[1]
-        # Block exact matches plus any path under ``CONTAINER_RUNTIME_DIR``
-        # — sandbox owns that whole subtree, so a deeper user mount would
-        # still hide a freshly-bound supervisor socket.
-        if target in _MANAGED_VOLUME_TARGETS or target.startswith(f"{CONTAINER_RUNTIME_DIR}/"):
+        # Block exact matches plus any path under an owned subtree: a deeper
+        # user mount would still hide a freshly-bound supervisor socket.
+        if target in _MANAGED_VOLUME_TARGETS or target.startswith(
+            tuple(f"{subtree}/" for subtree in _MANAGED_SUBTREES)
+        ):
             conflicts.add(target)
     if conflicts:
         raise SystemExit(
