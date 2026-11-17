@@ -580,7 +580,7 @@ def test_wayland_policy_is_separate_and_queryable(monkeypatch: pytest.MonkeyPatc
     monkeypatch.setattr(_selinux, "_load_libselinux", lambda: lib)
     assert _selinux.is_wayland_policy_installed()
     lib.security_check_context.assert_called_once_with(b"system_u:object_r:terok_wayland_t:s0")
-    assert "module terok_wayland" in _selinux.wayland_policy_source_path().read_text()
+    assert "policy_module(terok_wayland," in _selinux.wayland_policy_source_path().read_text()
 
 
 @pytest.mark.parametrize("installed", [True, False])

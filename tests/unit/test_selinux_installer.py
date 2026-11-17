@@ -23,6 +23,12 @@ from terok_sandbox._util._selinux import (
 
 _DEVEL_MAKEFILE = Path("/usr/share/selinux/devel/Makefile")
 _CONTAINER_INTERFACE = _DEVEL_MAKEFILE.parent / "include/services/container.if"
+_CONTAINER_HEADER = _CONTAINER_INTERFACE.relative_to(_DEVEL_MAKEFILE.parent)
+_OPTIONAL = [
+    ("terok_wayland", "--with-wayland"),
+    ("terok_wayland_direct", "--with-wayland-direct"),
+]
+"""The refpolicy modules and the flag that selects each."""
 _READ_AND_RUN = {
     "search", "getattr", "open", "read", "map", "execute", "execute_no_trans", "entrypoint",
 }  # fmt: skip
@@ -100,14 +106,11 @@ def test_selected_modules_compile_then_install_together(
     assert result.returncode == 0, result.stderr
     calls = trace.read_text()
     assert "terok_socket.te" in calls
-    assert ("terok_wayland.te" in calls) is with_wayland
+    assert calls.count("\nmake\n") == with_wayland + with_direct
+    assert ("terok_wayland.pp" in calls) is with_wayland
     assert ("terok_wayland_direct.pp" in calls) is with_direct
-    assert ("\nmake\n" in calls) is with_direct
     assert calls.count("\n-i\n") == 1
     assert "\n-r\n" not in calls
-    if with_wayland:
-        assert calls.index("terok_wayland.te") < calls.index("\n-i\n")
-        assert "terok_wayland.pp" in calls
 
 
 def test_unknown_installer_option_is_rejected_before_tools_run(installer) -> None:
@@ -118,13 +121,7 @@ def test_unknown_installer_option_is_rejected_before_tools_run(installer) -> Non
     assert not trace.exists()
 
 
-@pytest.mark.parametrize(
-    "module,flag",
-    [
-        ("terok_wayland", "--with-wayland"),
-        ("terok_wayland_direct", "--with-wayland-direct"),
-    ],
-)
+@pytest.mark.parametrize("module,flag", _OPTIONAL)
 def test_optional_source_gets_same_symlink_protection(installer, module: str, flag: str) -> None:
     script, trace = installer
     source = script.parent / f"{module}.te"
@@ -146,22 +143,23 @@ def test_installer_runs_through_safe_venv_directory_alias(installer) -> None:
     assert "\n-i\n" in trace.read_text()
 
 
-def test_direct_build_consumes_only_validated_source_in_private_directory(installer) -> None:
+@pytest.mark.parametrize("module,flag", _OPTIONAL)
+def test_refpolicy_build_consumes_only_validated_source_in_private_directory(
+    installer, module: str, flag: str
+) -> None:
     """Refpolicy make must not discover user-controlled sibling interface files."""
     script, trace = installer
-    (script.parent / "terok_wayland_direct.if").write_text("unvalidated input\n")
+    (script.parent / f"{module}.if").write_text("unvalidated input\n")
     make = script.parent.parent / "bin" / "make"
     make.write_text(
         "#!/bin/bash\nset -eu\n"
-        '[[ "$1" == -C && "$3" == -f && "$5" == terok_wayland_direct.pp ]]\n'
+        f'[[ "$1" == -C && "$3" == -f && "$5" == {module}.pp ]]\n'
         '[[ "$(stat -c %a "$2")" == 700 ]]\n'
-        '[[ -f "$2/terok_wayland_direct.te" ]]\n'
-        '[[ ! -e "$2/terok_wayland_direct.if" ]]\n'
+        f'[[ -f "$2/{module}.te" ]]\n'
+        f'[[ ! -e "$2/{module}.if" ]]\n'
         'printf "%s\\n" "$2" > "$TRACE.builddir"\n'
     )
-    result = subprocess.run(
-        ["bash", str(script), "--with-wayland-direct"], text=True, capture_output=True
-    )
+    result = subprocess.run(["bash", str(script), flag], text=True, capture_output=True)
     assert result.returncode == 0, result.stderr
     builddir = Path(trace.with_suffix(".builddir").read_text().strip())
     assert builddir.parent == script.parent.parent
@@ -169,32 +167,24 @@ def test_direct_build_consumes_only_validated_source_in_private_directory(instal
     assert "\n-i\n" in trace.read_text()
 
 
-def test_failed_direct_build_never_installs_any_module(installer) -> None:
+@pytest.mark.parametrize("_module,flag", _OPTIONAL)
+def test_failed_optional_build_never_installs_any_module(
+    installer, _module: str, flag: str
+) -> None:
     """A failed optional build cannot partially install the selected policy set."""
     script, trace = installer
     make = script.parent.parent / "bin" / "make"
     make.write_text("#!/bin/bash\nexit 7\n")
-    result = subprocess.run(
-        ["bash", str(script), "--with-wayland-direct"], text=True, capture_output=True
-    )
+    result = subprocess.run(["bash", str(script), flag], text=True, capture_output=True)
     assert result.returncode == 7
     assert "\n-i\n" not in trace.read_text()
 
 
-def test_failed_proxy_build_never_installs_any_module(installer) -> None:
-    """The same holds for the module the plain compiler builds."""
-    script, trace = installer
-    compiler = script.parent.parent / "bin" / "checkmodule"
-    compiler.write_text('#!/bin/bash\n[[ "$*" != *terok_wayland* ]] || exit 7\n')
-    result = subprocess.run(["bash", str(script), "--with-wayland"], text=True, capture_output=True)
-    assert result.returncode == 7
-    assert not trace.exists() or "\n-i\n" not in trace.read_text()
-
-
-def test_missing_direct_build_tool_fails_before_compiling(
-    installer, monkeypatch: pytest.MonkeyPatch
+@pytest.mark.parametrize("_module,flag", _OPTIONAL)
+def test_missing_refpolicy_build_tool_fails_before_compiling(
+    installer, monkeypatch: pytest.MonkeyPatch, _module: str, flag: str
 ) -> None:
-    """The direct-only build dependency is checked before producing any policy package."""
+    """The refpolicy-only build dependency is checked before producing any policy package."""
     script, trace = installer
     bash = shutil.which("bash")
     binaries = script.parent.parent / "bin"
@@ -202,28 +192,28 @@ def test_missing_direct_build_tool_fails_before_compiling(
     for tool in ("dirname", "stat", "readlink"):
         (binaries / tool).symlink_to(shutil.which(tool))
     monkeypatch.setenv("PATH", str(binaries))
-    result = subprocess.run(
-        [bash, str(script), "--with-wayland-direct"], text=True, capture_output=True
-    )
+    result = subprocess.run([bash, str(script), flag], text=True, capture_output=True)
     assert result.returncode == 1
     assert "Required tool 'm4' not found" in result.stderr
     assert not trace.exists()
 
 
-@pytest.mark.parametrize("with_wayland", [False, True])
 @pytest.mark.parametrize(
-    "header", [_DEVEL_MAKEFILE.name, _CONTAINER_INTERFACE.relative_to(_DEVEL_MAKEFILE.parent)]
+    "flags,header",
+    [
+        (["--with-wayland"], _DEVEL_MAKEFILE.name),
+        (["--with-wayland-direct"], _DEVEL_MAKEFILE.name),
+        (["--with-wayland-direct"], _CONTAINER_HEADER),
+        (["--with-wayland", "--with-wayland-direct"], _CONTAINER_HEADER),
+    ],
 )
-def test_missing_direct_header_fails_before_compiling(
-    installer, with_wayland: bool, header: str | Path
+def test_missing_development_file_fails_before_compiling(
+    installer, flags: list[str], header: str | Path
 ) -> None:
-    """Missing distribution interfaces stop all builds and explain host prerequisites."""
+    """Missing distribution files stop all builds and explain host prerequisites."""
     script, trace = installer
     missing = script.parent / header
     missing.unlink()
-    flags = ["--with-wayland-direct"]
-    if with_wayland:
-        flags.append("--with-wayland")
     result = subprocess.run(["bash", str(script), *flags], text=True, capture_output=True)
     assert result.returncode == 1
     assert f"Required SELinux development file '{missing}'" in result.stderr
@@ -235,13 +225,17 @@ def test_missing_direct_header_fails_before_compiling(
     assert not trace.exists()
 
 
-@pytest.mark.parametrize("with_wayland", [False, True])
-def test_other_policies_do_not_require_direct_headers(installer, with_wayland: bool) -> None:
-    """Base and filtered policy keep their existing standalone compiler requirements."""
+@pytest.mark.parametrize(
+    "flags,absent",
+    [([], (_DEVEL_MAKEFILE.name, _CONTAINER_HEADER)), (["--with-wayland"], (_CONTAINER_HEADER,))],
+)
+def test_modules_need_only_their_own_development_files(
+    installer, flags: list[str], absent: tuple[str | Path, ...]
+) -> None:
+    """The base policy keeps its standalone compiler; the proxy needs no container interfaces."""
     script, trace = installer
-    (script.parent / _DEVEL_MAKEFILE.name).unlink()
-    (script.parent / _CONTAINER_INTERFACE.relative_to(_DEVEL_MAKEFILE.parent)).unlink()
-    flags = ["--with-wayland"] if with_wayland else []
+    for header in absent:
+        (script.parent / header).unlink()
     result = subprocess.run(["bash", str(script), *flags], text=True, capture_output=True)
     assert result.returncode == 0, result.stderr
     assert "\n-i\n" in trace.read_text()
@@ -387,8 +381,8 @@ def test_direct_policy_keeps_default_capabilities_optional() -> None:
     assert source.count(grant) == 1
 
 
-def test_installer_packages_plain_modules_with_the_host_compiler(installer) -> None:
-    """With real build tools, the base and proxy modules reach ``semodule -i`` as packages."""
+def test_installer_packages_the_base_module_with_the_host_compiler(installer) -> None:
+    """With real build tools, the base module reaches ``semodule -i`` as a package."""
     script, trace = installer
     binaries = script.parent.parent / "bin"
     for tool in ("checkmodule", "semodule_package"):
@@ -397,48 +391,63 @@ def test_installer_packages_plain_modules_with_the_host_compiler(installer) -> N
             pytest.skip("SELinux policy compiler not installed")
     (binaries / "semodule").write_text(
         "#!/bin/bash\n"
-        'if [[ "$1" != -i ]]; then printf "%s\\n" terok_socket terok_wayland; exit; fi\n'
+        'if [[ "$1" != -i ]]; then printf "%s\\n" terok_socket; exit; fi\n'
         'shift; for package in "$@"; do\n'
         '    [[ -s "$package" ]] || exit 9; printf "%s\\n" "${package##*/}" >> "$TRACE"\n'
         "done\n"
     )
-    result = subprocess.run(["bash", str(script), "--with-wayland"], text=True, capture_output=True)
+    result = subprocess.run(["bash", str(script)], text=True, capture_output=True)
     assert result.returncode == 0, result.stderr
-    assert trace.read_text().split() == ["terok_socket.pp", "terok_wayland.pp"]
+    assert trace.read_text().split() == ["terok_socket.pp"]
 
 
-@pytest.mark.parametrize("source", [policy_source_path, wayland_policy_source_path])
-def test_plain_policy_compiles_when_host_tools_are_available(tmp_path: Path, source) -> None:
+def test_base_policy_compiles_when_host_tools_are_available(tmp_path: Path) -> None:
     """Compile and package only; this never loads policy into the test host."""
+    source = policy_source_path()
     if not (compiler := shutil.which("checkmodule")) or not (
         packager := shutil.which("semodule_package")
     ):
         pytest.skip("SELinux policy compiler not installed")
     # checkmodule insists that the output is named after the module.
-    module = tmp_path / f"{source().stem}.mod"
+    module = tmp_path / f"{source.stem}.mod"
     package = module.with_suffix(".pp")
-    subprocess.run([compiler, "-M", "-m", "-o", str(module), str(source())], check=True)
+    subprocess.run([compiler, "-M", "-m", "-o", str(module), str(source)], check=True)
     subprocess.run([packager, "-o", str(package), "-m", str(module)], check=True)
     assert package.stat().st_size > 0
 
 
-def test_direct_policy_compiles_with_fedora_container_interfaces(tmp_path: Path) -> None:
-    """Exercise the real template/compiler when Fedora development headers are installed."""
-    if not _DEVEL_MAKEFILE.is_file() or not _CONTAINER_INTERFACE.is_file():
-        pytest.skip("Fedora SELinux development headers not installed")
-    if "container_manage_files_template" not in _CONTAINER_INTERFACE.read_text():
-        pytest.skip("host container template is not the Fedora container-selinux interface")
+def _make_with_development_files(tmp_path: Path, source: Path) -> Path:
+    """Build *source* with the distribution's development Makefile; skip where that is absent.
+
+    Returns the m4-expanded policy the Makefile leaves behind.
+    """
+    if not _DEVEL_MAKEFILE.is_file():
+        pytest.skip("SELinux development files not installed")
     for tool in ("make", "m4", "checkmodule", "semodule_package"):
         if not shutil.which(tool):
             pytest.skip(f"optional SELinux build tool {tool} not installed")
-    source = wayland_direct_policy_source_path()
     shutil.copyfile(source, tmp_path / source.name)
+    package = tmp_path / f"{source.stem}.pp"
     subprocess.run(
-        ["make", "-C", str(tmp_path), "-f", str(_DEVEL_MAKEFILE), "terok_wayland_direct.pp"],
-        check=True,
+        ["make", "-C", str(tmp_path), "-f", str(_DEVEL_MAKEFILE), package.name], check=True
     )
-    assert (tmp_path / "terok_wayland_direct.pp").stat().st_size > 0
-    expanded = (tmp_path / "tmp" / "terok_wayland_direct.tmp").read_text()
+    assert package.stat().st_size > 0
+    return tmp_path / "tmp" / f"{source.stem}.tmp"
+
+
+def test_proxy_policy_compiles_with_the_development_makefile(tmp_path: Path) -> None:
+    """Exercise the real compiler when the policy development files are installed."""
+    _make_with_development_files(tmp_path, wayland_policy_source_path())
+
+
+def test_direct_policy_compiles_with_fedora_container_interfaces(tmp_path: Path) -> None:
+    """Exercise the real template/compiler when Fedora development headers are installed."""
+    if not _CONTAINER_INTERFACE.is_file():
+        pytest.skip("Fedora SELinux development headers not installed")
+    if "container_manage_files_template" not in _CONTAINER_INTERFACE.read_text():
+        pytest.skip("host container template is not the Fedora container-selinux interface")
+    source = wayland_direct_policy_source_path()
+    expanded = _make_with_development_files(tmp_path, source).read_text()
     for attribute in (
         "svirt_sandbox_domain",
         "sandbox_net_domain",

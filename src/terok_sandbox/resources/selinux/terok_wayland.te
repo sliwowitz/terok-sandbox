@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: 2026 Jiri Vyskocil
 # SPDX-License-Identifier: Apache-2.0
 
-module terok_wayland 1.2;
+policy_module(terok_wayland, 1.2)
 
 # Optional domain for the Wayland supervisor child and the stock wl-mitm
 # it runs.  The launcher asks for this domain when it execs the Python
@@ -32,24 +32,12 @@ module terok_wayland 1.2;
 # Install: sudo bash install_policy.sh --with-wayland
 # Remove:  sudo semodule -r terok_wayland
 
-require {
-    attribute domain;
-    attribute file_type;
-    attribute non_security_file_type;
+gen_require(`
+    attribute domain, file_type, non_security_file_type;
     type unconfined_t, container_runtime_t, container_t, container_file_t;
     type user_tmp_t, tmpfs_t, security_t;
-    role unconfined_r, system_r;
-    class process { transition fork sigchld signal sigkill signull getattr getsched setrlimit siginh rlimitinh };
-    class process2 { nnp_transition nosuid_transition };
-    class dir { create open read search getattr write setattr add_name remove_name };
-    class file { create entrypoint execute execute_no_trans read write append getattr open map };
-    class lnk_file { read getattr };
-    class sock_file { create unlink write getattr setattr };
-    class unix_stream_socket { create bind listen accept connect connectto read write getattr getopt setopt shutdown };
-    class fd use;
-    class fifo_file { read write getattr };
-    class security check_context;
-}
+    role unconfined_r;
+')
 
 type terok_wayland_t, domain;
 role unconfined_r types terok_wayland_t;
@@ -100,11 +88,11 @@ allow container_t user_tmp_t:file { write map };
 
 # A policy that enables the memfd class labels memfds with their creator's
 # domain; policies without the class use the tmpfs rules above.
-optional {
-    require {
+optional_policy(`
+    gen_require(`
         class memfd_file { create read write getattr open map };
-    }
+    ')
     allow terok_wayland_t self:memfd_file { create read write getattr open map };
     allow terok_wayland_t { unconfined_t container_runtime_t container_t }:memfd_file { read write getattr open map };
     allow container_t unconfined_t:memfd_file { read write getattr map };
-}
+')

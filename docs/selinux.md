@@ -20,6 +20,10 @@ combined. Omitting either flag later does not remove an installed module.
 flow displays the command and asks before running the installer with `sudo`.
 The `terok` and `terok-executor` frontends expose the same commands.
 
+The base module builds with `checkmodule` alone. Both optional modules need
+the distribution's policy development files; see
+[Host build prerequisites](#host-build-prerequisites).
+
 Wayland still uses a Unix socket when the other services use TCP. Its optional
 policy is therefore independent of the `services.mode` setting. Install the
 `wl-mitm` binary separately as the desktop user to use `wl-mitm` mode; setup
@@ -101,11 +105,12 @@ compositor from other sockets with the same process and inode labels. The exact
 socket mount and container namespaces limit which endpoints are reachable; the
 policy is not an endpoint-specific compositor permission.
 
-### Host build prerequisites
+## Host build prerequisites
 
-The direct module uses the distribution's container-policy interfaces rather
-than copying its confinement rules. Install its build prerequisites **on the
-host, not in a Toolbox or task container**:
+Both optional modules are written against the distribution's policy
+development files, and the direct module uses its container-policy interfaces
+rather than copying their confinement rules. Install the build prerequisites
+**on the host, not in a Toolbox or task container**:
 
 === "Fedora"
 
@@ -123,14 +128,14 @@ host, not in a Toolbox or task container**:
     `--allow-inactive` accepts packages already included in the base image.
 
 `selinux-policy-devel` supplies `/usr/share/selinux/devel/Makefile`, and
-`container-selinux` supplies its `include/services/container.if` interface.
-The installer checks that both are readable before compiling any selected
-module. Missing prerequisites produce installation hints; terok never installs
-host packages automatically. The base and filtered policies do not require
-these development files.
+`container-selinux` supplies the `include/services/container.if` interface
+that only the direct module needs. The installer checks that what the selected
+modules need is readable before compiling any of them. Missing prerequisites
+produce installation hints; terok never installs host packages automatically.
+The base policy does not require these development files.
 
 Development headers and build tools are needed when installing or rebuilding
-the direct module, not when starting tasks. The installed container policy
+an optional module, not when starting tasks. The installed container policy
 remains a runtime requirement. Compilation uses a private temporary directory;
 the installer does not compile unvalidated policy files found next to the
 installed package.

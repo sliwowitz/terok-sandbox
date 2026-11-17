@@ -121,8 +121,14 @@ _prerequisite_hint() {
     echo "Development headers and build tools are needed to build policy, not to start tasks." >&2
 }
 
+# The optional modules are refpolicy sources: they build with the
+# distribution's development Makefile, the direct one also against the
+# container interfaces.
+devel=false
+if "$with_wayland" || "$with_wayland_direct"; then devel=true; fi
+
 tools=(checkmodule semodule_package semodule)
-if "$with_wayland_direct"; then tools+=(make m4); fi
+if "$devel"; then tools+=(make m4); fi
 for tool in "${tools[@]}"; do
     if ! command -v "$tool" >/dev/null 2>&1; then
         echo "${_red}Required tool '$tool' not found.${_reset}" >&2
@@ -130,8 +136,10 @@ for tool in "${tools[@]}"; do
         exit 1
     fi
 done
-if "$with_wayland_direct"; then
-    for file in "$devel_makefile" "$container_interface"; do
+if "$devel"; then
+    headers=("$devel_makefile")
+    if "$with_wayland_direct"; then headers+=("$container_interface"); fi
+    for file in "${headers[@]}"; do
         if [[ ! -f "$file" || ! -r "$file" ]]; then
             echo "${_red}Required SELinux development file '$file' is missing or unreadable.${_reset}" >&2
             _prerequisite_hint
@@ -150,9 +158,9 @@ for module in "${modules[@]}"; do
     pp="${workdir}/${module}.pp"
 
     echo "Compiling ${module} policy..."
-    if [[ "$module" == terok_wayland_direct ]]; then
+    if [[ "$module" != terok_socket ]]; then
         # Refpolicy make discovers local .if/.fc inputs. Build only the
-        # validated source in our private directory, never beside user files.
+        # validated sources in our private directory, never beside user files.
         cp -- "$te_source" "$workdir/"
         make -C "$workdir" -f "$devel_makefile" "${module}.pp"
     else
